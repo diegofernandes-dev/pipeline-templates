@@ -34,7 +34,8 @@ probes:
     periodSeconds: 5
 
 podSecurityContext:
-  runAsNonRoot: true
+  # Image without USER runs as root; force false so Helm three-way merge clears prior true.
+  runAsNonRoot: false
   seccompProfile:
     type: RuntimeDefault
 
