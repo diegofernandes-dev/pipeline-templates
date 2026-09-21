@@ -12,7 +12,7 @@ Templates YAML reutilizáveis para Azure DevOps. Este repositório fica no GitHu
 
 ## Pré-requisito
 
-No Azure DevOps, crie uma **service connection** do tipo GitHub com acesso a este repositório. No exemplo usamos o nome `GitHub` — ajuste se o seu for diferente.
+No Azure DevOps, crie uma **service connection** do tipo GitHub com acesso a este repositório. No exemplo usamos o nome `github-diegofernandes-dev` — ajuste se o seu for diferente.
 
 ## Como consumir
 
@@ -29,7 +29,7 @@ resources:
     - repository: templates
       type: github
       name: diegofernandes-dev/pipeline-templates
-      endpoint: GitHub
+      endpoint: github-diegofernandes-dev
       ref: refs/heads/main
 
 extends:
@@ -49,6 +49,7 @@ Triggers (`trigger` / `pr`) ficam no pipeline consumidor, não no template.
 | `buildConfiguration` | `'Release'` | Configuração MSBuild |
 | `vmImage` | `'ubuntu-latest'` | Imagem do agent Microsoft-hosted |
 | `dotnetVersion` | `'10.x'` | Versão do SDK .NET |
+| `runtimeVersions` | `[]` | Runtimes extras (ex. `['8.x']`) se o TFM for mais antigo que o SDK |
 
 ## Evolução futura
 

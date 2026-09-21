@@ -21,6 +21,12 @@ parameters:
     type: string
     default: '10.x'
 
+  # Runtimes extras (ex.: ['8.x']) quando o TFM dos testes é mais antigo que o SDK.
+  - name: runtimeVersions
+    displayName: Runtimes .NET adicionais
+    type: object
+    default: []
+
 stages:
   - stage: CI
     displayName: Build and Test
@@ -35,6 +41,13 @@ stages:
             inputs:
               packageType: sdk
               version: ${{ parameters.dotnetVersion }}
+
+          - ${{ each runtime in parameters.runtimeVersions }}:
+            - task: UseDotNet@2
+              displayName: Install .NET Runtime ${{ runtime }}
+              inputs:
+                packageType: runtime
+                version: ${{ runtime }}
 
           - task: DotNetCoreCLI@2
             displayName: Restore
