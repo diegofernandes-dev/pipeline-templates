@@ -318,6 +318,7 @@ stages:
         environmentName: ${{ parameters.deployEnvironments[1].name }}
         variableGroups: ${{ parameters.deployEnvironments[1].variableGroups }}
         dependsOn:
+          - Container
           - Deploy_${{ parameters.deployEnvironments[0].name }}
         applicationName: ${{ parameters.applicationName }}
         containerPool: ${{ parameters.containerPool }}
@@ -331,6 +332,7 @@ stages:
         environmentName: ${{ parameters.deployEnvironments[2].name }}
         variableGroups: ${{ parameters.deployEnvironments[2].variableGroups }}
         dependsOn:
+          - Container
           - Deploy_${{ parameters.deployEnvironments[1].name }}
         applicationName: ${{ parameters.applicationName }}
         containerPool: ${{ parameters.containerPool }}
