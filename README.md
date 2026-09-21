@@ -38,7 +38,7 @@ extends:
 |----------|--------|
 | ECR repository | `applicationName` |
 | Helm release | `applicationName` |
-| Namespace | `asa-<applicationName>` (cria/usa idempotente) |
+| Namespace | `asa-<applicationName>` (mesmo nome em cada cluster; sem sufixo de ambiente) |
 | Conta AWS / registry ECR | `aws sts get-caller-identity` no agent |
 | Helm chart | fixo: `charts/app` (sem `helmChartPath` público) |
 
@@ -48,6 +48,18 @@ Build de imagem fixa `linux/amd64`. Helm deploy usa `--atomic --wait`.
 
 Obrigatório quando `buildImage` ou `deployEnabled` é `true`.
 
+### Ambientes ADO
+
+| Environment | No template hoje |
+|-------------|------------------|
+| `develop` | Stage `DeployDevelop` (ativo quando `deployEnabled`) |
+| `homolog` | Próximo incremento |
+| `production` | Próximo incremento |
+
+Namespace **não** muda por ambiente: o mesmo `asa-<applicationName>` em clusters diferentes. A imagem promovida é a mesma (tag = commit SHA).
+
+Pré-requisito: Environment `develop` criado no projeto Azure DevOps.
+
 Pool `PG-AWS-EKS`: BuildKit (`buildctl`/`crane`) + AWS/ECR + `helm`/`kubectl`. Credenciais AWS são as do agent (ambient).
 
 ## Parâmetros principais
@@ -56,5 +68,5 @@ Pool `PG-AWS-EKS`: BuildKit (`buildctl`/`crane`) + AWS/ECR + `helm`/`kubectl`. C
 |-----------|---------|-----------|
 | `applicationName` | `''` | Identidade da app (ECR + release + namespace) |
 | `buildImage` | `false` | Build/push ECR |
-| `deployEnabled` | `false` | Helm deploy com chart `charts/app` (requer `buildImage`) |
+| `deployEnabled` | `false` | Helm deploy em `develop` com chart `charts/app` (requer `buildImage`) |
 | `containerPool` | `PG-AWS-EKS` | Agent self-hosted |
