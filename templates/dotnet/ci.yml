@@ -91,7 +91,7 @@ parameters:
   - name: helmCreateNamespace
     displayName: Criar namespace se não existir
     type: boolean
-    default: true
+    default: false
 
 stages:
   - stage: CI
