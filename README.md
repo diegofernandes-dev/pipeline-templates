@@ -39,10 +39,11 @@ extends:
 |----------|--------|
 | ECR repository | `applicationName` |
 | Helm release | `applicationName` |
+| Conta AWS / registry ECR | `aws sts get-caller-identity` no agent (sem `awsAccountId` público) |
 
 Obrigatório quando `buildImage` ou `deployEnabled` é `true`.
 
-Pool `PG-AWS-EKS`: BuildKit (`buildctl`/`crane`) + AWS/ECR + `helm`/`kubectl`.
+Pool `PG-AWS-EKS`: BuildKit (`buildctl`/`crane`) + AWS/ECR + `helm`/`kubectl`. Credenciais AWS são as do agent (ambient).
 
 ## Parâmetros principais
 

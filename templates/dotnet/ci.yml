@@ -44,11 +44,6 @@ parameters:
     type: string
     default: 'PG-AWS-EKS'
 
-  - name: awsAccountId
-    displayName: Conta AWS do registry ECR
-    type: string
-    default: '448003890252'
-
   - name: awsRegion
     displayName: Região do ECR
     type: string
@@ -151,7 +146,6 @@ stages:
               env:
                 AWS_REGION: ${{ parameters.awsRegion }}
                 AWS_DEFAULT_REGION: ${{ parameters.awsRegion }}
-                AWS_ACCOUNT_ID: ${{ parameters.awsAccountId }}
                 APPLICATION_NAME: ${{ parameters.applicationName }}
                 DOCKERFILE: ${{ parameters.dockerfile }}
                 DOCKER_CONTEXT: ${{ parameters.dockerContext }}
@@ -185,7 +179,13 @@ stages:
 
                   echo "##[group]aws caller identity (ambient credentials on agent)"
                   aws sts get-caller-identity
+                  AWS_ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
                   echo "##[endgroup]"
+
+                  if [[ -z "${AWS_ACCOUNT_ID}" || "${AWS_ACCOUNT_ID}" == "None" ]]; then
+                    echo "##vso[task.logissue type=error]Could not resolve AWS account id from sts (agent ambient credentials)"
+                    exit 1
+                  fi
 
                   REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
                   IMAGE_REF="${REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
@@ -250,7 +250,6 @@ stages:
                 HELM_CREATE_NAMESPACE: ${{ parameters.helmCreateNamespace }}
                 AWS_REGION: ${{ parameters.awsRegion }}
                 AWS_DEFAULT_REGION: ${{ parameters.awsRegion }}
-                AWS_ACCOUNT_ID: ${{ parameters.awsAccountId }}
                 IMAGE_REPOSITORY: $(imageRepository)
                 IMAGE_TAG: $(imageTag)
               inputs:
@@ -281,6 +280,12 @@ stages:
                   CREATE_NS_ARGS=()
                   if [[ "${HELM_CREATE_NAMESPACE}" == "True" || "${HELM_CREATE_NAMESPACE}" == "true" ]]; then
                     CREATE_NS_ARGS+=(--create-namespace)
+                  fi
+
+                  AWS_ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+                  if [[ -z "${AWS_ACCOUNT_ID}" || "${AWS_ACCOUNT_ID}" == "None" ]]; then
+                    echo "##vso[task.logissue type=error]Could not resolve AWS account id from sts (agent ambient credentials)"
+                    exit 1
                   fi
 
                   REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
