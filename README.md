@@ -1,26 +1,15 @@
 # Pipeline Templates
 
-Templates YAML reutilizáveis para Azure DevOps. Este repositório fica no GitHub e é referenciado por pipelines em outros repositórios via `resources.repositories` + `extends`.
+Templates YAML reutilizáveis para Azure DevOps (GitHub → `extends`).
 
-## O que existe hoje
+## Conteúdo
 
-| Template | Caminho | Escopo |
-|----------|---------|--------|
-| CI .NET 10 | [`templates/dotnet/ci.yml`](templates/dotnet/ci.yml) | Restore, build, test; opcional ECR (BuildKit) e deploy Helm no Rancher |
-| Chart | [`charts/asa-app`](charts/asa-app) | Chart Helm genérico (`asa-app`) usado no stage Deploy |
+| Caminho | Escopo |
+|---------|--------|
+| [`templates/dotnet/ci.yml`](templates/dotnet/ci.yml) | CI → ECR → Helm (opcional) |
+| [`charts/app`](charts/app) | Chart mínimo (Deployment + Service) |
 
-**Ainda não inclui:** cache NuGet, quality gates (Sonar etc.), assinatura Cosign.
-
-## Pré-requisito
-
-No Azure DevOps, crie uma **service connection** do tipo GitHub com acesso a este repositório. No exemplo usamos o nome `github-diegofernandes-dev` — ajuste se o seu for diferente.
-
-Para `buildImage` / `deployEnabled`, o agent pool (default `PG-AWS-EKS`) precisa de:
-
-- BuildKit (`buildctl` + `crane`) e credenciais AWS (ECR)
-- `helm` + `kubectl` com RBAC no namespace de destino (ex. `proving-ground-app`)
-
-## Como consumir
+## Consumo
 
 ```yaml
 trigger:
@@ -38,41 +27,23 @@ extends:
   template: templates/dotnet/ci.yml@templates
   parameters:
     solution: '**/*.sln'
-    buildConfiguration: 'Release'
     buildImage: true
     ecrRepository: 'my-api'
     deployEnabled: true
-    helmReleaseName: 'proving-ground-app'
+    helmReleaseName: 'sample-api'
     helmNamespace: 'proving-ground-app'
 ```
 
-Triggers (`trigger` / `pr`) ficam no pipeline consumidor, não no template.
+Pool `PG-AWS-EKS`: BuildKit (`buildctl`/`crane`) + AWS/ECR + `helm`/`kubectl`.
 
-## Parâmetros — `templates/dotnet/ci.yml`
+## Parâmetros principais
 
 | Parâmetro | Default | Descrição |
 |-----------|---------|-----------|
-| `solution` | `'**/*.sln'` | Caminho do `.sln` ou `.csproj` |
-| `buildConfiguration` | `'Release'` | Configuração MSBuild |
-| `vmImage` | `'ubuntu-latest'` | Imagem do agent Microsoft-hosted (stage CI) |
-| `dotnetVersion` | `'10.x'` | Versão do SDK .NET |
-| `additionalSdkVersions` | `[]` | SDKs extras (ex. `['8.x']`) se o TFM for mais antigo |
-| `buildImage` | `false` | Stage Container (build + push ECR) |
-| `containerPool` | `'PG-AWS-EKS'` | Pool self-hosted (BuildKit + Helm) |
-| `awsAccountId` | `'448003890252'` | Conta AWS do registry ECR |
-| `awsRegion` | `'us-east-1'` | Região do ECR |
-| `ecrRepository` | `''` | Nome do repositório ECR |
-| `dockerfile` | `'Dockerfile'` | Caminho do Dockerfile |
-| `dockerContext` | `'.'` | Contexto do build |
-| `deployEnabled` | `false` | Stage Deploy (Helm); requer `buildImage: true` |
-| `helmReleaseName` | `'proving-ground-app'` | Release Helm |
-| `helmNamespace` | `'proving-ground-app'` | Namespace no Rancher |
-| `helmChartPath` | `'charts/asa-app'` | Chart no repo de templates |
-| `helmTimeout` | `'5m'` | Timeout do `--wait` |
-| `helmCreateNamespace` | `true` | Passa `--create-namespace` |
-
-Fluxo: CI (hosted) → Container (ECR) → Deploy (`helm upgrade --install` com `image.repository` + `image.digest`).
-
-## Evolução futura
-
-Versionamento por tags (`refs/tags/v1`), quality gates e assinatura de imagem.
+| `buildImage` | `false` | Build/push ECR |
+| `deployEnabled` | `false` | Helm deploy (requer `buildImage`) |
+| `ecrRepository` | `''` | Repo ECR |
+| `containerPool` | `PG-AWS-EKS` | Agent self-hosted |
+| `helmReleaseName` | `sample-api` | Release |
+| `helmNamespace` | `proving-ground-app` | Namespace |
+| `helmChartPath` | `charts/app` | Chart no repo de templates |

@@ -1,5 +1,3 @@
-# Exemplo: CI .NET 10 + imagem ECR + deploy Helm no Rancher (PG-AWS-EKS).
-
 trigger:
   - main
 
@@ -8,21 +6,16 @@ resources:
     - repository: templates
       type: github
       name: diegofernandes-dev/pipeline-templates
-      endpoint: github-diegofernandes-dev # service connection GitHub no Azure DevOps
+      endpoint: github-diegofernandes-dev
       ref: refs/heads/main
 
 extends:
   template: templates/dotnet/ci.yml@templates
   parameters:
     solution: '**/*.sln'
-    buildConfiguration: 'Release'
-    # additionalSdkVersions: ['8.x']  # se o app/testes forem TFM mais antigo (ex. net8.0)
     buildImage: true
     containerPool: 'PG-AWS-EKS'
     ecrRepository: 'my-api'
     deployEnabled: true
-    helmReleaseName: 'proving-ground-app'
+    helmReleaseName: 'sample-api'
     helmNamespace: 'proving-ground-app'
-    # awsAccountId: '448003890252'
-    # awsRegion: 'us-east-1'
-    # dockerfile: 'Dockerfile'
