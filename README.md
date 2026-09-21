@@ -66,7 +66,9 @@ Só CI (ex.: PR): `deployEnvironments: []` (default) — sem Container/Deploy.
 | Namespace | `asa-<applicationName>` (mesmo nome em cada cluster; sem sufixo) |
 | Conta AWS / registry ECR | `aws sts get-caller-identity` no agent |
 | Helm chart | fixo: `charts/app` |
-| Dockerfile | fixo: `docker/dotnet/Dockerfile` (`dotnetProject` = csproj a publicar) |
+| Dockerfile | fixo: `docker/dotnet/Dockerfile` (runtime-only) |
+| Imagem base | `mcr.microsoft.com/dotnet/aspnet:<tag>` — tag do `TargetFramework` do `dotnetProject` (`net8.0` → `8.0`) |
+| Conteúdo da imagem | `dotnet publish` no CI → artifact `app` → Container empacota (sem rebuild no Docker) |
 
 Chart `charts/app`: resources, porta `http`, startup/liveness/readiness em `/health-check`, HPA, PDB (`maxUnavailable: 1`), ServiceAccount dedicado, securityContext (non-root, seccomp, drop caps, read-only root + `/tmp`), HTTPRoute. Build `linux/amd64`. Helm `--atomic --wait`.
 
@@ -101,7 +103,8 @@ Pool `PG-AWS-EKS`: BuildKit + AWS/ECR + `helm`/`kubectl`.
 | Parâmetro | Default | Descrição |
 |-----------|---------|-----------|
 | `applicationName` | `''` | Identidade (ECR + release + namespace); obrigatório se houver deploy |
-| `dotnetProject` | `''` | Path do `.csproj` publicado na imagem; obrigatório se houver Container |
+| `dotnetProject` | `''` | Path do `.csproj` a publicar; TFM define a tag aspnet; obrigatório se houver Container |
+| `dotnetVersion` | `10.x` | SDK do agent CI (`UseDotNet`); independente do TFM da imagem |
 | `deployEnvironments` | `[]` | Ambientes + VGs; vazio = só CI |
 | `exposeAsaComBr` | `false` | Hostname legado `.d.asa.com.br` + annotation ExternalDNS |
 | `containerPool` | `PG-AWS-EKS` | Agent self-hosted |

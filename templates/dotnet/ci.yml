@@ -114,24 +114,89 @@ stages:
               arguments: --configuration ${{ parameters.buildConfiguration }} --no-build --logger trx
               publishTestResults: true
 
+          - ${{ if gt(length(parameters.deployEnvironments), 0) }}:
+            - task: Bash@3
+              name: publishApp
+              displayName: Publish app and resolve aspnet tag
+              env:
+                DOTNET_PROJECT: ${{ parameters.dotnetProject }}
+                BUILD_CONFIGURATION: ${{ parameters.buildConfiguration }}
+              inputs:
+                targetType: inline
+                script: |
+                  set -Eeuo pipefail
+
+                  if [[ -z "${DOTNET_PROJECT:-}" ]]; then
+                    echo "##vso[task.logissue type=error]dotnetProject is required when deployEnvironments is set"
+                    exit 1
+                  fi
+
+                  if [[ ! -f "${DOTNET_PROJECT}" ]]; then
+                    echo "##vso[task.logissue type=error]dotnetProject not found: ${DOTNET_PROJECT}"
+                    exit 1
+                  fi
+
+                  TFM="$(sed -n 's/.*<TargetFramework>\([^<]*\)<\/TargetFramework>.*/\1/p' "${DOTNET_PROJECT}" | head -1)"
+                  if [[ -z "${TFM}" ]]; then
+                    TFMS="$(sed -n 's/.*<TargetFrameworks>\([^<]*\)<\/TargetFrameworks>.*/\1/p' "${DOTNET_PROJECT}" | head -1)"
+                    TFM="$(printf '%s\n' "${TFMS}" | tr ';' '\n' | grep -E '^net[0-9]' | head -1 || true)"
+                  fi
+
+                  if [[ ! "${TFM}" =~ ^net([0-9]+)\.([0-9]+)$ ]]; then
+                    echo "##vso[task.logissue type=error]Could not resolve netN.M TargetFramework from ${DOTNET_PROJECT} (got: '${TFM:-}')"
+                    exit 1
+                  fi
+
+                  ASPNET_TAG="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+                  APP_DLL="$(basename "${DOTNET_PROJECT}" .csproj).dll"
+                  PUBLISH_DIR="${BUILD_ARTIFACTSTAGINGDIRECTORY}/app"
+
+                  echo "##[group]dotnet publish ${DOTNET_PROJECT} → ${PUBLISH_DIR}"
+                  dotnet publish "${DOTNET_PROJECT}" \
+                    --configuration "${BUILD_CONFIGURATION}" \
+                    --no-build \
+                    -o "${PUBLISH_DIR}"
+                  echo "##[endgroup]"
+
+                  if [[ ! -f "${PUBLISH_DIR}/${APP_DLL}" ]]; then
+                    echo "##vso[task.logissue type=error]Published output missing ${APP_DLL} under ${PUBLISH_DIR}"
+                    ls -la "${PUBLISH_DIR}" || true
+                    exit 1
+                  fi
+
+                  echo "##vso[task.setvariable variable=aspnetTag;isOutput=true]${ASPNET_TAG}"
+                  echo "##vso[task.setvariable variable=appDll;isOutput=true]${APP_DLL}"
+                  echo "TFM=${TFM} aspnetTag=${ASPNET_TAG} appDll=${APP_DLL}"
+
+            - task: PublishPipelineArtifact@1
+              displayName: Publish app artifact
+              inputs:
+                targetPath: $(Build.ArtifactStagingDirectory)/app
+                artifact: app
+
   - ${{ if gt(length(parameters.deployEnvironments), 0) }}:
     - stage: Container
       displayName: Docker Build and Push
       dependsOn: CI
       condition: succeeded()
+      variables:
+        aspnetTag: $[stageDependencies.CI.BuildAndTest.outputs['publishApp.aspnetTag']]
+        appDll: $[stageDependencies.CI.BuildAndTest.outputs['publishApp.appDll']]
       jobs:
         - job: DockerBuildPush
           displayName: Build and push image to ECR
           pool:
             name: ${{ parameters.containerPool }}
           steps:
-            - checkout: self
-              displayName: Checkout application
-              path: app
-
             - checkout: templates
               displayName: Checkout platform Dockerfile
               path: pipeline-templates
+
+            - task: DownloadPipelineArtifact@2
+              displayName: Download app artifact
+              inputs:
+                artifact: app
+                path: $(Pipeline.Workspace)/app
 
             - task: Bash@3
               name: dockerBuildPush
@@ -140,7 +205,8 @@ stages:
                 AWS_REGION: ${{ parameters.awsRegion }}
                 AWS_DEFAULT_REGION: ${{ parameters.awsRegion }}
                 APPLICATION_NAME: ${{ parameters.applicationName }}
-                DOTNET_PROJECT: ${{ parameters.dotnetProject }}
+                ASPNET_TAG: $(aspnetTag)
+                APP_DLL: $(appDll)
                 IMAGE_TAG: $(Build.SourceVersion)
                 # PG-AWS-EKS (tenv3) usa BuildKit sidecar + crane — sem Docker Engine.
                 BUILDKIT_HOST: unix:///run/buildkit/buildkitd.sock
@@ -156,15 +222,21 @@ stages:
                     exit 1
                   fi
 
-                  if [[ -z "${DOTNET_PROJECT:-}" ]]; then
-                    echo "##vso[task.logissue type=error]dotnetProject is required when deployEnvironments is set"
+                  if [[ -z "${ASPNET_TAG:-}" ]]; then
+                    echo "##vso[task.logissue type=error]aspnetTag missing from CI outputs"
+                    exit 1
+                  fi
+
+                  if [[ -z "${APP_DLL:-}" ]]; then
+                    echo "##vso[task.logissue type=error]appDll missing from CI outputs"
                     exit 1
                   fi
 
                   WORKSPACE="${PIPELINE_WORKSPACE:-${AGENT_BUILDDIRECTORY}}"
                   APP_CONTEXT="${WORKSPACE}/app"
-                  if [[ ! -f "${APP_CONTEXT}/${DOTNET_PROJECT}" ]]; then
-                    echo "##vso[task.logissue type=error]dotnetProject not found in app context: ${APP_CONTEXT}/${DOTNET_PROJECT}"
+                  if [[ ! -f "${APP_CONTEXT}/${APP_DLL}" ]]; then
+                    echo "##vso[task.logissue type=error]Published DLL not found: ${APP_CONTEXT}/${APP_DLL}"
+                    ls -la "${APP_CONTEXT}" || true
                     exit 1
                   fi
 
@@ -174,6 +246,7 @@ stages:
                     exit 1
                   fi
 
+                  RUNTIME_IMAGE="mcr.microsoft.com/dotnet/aspnet:${ASPNET_TAG}"
                   ECR_REPOSITORY="${APPLICATION_NAME}"
 
                   if ! command -v buildctl >/dev/null || ! command -v crane >/dev/null; then
@@ -208,13 +281,14 @@ stages:
                   fi
                   echo "##[endgroup]"
 
-                  echo "##[group]buildctl build+push ${IMAGE_REF} (PROJECT=${DOTNET_PROJECT})"
+                  echo "##[group]buildctl build+push ${IMAGE_REF} (RUNTIME_IMAGE=${RUNTIME_IMAGE} APP_DLL=${APP_DLL})"
                   buildctl build \
                     --frontend dockerfile.v0 \
                     --local context="${APP_CONTEXT}" \
                     --local dockerfile="${DOCKERFILE_DIR}" \
                     --opt filename=Dockerfile \
-                    --opt "build-arg:PROJECT=${DOTNET_PROJECT}" \
+                    --opt "build-arg:RUNTIME_IMAGE=${RUNTIME_IMAGE}" \
+                    --opt "build-arg:APP_DLL=${APP_DLL}" \
                     --opt platform=linux/amd64 \
                     --output "type=image,name=${IMAGE_REF},push=true"
                   echo "##[endgroup]"

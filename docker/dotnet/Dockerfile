@@ -1,25 +1,15 @@
-# Platform Dockerfile for .NET web/API apps.
-# Build context = application repository root.
-# Required build-arg: PROJECT (path to .csproj, e.g. src/Sample.Api/Sample.Api.csproj)
-ARG SDK_IMAGE=mcr.microsoft.com/dotnet/sdk:8.0
+# Platform runtime image for .NET web/API apps.
+# Build context = CI publish output (not the application repository).
+# Pipeline sets RUNTIME_IMAGE from the project TFM and APP_DLL from the csproj name.
 ARG RUNTIME_IMAGE=mcr.microsoft.com/dotnet/aspnet:8.0
+FROM ${RUNTIME_IMAGE}
 
-FROM ${SDK_IMAGE} AS build
-ARG PROJECT
-WORKDIR /src
-
-COPY . .
-RUN test -n "${PROJECT}" && test -f "${PROJECT}"
-RUN dotnet restore "${PROJECT}"
-RUN dotnet publish "${PROJECT}" -c Release -o /app/publish --no-restore
-
-FROM ${RUNTIME_IMAGE} AS final
-ARG PROJECT
+ARG APP_DLL
 WORKDIR /app
 
-COPY --from=build /app/publish .
+COPY . .
 
-RUN APP_DLL="$(basename "${PROJECT}" .csproj).dll" \
+RUN test -n "${APP_DLL}" \
   && test -f "/app/${APP_DLL}" \
   && printf '#!/bin/sh\nexec dotnet /app/%s "$@"\n' "${APP_DLL}" > /app/start.sh \
   && chmod +x /app/start.sh \
