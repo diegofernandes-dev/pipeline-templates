@@ -1,0 +1,58 @@
+# Template de CI para aplicações .NET 10 (restore → build → test).
+# Consumir via extends a partir de outro repositório.
+parameters:
+  - name: solution
+    displayName: Caminho do .sln ou .csproj
+    type: string
+    default: '**/*.sln'
+
+  - name: buildConfiguration
+    displayName: Configuração de build
+    type: string
+    default: 'Release'
+
+  - name: vmImage
+    displayName: Imagem do agent Microsoft-hosted
+    type: string
+    default: 'ubuntu-latest'
+
+  - name: dotnetVersion
+    displayName: Versão do SDK .NET
+    type: string
+    default: '10.x'
+
+stages:
+  - stage: CI
+    displayName: Build and Test
+    jobs:
+      - job: BuildAndTest
+        displayName: Restore, Build and Test
+        pool:
+          vmImage: ${{ parameters.vmImage }}
+        steps:
+          - task: UseDotNet@2
+            displayName: Install .NET SDK ${{ parameters.dotnetVersion }}
+            inputs:
+              packageType: sdk
+              version: ${{ parameters.dotnetVersion }}
+
+          - task: DotNetCoreCLI@2
+            displayName: Restore
+            inputs:
+              command: restore
+              projects: ${{ parameters.solution }}
+
+          - task: DotNetCoreCLI@2
+            displayName: Build
+            inputs:
+              command: build
+              projects: ${{ parameters.solution }}
+              arguments: --configuration ${{ parameters.buildConfiguration }} --no-restore
+
+          - task: DotNetCoreCLI@2
+            displayName: Test
+            inputs:
+              command: test
+              projects: ${{ parameters.solution }}
+              arguments: --configuration ${{ parameters.buildConfiguration }} --no-build --logger trx
+              publishTestResults: true

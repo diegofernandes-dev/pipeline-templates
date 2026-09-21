@@ -1,0 +1,19 @@
+# Exemplo mínimo de consumo do template CI .NET 10.
+# Copie para o repositório consumidor e ajuste solution / service connection.
+
+trigger:
+  - main
+
+resources:
+  repositories:
+    - repository: templates
+      type: github
+      name: diegofernandes-dev/pipeline-templates
+      endpoint: GitHub # nome da service connection GitHub no Azure DevOps
+      ref: refs/heads/main
+
+extends:
+  template: templates/dotnet/ci.yml@templates
+  parameters:
+    solution: '**/*.sln'
+    buildConfiguration: 'Release'
