@@ -14,7 +14,7 @@ Templates YAML reutilizáveis para Azure DevOps. Este repositório fica no GitHu
 
 No Azure DevOps, crie uma **service connection** do tipo GitHub com acesso a este repositório. No exemplo usamos o nome `github-diegofernandes-dev` — ajuste se o seu for diferente.
 
-Para `buildImage: true`, o agent pool (default `PG-AWS-EKS`) precisa de Docker e credenciais AWS com acesso ao ECR.
+Para `buildImage: true`, o agent pool (default `PG-AWS-EKS`) precisa de **BuildKit** (`buildctl` + `crane`) e credenciais AWS com acesso ao ECR.
 
 ## Como consumir
 
