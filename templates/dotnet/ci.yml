@@ -250,6 +250,9 @@ stages:
                 HELM_CHART_PATH: ${{ parameters.helmChartPath }}
                 HELM_TIMEOUT: ${{ parameters.helmTimeout }}
                 HELM_CREATE_NAMESPACE: ${{ parameters.helmCreateNamespace }}
+                AWS_REGION: ${{ parameters.awsRegion }}
+                AWS_DEFAULT_REGION: ${{ parameters.awsRegion }}
+                AWS_ACCOUNT_ID: ${{ parameters.awsAccountId }}
                 IMAGE_REPOSITORY: $(imageRepository)
                 IMAGE_TAG: $(imageTag)
               inputs:
@@ -275,12 +278,25 @@ stages:
                     CREATE_NS_ARGS+=(--create-namespace)
                   fi
 
+                  REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+                  PULL_SECRET="ecr-pull"
+
+                  echo "##[group]ecr imagePullSecret (${PULL_SECRET})"
+                  ECR_PASS="$(aws ecr get-login-password --region "${AWS_REGION}")"
+                  kubectl -n "${HELM_NAMESPACE}" create secret docker-registry "${PULL_SECRET}" \
+                    --docker-server="${REGISTRY}" \
+                    --docker-username=AWS \
+                    --docker-password="${ECR_PASS}" \
+                    --dry-run=client -o yaml | kubectl apply -f -
+                  echo "##[endgroup]"
+
                   echo "##[group]helm upgrade ${HELM_RELEASE} → ${IMAGE_REPOSITORY}:${IMAGE_TAG}"
                   helm upgrade --install "${HELM_RELEASE}" "${CHART_DIR}" \
                     --namespace "${HELM_NAMESPACE}" \
                     "${CREATE_NS_ARGS[@]}" \
                     --set-string "image.repository=${IMAGE_REPOSITORY}" \
                     --set-string "image.tag=${IMAGE_TAG}" \
+                    --set-string "imagePullSecrets[0].name=${PULL_SECRET}" \
                     --wait \
                     --timeout "${HELM_TIMEOUT}"
                   echo "##[endgroup]"
