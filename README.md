@@ -65,7 +65,7 @@ Só CI (ex.: PR): `deployEnvironments: []` (default) — sem Container/Deploy.
 | Conta AWS / registry ECR | `aws sts get-caller-identity` no agent |
 | Helm chart | fixo: `charts/app` |
 
-Chart `charts/app`: resources, porta `http`, startup/liveness/readiness em `/health-check`, HPA, PDB (`maxUnavailable: 1`), ServiceAccount dedicado, securityContext (non-root, read-only root + `/tmp`), HTTPRoute. Build `linux/amd64`. Helm `--atomic --wait`.
+Chart `charts/app`: resources, porta `http`, startup/liveness/readiness em `/health-check`, HPA, PDB (`maxUnavailable: 1`), ServiceAccount dedicado, securityContext (seccomp, drop caps, read-only root + `/tmp`; `runAsNonRoot` off até a imagem definir USER), HTTPRoute. Build `linux/amd64`. Helm `--atomic --wait`.
 
 NetworkPolicy **não** entra no baseline lab: Rancher Desktop sem CNI com enforcement de NetworkPolicy evidenciado.
 
