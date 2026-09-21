@@ -1,4 +1,4 @@
-# Template de CI para aplicações .NET 10 (restore → build → test).
+# Template de CI para aplicações .NET 10 (restore → build → test → imagem ECR).
 # Consumir via extends a partir de outro repositório.
 parameters:
   - name: solution
@@ -12,7 +12,7 @@ parameters:
     default: 'Release'
 
   - name: vmImage
-    displayName: Imagem do agent Microsoft-hosted
+    displayName: Imagem do agent Microsoft-hosted (stage CI)
     type: string
     default: 'ubuntu-latest'
 
@@ -27,6 +27,41 @@ parameters:
     displayName: SDKs .NET adicionais
     type: object
     default: []
+
+  - name: buildImage
+    displayName: Build e push da imagem Docker para o ECR
+    type: boolean
+    default: false
+
+  - name: containerPool
+    displayName: Agent pool com Docker + acesso ao ECR
+    type: string
+    default: 'PG-AWS-EKS'
+
+  - name: awsAccountId
+    displayName: Conta AWS do registry ECR
+    type: string
+    default: '448003890252'
+
+  - name: awsRegion
+    displayName: Região do ECR
+    type: string
+    default: 'us-east-1'
+
+  - name: ecrRepository
+    displayName: Nome do repositório ECR (ex. sample-api)
+    type: string
+    default: ''
+
+  - name: dockerfile
+    displayName: Caminho do Dockerfile
+    type: string
+    default: 'Dockerfile'
+
+  - name: dockerContext
+    displayName: Contexto do docker build
+    type: string
+    default: '.'
 
 stages:
   - stage: CI
@@ -70,3 +105,76 @@ stages:
               projects: ${{ parameters.solution }}
               arguments: --configuration ${{ parameters.buildConfiguration }} --no-build --logger trx
               publishTestResults: true
+
+  - ${{ if eq(parameters.buildImage, true) }}:
+    - stage: Container
+      displayName: Docker Build and Push
+      dependsOn: CI
+      condition: succeeded()
+      jobs:
+        - job: DockerBuildPush
+          displayName: Build and push image to ECR
+          pool:
+            name: ${{ parameters.containerPool }}
+          steps:
+            - checkout: self
+
+            - task: Bash@3
+              name: dockerBuildPush
+              displayName: ECR login, docker build and push
+              env:
+                AWS_REGION: ${{ parameters.awsRegion }}
+                AWS_DEFAULT_REGION: ${{ parameters.awsRegion }}
+                AWS_ACCOUNT_ID: ${{ parameters.awsAccountId }}
+                ECR_REPOSITORY: ${{ parameters.ecrRepository }}
+                DOCKERFILE: ${{ parameters.dockerfile }}
+                DOCKER_CONTEXT: ${{ parameters.dockerContext }}
+                IMAGE_TAG: $(Build.SourceVersion)
+              inputs:
+                targetType: inline
+                script: |
+                  set -Eeuo pipefail
+                  cd "${BUILD_SOURCESDIRECTORY}"
+
+                  if [[ -z "${ECR_REPOSITORY:-}" ]]; then
+                    echo "##vso[task.logissue type=error]ecrRepository is required when buildImage=true"
+                    exit 1
+                  fi
+
+                  if [[ ! -f "${DOCKERFILE}" ]]; then
+                    echo "##vso[task.logissue type=error]Dockerfile not found: ${DOCKERFILE}"
+                    exit 1
+                  fi
+
+                  echo "##[group]aws caller identity (ambient credentials on agent)"
+                  aws sts get-caller-identity
+                  echo "##[endgroup]"
+
+                  REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+                  IMAGE_REF="${REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+
+                  echo "##[group]ecr login ${REGISTRY}"
+                  aws ecr get-login-password --region "${AWS_REGION}" \
+                    | docker login --username AWS --password-stdin "${REGISTRY}"
+                  echo "##[endgroup]"
+
+                  echo "##[group]ensure ecr repository ${ECR_REPOSITORY}"
+                  if ! aws ecr describe-repositories --repository-names "${ECR_REPOSITORY}" --region "${AWS_REGION}" >/dev/null 2>&1; then
+                    aws ecr create-repository --repository-name "${ECR_REPOSITORY}" --region "${AWS_REGION}" >/dev/null
+                    echo "Created repository ${ECR_REPOSITORY}"
+                  else
+                    echo "Repository ${ECR_REPOSITORY} already exists"
+                  fi
+                  echo "##[endgroup]"
+
+                  echo "##[group]docker build ${IMAGE_REF}"
+                  docker build -f "${DOCKERFILE}" -t "${IMAGE_REF}" "${DOCKER_CONTEXT}"
+                  echo "##[endgroup]"
+
+                  echo "##[group]docker push ${IMAGE_REF}"
+                  docker push "${IMAGE_REF}"
+                  echo "##[endgroup]"
+
+                  echo "##vso[task.setvariable variable=imageRef;isOutput=true]${IMAGE_REF}"
+                  echo "##vso[task.setvariable variable=imageTag;isOutput=true]${IMAGE_TAG}"
+                  echo "Pushed ${IMAGE_REF}"

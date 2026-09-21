@@ -1,5 +1,5 @@
-# Exemplo mínimo de consumo do template CI .NET 10.
-# Copie para o repositório consumidor e ajuste solution / service connection.
+# Exemplo de consumo do template CI .NET 10 (+ imagem ECR).
+# Copie para o repositório consumidor e ajuste solution / ECR / service connection.
 
 trigger:
   - main
@@ -17,4 +17,10 @@ extends:
   parameters:
     solution: '**/*.sln'
     buildConfiguration: 'Release'
-    # additionalSdkVersions: ['8.x']  # descomente se o app/testes forem TFM mais antigo (ex. net8.0)
+    # additionalSdkVersions: ['8.x']  # se o app/testes forem TFM mais antigo (ex. net8.0)
+    buildImage: true
+    containerPool: 'PG-AWS-EKS'
+    ecrRepository: 'my-api'
+    # awsAccountId: '448003890252'
+    # awsRegion: 'us-east-1'
+    # dockerfile: 'Dockerfile'

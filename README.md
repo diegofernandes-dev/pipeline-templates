@@ -6,13 +6,15 @@ Templates YAML reutilizáveis para Azure DevOps. Este repositório fica no GitHu
 
 | Template | Caminho | Escopo |
 |----------|---------|--------|
-| CI .NET 10 | [`templates/dotnet/ci.yml`](templates/dotnet/ci.yml) | Restore, build e test |
+| CI .NET 10 | [`templates/dotnet/ci.yml`](templates/dotnet/ci.yml) | Restore, build, test; opcionalmente build/push de imagem no ECR |
 
-**Ainda não inclui:** publish de artefatos, deploy, cache NuGet, quality gates (Sonar etc.).
+**Ainda não inclui:** deploy, cache NuGet, quality gates (Sonar etc.), assinatura Cosign.
 
 ## Pré-requisito
 
 No Azure DevOps, crie uma **service connection** do tipo GitHub com acesso a este repositório. No exemplo usamos o nome `github-diegofernandes-dev` — ajuste se o seu for diferente.
+
+Para `buildImage: true`, o agent pool (default `PG-AWS-EKS`) precisa de Docker e credenciais AWS com acesso ao ECR.
 
 ## Como consumir
 
@@ -37,6 +39,8 @@ extends:
   parameters:
     solution: '**/*.sln'
     buildConfiguration: 'Release'
+    buildImage: true
+    ecrRepository: 'my-api'
 ```
 
 Triggers (`trigger` / `pr`) ficam no pipeline consumidor, não no template.
@@ -47,10 +51,20 @@ Triggers (`trigger` / `pr`) ficam no pipeline consumidor, não no template.
 |-----------|---------|-----------|
 | `solution` | `'**/*.sln'` | Caminho do `.sln` ou `.csproj` |
 | `buildConfiguration` | `'Release'` | Configuração MSBuild |
-| `vmImage` | `'ubuntu-latest'` | Imagem do agent Microsoft-hosted |
+| `vmImage` | `'ubuntu-latest'` | Imagem do agent Microsoft-hosted (stage CI) |
 | `dotnetVersion` | `'10.x'` | Versão do SDK .NET |
 | `additionalSdkVersions` | `[]` | SDKs extras (ex. `['8.x']`) se o TFM for mais antigo (inclui AspNetCore) |
+| `buildImage` | `false` | Se `true`, executa stage Container (build + push ECR) |
+| `containerPool` | `'PG-AWS-EKS'` | Pool self-hosted com Docker + ECR |
+| `awsAccountId` | `'448003890252'` | Conta AWS do registry ECR |
+| `awsRegion` | `'us-east-1'` | Região do ECR |
+| `ecrRepository` | `''` | Nome do repositório ECR (obrigatório se `buildImage`) |
+| `dockerfile` | `'Dockerfile'` | Caminho do Dockerfile |
+| `dockerContext` | `'.'` | Contexto do `docker build` |
+
+Tag da imagem: `$(Build.SourceVersion)` (SHA do commit).  
+Referência: `{awsAccountId}.dkr.ecr.{awsRegion}.amazonaws.com/{ecrRepository}:{sha}`
 
 ## Evolução futura
 
-Próximas iterações previstas: publish de artefatos/containers, deploy, templates por steps/jobs, versionamento por tags (`refs/tags/v1`) e quality gates.
+Próximas iterações previstas: deploy, versionamento por tags (`refs/tags/v1`), quality gates e assinatura de imagem.
