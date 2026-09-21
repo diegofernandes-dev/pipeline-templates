@@ -17,4 +17,3 @@ extends:
     buildImage: true
     containerPool: 'PG-AWS-EKS'
     deployEnabled: true
-    helmNamespace: 'proving-ground-app'

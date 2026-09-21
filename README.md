@@ -30,7 +30,6 @@ extends:
     applicationName: sample-api
     buildImage: true
     deployEnabled: true
-    helmNamespace: proving-ground-app
 ```
 
 `applicationName` é a identidade única da aplicação. A plataforma deriva:
@@ -39,7 +38,8 @@ extends:
 |----------|--------|
 | ECR repository | `applicationName` |
 | Helm release | `applicationName` |
-| Conta AWS / registry ECR | `aws sts get-caller-identity` no agent (sem `awsAccountId` público) |
+| Namespace | `asa-<applicationName>` (cria/usa idempotente) |
+| Conta AWS / registry ECR | `aws sts get-caller-identity` no agent |
 
 Obrigatório quando `buildImage` ou `deployEnabled` é `true`.
 
@@ -49,8 +49,7 @@ Pool `PG-AWS-EKS`: BuildKit (`buildctl`/`crane`) + AWS/ECR + `helm`/`kubectl`. C
 
 | Parâmetro | Default | Descrição |
 |-----------|---------|-----------|
-| `applicationName` | `''` | Identidade da app (ECR + Helm release) |
+| `applicationName` | `''` | Identidade da app (ECR + release + namespace) |
 | `buildImage` | `false` | Build/push ECR |
 | `deployEnabled` | `false` | Helm deploy (requer `buildImage`) |
 | `containerPool` | `PG-AWS-EKS` | Agent self-hosted |
-| `helmNamespace` | `proving-ground-app` | Namespace (temporário até bootstrap self-service) |

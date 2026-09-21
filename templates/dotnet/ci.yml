@@ -28,7 +28,7 @@ parameters:
     type: object
     default: []
 
-  # Identidade única da aplicação. Deriva: ECR repository e Helm release.
+  # Identidade única da aplicação. Deriva: ECR repository, Helm release e namespace asa-<name>.
   - name: applicationName
     displayName: Nome da aplicação (identidade única)
     type: string
@@ -64,11 +64,6 @@ parameters:
     type: boolean
     default: false
 
-  - name: helmNamespace
-    displayName: Namespace Kubernetes do release
-    type: string
-    default: 'proving-ground-app'
-
   - name: helmChartPath
     displayName: Caminho do chart no repo de templates
     type: string
@@ -78,11 +73,6 @@ parameters:
     displayName: Timeout do helm upgrade --wait
     type: string
     default: '5m'
-
-  - name: helmCreateNamespace
-    displayName: Criar namespace se não existir
-    type: boolean
-    default: false
 
 stages:
   - stage: CI
@@ -244,10 +234,8 @@ stages:
               displayName: helm upgrade --install
               env:
                 APPLICATION_NAME: ${{ parameters.applicationName }}
-                HELM_NAMESPACE: ${{ parameters.helmNamespace }}
                 HELM_CHART_PATH: ${{ parameters.helmChartPath }}
                 HELM_TIMEOUT: ${{ parameters.helmTimeout }}
-                HELM_CREATE_NAMESPACE: ${{ parameters.helmCreateNamespace }}
                 AWS_REGION: ${{ parameters.awsRegion }}
                 AWS_DEFAULT_REGION: ${{ parameters.awsRegion }}
                 IMAGE_REPOSITORY: $(imageRepository)
@@ -263,6 +251,7 @@ stages:
                   fi
 
                   HELM_RELEASE="${APPLICATION_NAME}"
+                  HELM_NAMESPACE="asa-${APPLICATION_NAME}"
 
                   WORKSPACE="${PIPELINE_WORKSPACE:-${AGENT_BUILDDIRECTORY}}"
                   CHART_DIR="${WORKSPACE}/pipeline-templates/${HELM_CHART_PATH}"
@@ -277,10 +266,9 @@ stages:
                     exit 1
                   fi
 
-                  CREATE_NS_ARGS=()
-                  if [[ "${HELM_CREATE_NAMESPACE}" == "True" || "${HELM_CREATE_NAMESPACE}" == "true" ]]; then
-                    CREATE_NS_ARGS+=(--create-namespace)
-                  fi
+                  echo "##[group]ensure namespace ${HELM_NAMESPACE}"
+                  kubectl create namespace "${HELM_NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
+                  echo "##[endgroup]"
 
                   AWS_ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
                   if [[ -z "${AWS_ACCOUNT_ID}" || "${AWS_ACCOUNT_ID}" == "None" ]]; then
@@ -303,7 +291,6 @@ stages:
                   echo "##[group]helm upgrade ${HELM_RELEASE} → ${IMAGE_REPOSITORY}:${IMAGE_TAG}"
                   helm upgrade --install "${HELM_RELEASE}" "${CHART_DIR}" \
                     --namespace "${HELM_NAMESPACE}" \
-                    "${CREATE_NS_ARGS[@]}" \
                     --set-string "image.repository=${IMAGE_REPOSITORY}" \
                     --set-string "image.tag=${IMAGE_TAG}" \
                     --set-string "imagePullSecrets[0].name=${PULL_SECRET}" \
