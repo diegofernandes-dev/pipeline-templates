@@ -10,6 +10,7 @@ Templates YAML reutilizáveis para Azure DevOps (GitHub → `extends`).
 | [`templates/dotnet/helm-deploy.yml`](templates/dotnet/helm-deploy.yml) | Stage Helm por Environment |
 | [`docker/dotnet/Dockerfile`](docker/dotnet/Dockerfile) | Dockerfile plataforma (.NET web/API) |
 | [`charts/app`](charts/app) | Chart da plataforma (Deployment, Service, HPA, PDB, SA, HTTPRoute) |
+| [`tests/chart-invariants.sh`](tests/chart-invariants.sh) | Testes mínimos do chart |
 
 ## Consumo
 
@@ -37,22 +38,9 @@ extends:
       - name: homolog
         variableGroups:
           - sample-api-homolog
-          - shared-platform-homolog
       - name: production
         variableGroups:
           - sample-api-production
-```
-
-Só HML → PRD:
-
-```yaml
-deployEnvironments:
-  - name: homolog
-    variableGroups:
-      - sample-api-homolog
-  - name: production
-    variableGroups:
-      - sample-api-production
 ```
 
 Só CI (ex.: PR): `deployEnvironments: []` (default) — sem Container/Deploy.
@@ -62,49 +50,65 @@ Só CI (ex.: PR): `deployEnvironments: []` (default) — sem Container/Deploy.
 | Derivado | Regra |
 |----------|--------|
 | ECR repository | `applicationName` |
-| Helm release | `applicationName` |
+| Helm release / Service / HTTPRoute | `applicationName` |
 | Namespace | `asa-<applicationName>` (mesmo nome em cada cluster; sem sufixo) |
 | Conta AWS / registry ECR | `aws sts get-caller-identity` no agent |
 | Helm chart | fixo: `charts/app` |
 | Dockerfile | fixo: `docker/dotnet/Dockerfile` (runtime-only) |
-| Imagem base | `mcr.microsoft.com/dotnet/aspnet:<tag>` — tag do `TargetFramework` do `dotnetProject` (`net8.0` → `8.0`) |
-| Conteúdo da imagem | `dotnet publish` no CI → artifact `app` → Container empacota (sem rebuild no Docker) |
+| Imagem base | `mcr.microsoft.com/dotnet/aspnet:<tag>` — TFM avaliado via MSBuild (`net8.0` → `8.0`) |
+| Conteúdo da imagem | `dotnet publish` no CI → artifact `app` → Container empacota |
 
-Chart `charts/app`: resources, porta `http`, startup/liveness/readiness em `/health-check`, HPA, PDB (`maxUnavailable: 1`), ServiceAccount dedicado, securityContext (non-root, seccomp, drop caps, read-only root + `/tmp`), HTTPRoute. Build `linux/amd64`. Helm `--atomic --wait`.
+### Chart baseline
 
-NetworkPolicy **não** entra no baseline lab: Rancher Desktop sem CNI com enforcement de NetworkPolicy evidenciado.
+| Item | Valor |
+|------|--------|
+| Resources | request CPU `150m`, memory `256Mi`; limit memory `512Mi`; **sem** CPU limit |
+| Probes | contrato obrigatório `GET /health-check` (startup/liveness/readiness) |
+| HPA | CPU 70%; `minReplicas`/`maxReplicas` = política de disponibilidade (default lab 1/3) |
+| PDB | **off** por default (inútil com 1 réplica + maxUnavailable 1) |
+| Pull ECR | sem `imagePullSecret` — EKS via node/IRSA |
+| HTTPRoute | hostnames + Gateway derivados do Environment |
+| Security | non-root, seccomp, drop caps, read-only root + `/tmp` |
 
-### HTTPRoute / DNS por Environment
+Build `linux/amd64`. Helm `--reset-values --atomic --wait`.
 
-| Environment ADO | Hostname corp | Hostname legado (`exposeAsaComBr`) |
-|-----------------|---------------|-------------------------------------|
-| `develop` | `<app>.dev.asa.corp` | `<app>.d.asa.com.br` |
-| `homolog` | `<app>.hml.asa.corp` | `<app>.h.asa.com.br` |
-| `production` | `<app>.prd.asa.corp` | `<app>.p.asa.com.br` |
+### HTTPRoute / Gateway / DNS
 
-parentRefs: Gateway `d-asa-com-br-internal-gateway` em `asa-infra-nginx-gateway`.
+| Environment ADO | Hostname corp | Gateway | Hostname legado (`exposeAsaComBr`) |
+|-----------------|---------------|---------|-------------------------------------|
+| `develop` | `<app>.dev.asa.corp` | `d-asa-com-br-internal-gateway` | `<app>.d.asa.com.br` |
+| `homolog` | `<app>.hml.asa.corp` | `h-asa-com-br-internal-gateway` | `<app>.h.asa.com.br` |
+| `production` | `<app>.prd.asa.corp` | `p-asa-com-br-internal-gateway` | `<app>.p.asa.com.br` |
 
-No lab Rancher, sem Gateway/ExternalDNS, o HTTPRoute sobe; parent pode ficar não-Accepted e o DNS não é registrado de fato.
+Gateway namespace: `asa-infra-nginx-gateway`. DNS: ExternalDNS observa `HTTPRoute.spec.hostnames` (sem annotation duplicada).
 
-### Ambientes e Variable Groups
+### Environments vs target AWS/Kubernetes
 
-| Campo | Regra |
-|-------|--------|
-| `deployEnvironments[].name` | `develop` \| `homolog` \| `production` (Environment ADO) |
-| `deployEnvironments[].variableGroups` | Lista 0..N de Variable Groups daquele stage |
-| Ordem | Ordem da lista = ordem dos stages (mesma imagem/SHA) |
+Hoje o Environment ADO controla: **ordem de promoção**, **approvals**, **hostnames**, **Gateway**.
 
-Pré-requisito: Environments ADO criados no projeto. Approvals ficam na Environment (portal).
+O agent (`containerPool`) e o kube context / conta AWS ainda são os **ambientais do pool** (lab: mesmo Rancher + mesmas credenciais para develop/hml/prd). Não há engine de target: quando HML/PRD tiverem pools ou contexts distintos, isso entra via pool/credencial do Environment — não via parâmetros novos no template.
 
-Pool `PG-AWS-EKS`: BuildKit + AWS/ECR + `helm`/`kubectl`.
+### Variable Groups
+
+`deployEnvironments[].variableGroups` anexa Variable Groups ao stage Deploy. Uso concreto: secrets/config **do ambiente** quando existirem. Lista vazia é válida. Não há sistema genérico de ConfigMap/Secret no chart.
+
+### Lab (Rancher) — ECR pull
+
+O baseline **não** cria `ecr-pull`. Em cluster sem IAM de node para ECR (ex. Rancher), provisione o secret fora da plataforma e defina a variável de pipeline `ECR_PULL_SECRET` com o nome do secret.
 
 ## Parâmetros principais
 
 | Parâmetro | Default | Descrição |
 |-----------|---------|-----------|
-| `applicationName` | `''` | Identidade (ECR + release + namespace); obrigatório se houver deploy |
-| `dotnetProject` | `''` | Path do `.csproj` a publicar; TFM define a tag aspnet; obrigatório se houver Container |
-| `dotnetVersion` | `10.x` | SDK do agent CI (`UseDotNet`); independente do TFM da imagem |
+| `applicationName` | `''` | Identidade; obrigatório se houver deploy |
+| `dotnetProject` | `''` | `.csproj` a publicar; TFM → tag aspnet |
+| `dotnetVersion` | `10.x` | SDK do agent CI |
 | `deployEnvironments` | `[]` | Ambientes + VGs; vazio = só CI |
-| `exposeAsaComBr` | `false` | Hostname legado `.d.asa.com.br` + annotation ExternalDNS |
+| `exposeAsaComBr` | `false` | Hostname legado `.asa.com.br` em `spec.hostnames` |
 | `containerPool` | `PG-AWS-EKS` | Agent self-hosted |
+
+## Testes
+
+```bash
+./tests/chart-invariants.sh
+```

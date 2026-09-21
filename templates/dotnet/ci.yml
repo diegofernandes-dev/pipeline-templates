@@ -136,14 +136,14 @@ stages:
                     exit 1
                   fi
 
-                  TFM="$(sed -n 's/.*<TargetFramework>\([^<]*\)<\/TargetFramework>.*/\1/p' "${DOTNET_PROJECT}" | head -1)"
-                  if [[ -z "${TFM}" ]]; then
-                    TFMS="$(sed -n 's/.*<TargetFrameworks>\([^<]*\)<\/TargetFrameworks>.*/\1/p' "${DOTNET_PROJECT}" | head -1)"
+                  TFM="$(dotnet msbuild "${DOTNET_PROJECT}" -getProperty:TargetFramework -nologo 2>/dev/null | tr -d '\r' | tail -1 | tr -d '[:space:]')"
+                  if [[ -z "${TFM}" || "${TFM}" == *"error"* ]]; then
+                    TFMS="$(dotnet msbuild "${DOTNET_PROJECT}" -getProperty:TargetFrameworks -nologo 2>/dev/null | tr -d '\r' | tail -1 | tr -d '[:space:]')"
                     TFM="$(printf '%s\n' "${TFMS}" | tr ';' '\n' | grep -E '^net[0-9]' | head -1 || true)"
                   fi
 
                   if [[ ! "${TFM}" =~ ^net([0-9]+)\.([0-9]+)$ ]]; then
-                    echo "##vso[task.logissue type=error]Could not resolve netN.M TargetFramework from ${DOTNET_PROJECT} (got: '${TFM:-}')"
+                    echo "##vso[task.logissue type=error]Could not resolve netN.M TargetFramework from ${DOTNET_PROJECT} via MSBuild (got: '${TFM:-}')"
                     exit 1
                   fi
 

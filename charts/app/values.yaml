@@ -5,6 +5,7 @@ image:
   tag: latest
   pullPolicy: IfNotPresent
 
+# Empty on AWS/EKS (node/IRSA). Lab may set via --set imagePullSecrets[0].name=…
 imagePullSecrets: []
 
 serviceAccount:
@@ -15,14 +16,15 @@ serviceAccount:
 service:
   port: 8080
 
+# Baseline API .NET: CPU request only (no CPU limit — avoid artificial throttling).
 resources:
   requests:
-    cpu: 100m
+    cpu: 150m
     memory: 256Mi
   limits:
-    cpu: 500m
     memory: 512Mi
 
+# Platform contract: ASP.NET health endpoint at /health-check (startup/liveness/readiness).
 probes:
   path: /health-check
   initialDelaySeconds: 10
@@ -46,25 +48,23 @@ securityContext:
     drop:
       - ALL
 
+# Technical HPA baseline (CPU). min/max are availability policy — override per env if needed.
 autoscaling:
   enabled: true
   minReplicas: 1
   maxReplicas: 3
   targetCPUUtilizationPercentage: 70
 
+# Off by default: with minReplicas 1, maxUnavailable 1 allows 0 available pods.
+# Enable only when availability policy warrants it (typically minReplicas >= 2).
 pdb:
-  enabled: true
+  enabled: false
   maxUnavailable: 1
 
 httpRoute:
   enabled: true
   exposeAsaComBr: false
-  # develop | homolog | production — derives *.asa.corp / *.asa.com.br hostnames
+  # develop | homolog | production — derives hostnames + Gateway parentRef
   environment: develop
-  parentRefs:
-    - name: d-asa-com-br-internal-gateway
-      namespace: asa-infra-nginx-gateway
-      group: gateway.networking.k8s.io
-      kind: Gateway
   # Empty ⇒ derived from environment; non-empty overrides completely
   hostnames: []
