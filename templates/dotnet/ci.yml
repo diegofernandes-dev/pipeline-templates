@@ -21,9 +21,10 @@ parameters:
     type: string
     default: '10.x'
 
-  # Runtimes extras (ex.: ['8.x']) quando o TFM dos testes é mais antigo que o SDK.
-  - name: runtimeVersions
-    displayName: Runtimes .NET adicionais
+  # SDKs extras (ex.: ['8.x']) quando o TFM dos testes é mais antigo que o SDK principal.
+  # Preferir SDK (não só runtime) para incluir Microsoft.AspNetCore.App.
+  - name: additionalSdkVersions
+    displayName: SDKs .NET adicionais
     type: object
     default: []
 
@@ -42,12 +43,12 @@ stages:
               packageType: sdk
               version: ${{ parameters.dotnetVersion }}
 
-          - ${{ each runtime in parameters.runtimeVersions }}:
+          - ${{ each sdk in parameters.additionalSdkVersions }}:
             - task: UseDotNet@2
-              displayName: Install .NET Runtime ${{ runtime }}
+              displayName: Install .NET SDK ${{ sdk }}
               inputs:
-                packageType: runtime
-                version: ${{ runtime }}
+                packageType: sdk
+                version: ${{ sdk }}
 
           - task: DotNetCoreCLI@2
             displayName: Restore

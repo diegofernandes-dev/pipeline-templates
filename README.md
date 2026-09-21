@@ -49,7 +49,7 @@ Triggers (`trigger` / `pr`) ficam no pipeline consumidor, não no template.
 | `buildConfiguration` | `'Release'` | Configuração MSBuild |
 | `vmImage` | `'ubuntu-latest'` | Imagem do agent Microsoft-hosted |
 | `dotnetVersion` | `'10.x'` | Versão do SDK .NET |
-| `runtimeVersions` | `[]` | Runtimes extras (ex. `['8.x']`) se o TFM for mais antigo que o SDK |
+| `additionalSdkVersions` | `[]` | SDKs extras (ex. `['8.x']`) se o TFM for mais antigo (inclui AspNetCore) |
 
 ## Evolução futura
 

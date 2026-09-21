@@ -17,4 +17,4 @@ extends:
   parameters:
     solution: '**/*.sln'
     buildConfiguration: 'Release'
-    # runtimeVersions: ['8.x']  # descomente se o app/testes forem TFM mais antigo (ex. net8.0)
+    # additionalSdkVersions: ['8.x']  # descomente se o app/testes forem TFM mais antigo (ex. net8.0)
