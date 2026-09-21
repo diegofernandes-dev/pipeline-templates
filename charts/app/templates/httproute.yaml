@@ -5,6 +5,10 @@ metadata:
   name: {{ .Release.Name }}
   labels:
     app: {{ .Release.Name }}
+  {{- if .Values.httpRoute.exposeAsaComBr }}
+  annotations:
+    external-dns.alpha.kubernetes.io/hostname: {{ printf "%s.d.asa.com.br" .Release.Name | quote }}
+  {{- end }}
 spec:
   parentRefs:
     {{- toYaml .Values.httpRoute.parentRefs | nindent 4 }}
@@ -13,6 +17,9 @@ spec:
     {{- toYaml .Values.httpRoute.hostnames | nindent 4 }}
     {{- else }}
     - {{ printf "%s.dev.asa.corp" .Release.Name | quote }}
+    {{- if .Values.httpRoute.exposeAsaComBr }}
+    - {{ printf "%s.d.asa.com.br" .Release.Name | quote }}
+    {{- end }}
     {{- end }}
   rules:
     - matches:

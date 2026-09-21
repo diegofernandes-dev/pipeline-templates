@@ -72,9 +72,10 @@ Chart `charts/app`: resources, porta `http`, probes `/health-check`, HPA, HTTPRo
 | Campo | Regra |
 |-------|--------|
 | parentRefs | Fixos da plataforma: Gateway `d-asa-com-br-internal-gateway` em `asa-infra-nginx-gateway` |
-| hostname | Default `<applicationName>.dev.asa.corp` (override via `httpRoute.hostnames` no chart) |
+| hostname (sempre) | `<applicationName>.dev.asa.corp` |
+| `exposeAsaComBr: true` | + `<applicationName>.d.asa.com.br` e annotation ExternalDNS nesse FQDN |
 
-No lab, sem o Gateway instalado, o HTTPRoute é criado mas o parent pode ficar não-Accepted até o Gateway existir. DNS / `exposeAsaComBr` → Item 13.
+No lab Rancher, sem Gateway/ExternalDNS, o HTTPRoute sobe; parent pode ficar não-Accepted e o DNS não é registrado de fato.
 
 ### Ambientes e Variable Groups
 
@@ -94,4 +95,5 @@ Pool `PG-AWS-EKS`: BuildKit + AWS/ECR + `helm`/`kubectl`.
 |-----------|---------|-----------|
 | `applicationName` | `''` | Identidade (ECR + release + namespace); obrigatório se houver deploy |
 | `deployEnvironments` | `[]` | Ambientes + VGs; vazio = só CI |
+| `exposeAsaComBr` | `false` | Hostname legado `.d.asa.com.br` + annotation ExternalDNS |
 | `containerPool` | `PG-AWS-EKS` | Agent self-hosted |

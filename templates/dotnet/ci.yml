@@ -69,6 +69,12 @@ parameters:
     type: string
     default: '5m'
 
+  # Quando true: HTTPRoute também inclui <app>.d.asa.com.br + annotation ExternalDNS.
+  - name: exposeAsaComBr
+    displayName: Expor hostname legado .d.asa.com.br (ExternalDNS)
+    type: boolean
+    default: false
+
 stages:
   - stage: CI
     displayName: Build and Test
@@ -218,6 +224,7 @@ stages:
         containerPool: ${{ parameters.containerPool }}
         awsRegion: ${{ parameters.awsRegion }}
         helmTimeout: ${{ parameters.helmTimeout }}
+        exposeAsaComBr: ${{ parameters.exposeAsaComBr }}
 
   - ${{ if gt(length(parameters.deployEnvironments), 1) }}:
     - template: helm-deploy.yml
@@ -230,6 +237,7 @@ stages:
         containerPool: ${{ parameters.containerPool }}
         awsRegion: ${{ parameters.awsRegion }}
         helmTimeout: ${{ parameters.helmTimeout }}
+        exposeAsaComBr: ${{ parameters.exposeAsaComBr }}
 
   - ${{ if gt(length(parameters.deployEnvironments), 2) }}:
     - template: helm-deploy.yml
@@ -242,3 +250,4 @@ stages:
         containerPool: ${{ parameters.containerPool }}
         awsRegion: ${{ parameters.awsRegion }}
         helmTimeout: ${{ parameters.helmTimeout }}
+        exposeAsaComBr: ${{ parameters.exposeAsaComBr }}

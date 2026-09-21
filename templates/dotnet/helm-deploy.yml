@@ -28,6 +28,10 @@ parameters:
     type: string
     default: '5m'
 
+  - name: exposeAsaComBr
+    type: boolean
+    default: false
+
 stages:
   - stage: Deploy_${{ parameters.environmentName }}
     displayName: Deploy ${{ parameters.environmentName }}
@@ -60,6 +64,7 @@ stages:
                     APPLICATION_NAME: ${{ parameters.applicationName }}
                     ADO_ENVIRONMENT: ${{ parameters.environmentName }}
                     HELM_TIMEOUT: ${{ parameters.helmTimeout }}
+                    EXPOSE_ASA_COM_BR: ${{ parameters.exposeAsaComBr }}
                     AWS_REGION: ${{ parameters.awsRegion }}
                     AWS_DEFAULT_REGION: ${{ parameters.awsRegion }}
                     IMAGE_REPOSITORY: $(imageRepository)
@@ -122,11 +127,16 @@ stages:
                       echo "##[endgroup]"
 
                       echo "##[group]helm upgrade ${HELM_RELEASE} → ${IMAGE_REPOSITORY}:${IMAGE_TAG} (${ADO_ENVIRONMENT})"
+                      EXPOSE_FLAG="false"
+                      if [[ "${EXPOSE_ASA_COM_BR}" == "True" || "${EXPOSE_ASA_COM_BR}" == "true" ]]; then
+                        EXPOSE_FLAG="true"
+                      fi
                       helm upgrade --install "${HELM_RELEASE}" "${CHART_DIR}" \
                         --namespace "${HELM_NAMESPACE}" \
                         --set-string "image.repository=${IMAGE_REPOSITORY}" \
                         --set-string "image.tag=${IMAGE_TAG}" \
                         --set-string "imagePullSecrets[0].name=${PULL_SECRET}" \
+                        --set "httpRoute.exposeAsaComBr=${EXPOSE_FLAG}" \
                         --atomic \
                         --wait \
                         --timeout "${HELM_TIMEOUT}"

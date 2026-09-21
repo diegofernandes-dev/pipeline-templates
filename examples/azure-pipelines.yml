@@ -15,6 +15,7 @@ extends:
     solution: '**/*.sln'
     applicationName: sample-api
     containerPool: 'PG-AWS-EKS'
+    exposeAsaComBr: false
     deployEnvironments:
       - name: develop
         variableGroups: []

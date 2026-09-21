@@ -33,10 +33,11 @@ autoscaling:
 
 httpRoute:
   enabled: true
+  exposeAsaComBr: false
   parentRefs:
     - name: d-asa-com-br-internal-gateway
       namespace: asa-infra-nginx-gateway
       group: gateway.networking.k8s.io
       kind: Gateway
-  # Empty ⇒ default hostname <release>.dev.asa.corp
+  # Empty ⇒ default hostname <release>.dev.asa.corp (+ .d.asa.com.br when exposeAsaComBr)
   hostnames: []
