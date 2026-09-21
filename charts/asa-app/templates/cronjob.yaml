@@ -1,0 +1,99 @@
+{{- $configEnabled := get (.Values.config | default (dict)) "enabled" | default false -}}
+{{- $secretEnabled := get (.Values.secret | default (dict)) "enabled" | default false -}}
+{{- $r := .Values.resources | default dict -}}
+{{- $limits := $r.limits | default dict -}}
+{{- $requests := $r.requests | default dict -}}
+{{- $limCpu := $limits.cpu | default $r.limitscpu | default "500m" -}}
+{{- $limMem := $limits.memory | default $r.limitsmemory | default "300Mi" -}}
+{{- $reqCpu := $requests.cpu | default $r.requestscpu | default "25m" -}}
+{{- $reqMem := $requests.memory | default $r.requestsmemory | default "150Mi" -}}
+{{- $profile := include "chart.workloadMode" . -}}
+{{- if (and (hasKey .Values "cronjob") (get .Values.cronjob "enabled")) }}
+{{- include "chart.validateWorkloadIdentity" . -}}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ .Release.Name }}-cronjob
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: {{ .Chart.Name }}
+    app.kubernetes.io/workload-profile: {{ $profile }}
+    app.kubernetes.io/name: {{ .Release.Name }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service | default "Helm" }}
+    app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+    helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | quote }}
+spec:
+  schedule: {{ required "cronjob.schedule is required" .Values.cronjob.schedule | quote }}
+  concurrencyPolicy: {{ .Values.cronjob.concurrencypolicy | default "Forbid" }}
+  successfulJobsHistoryLimit: {{ .Values.cronjob.successfuljobshistorylimit | default 3 }}
+  failedJobsHistoryLimit: {{ .Values.cronjob.failedjobshistorylimit | default 1 }}
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          {{- if or $configEnabled $secretEnabled }}
+          annotations:
+            {{- if $configEnabled }}
+            checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+            {{- end }}
+            {{- if $secretEnabled }}
+            checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+            {{- end }}
+          {{- end }}
+        spec:
+          {{- if (include "chart.workloadIdentityEnabled" .) | eq "true" }}
+          {{- $sa := .Values.serviceAccount | default dict }}
+          serviceAccountName: {{ $sa.name | default (printf "%s-sa" .Release.Name) }}
+          automountServiceAccountToken: {{ ternary $sa.automountServiceAccountToken false (hasKey $sa "automountServiceAccountToken") }}
+          {{- end }}
+          {{- with .Values.podSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if (include "chart.needsVolumes" .) | eq "true" }}
+          volumes:
+            {{- include "common.volumes" . | nindent 12 }}
+          {{- end }}
+          restartPolicy: {{ .Values.cronjob.restartpolicy | default "Never" | quote }}
+          containers:
+            - name: {{ .Chart.Name }}-job
+              image: "{{ include "chart.image" . }}"
+              imagePullPolicy: {{ .Values.image.pullPolicy | default "IfNotPresent" }}
+              {{- with .Values.securityContext }}
+              securityContext:
+                {{- toYaml . | nindent 16 }}
+              {{- end }}
+              {{- if (include "chart.needsVolumes" .) | eq "true" }}
+              volumeMounts:
+                {{- include "common.volumeMounts" . | nindent 16 }}
+              {{- end }}
+              {{- $cronCommand := .Values.cronjob.command | default list }}
+              {{- if $cronCommand }}
+              command:
+                {{- if kindIs "slice" $cronCommand }}
+{{ toYaml $cronCommand | nindent 16 }}
+                {{- else }}
+                {{- /* A plain string is executed via the shell. For an explicit multi-arg exec
+                       form, provide cronjob.command as a YAML list (e.g. via helmValuesFile):
+                       command: ["/app", "--flag"]. The previous CSV/bracket string parsing was
+                       removed — it broke on arguments containing commas, spaces or quotes. */}}
+                - /bin/sh
+                - -c
+                - {{ $cronCommand | toString | trim | quote }}
+                {{- end }}
+              {{- end }}
+              {{- with include "common.workloadIdentityEnv" . }}
+              {{- . | nindent 14 }}
+              {{- end }}
+              {{- with include "common.envFrom" . }}
+              {{- . | nindent 14 }}
+              {{- end }}
+              resources:
+                limits:
+                  cpu: {{ $limCpu | quote }}
+                  memory: {{ $limMem | quote }}
+                requests:
+                  cpu: {{ $reqCpu | quote }}
+                  memory: {{ $reqMem | quote }}
+{{- end }}

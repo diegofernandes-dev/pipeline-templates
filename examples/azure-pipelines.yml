@@ -1,5 +1,4 @@
-# Exemplo de consumo do template CI .NET 10 (+ imagem ECR).
-# Copie para o repositório consumidor e ajuste solution / ECR / service connection.
+# Exemplo: CI .NET 10 + imagem ECR + deploy Helm no Rancher (PG-AWS-EKS).
 
 trigger:
   - main
@@ -21,6 +20,9 @@ extends:
     buildImage: true
     containerPool: 'PG-AWS-EKS'
     ecrRepository: 'my-api'
+    deployEnabled: true
+    helmReleaseName: 'proving-ground-app'
+    helmNamespace: 'proving-ground-app'
     # awsAccountId: '448003890252'
     # awsRegion: 'us-east-1'
     # dockerfile: 'Dockerfile'

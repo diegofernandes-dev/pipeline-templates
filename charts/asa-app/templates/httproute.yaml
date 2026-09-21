@@ -1,0 +1,45 @@
+{{- if and ((include "chart.isDeployment" .) | eq "true") ((include "chart.gatewayEnabled" .) | eq "true") }}
+{{- if eq (include "chart.gatewayProtocol" .) "grpc" }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: GRPCRoute
+metadata:
+  name: {{ .Release.Name }}-route
+  namespace: {{ .Release.Namespace }}
+spec:
+  parentRefs:
+    - name: {{ include "chart.gatewayParentRefsName" . }}
+      namespace: asa-infra-nginx-gateway
+  hostnames:
+    - {{ include "chart.gatewayHost" . }}
+    {{- if (include "chart.isAwsNative" .) | eq "true" }}
+    - {{ include "chart.gcpLegacyGatewayHost" . }}
+    {{- end }}
+  rules:
+    - backendRefs:
+        - name: {{ .Release.Name }}-svc
+          port: {{ .Values.service.port | default 8080 }}
+{{- else }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ .Release.Name }}-route
+  namespace: {{ .Release.Namespace }}
+spec:
+  parentRefs:
+    - name: {{ include "chart.gatewayParentRefsName" . }}
+      namespace: asa-infra-nginx-gateway
+  hostnames:
+    - {{ include "chart.gatewayHost" . }}
+    {{- if (include "chart.isAwsNative" .) | eq "true" }}
+    - {{ include "chart.gcpLegacyGatewayHost" . }}
+    {{- end }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: "/"
+      backendRefs:
+        - name: {{ .Release.Name }}-svc
+          port: {{ .Values.service.port | default 8080 }}
+{{- end }}
+{{- end }}

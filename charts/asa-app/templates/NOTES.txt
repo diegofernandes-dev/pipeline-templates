@@ -1,0 +1,19 @@
+Release: {{ .Release.Name }} | Namespace: {{ .Release.Namespace }}
+{{- if (include "chart.persistenceEnabled" .) | eq "true" }}
+
+PERSISTÊNCIA HABILITADA
+  PVC: {{ include "chart.pvcName" . }}
+  Tamanho: {{ (.Values.persistence | default dict).size | default "1Gi" }}
+  AccessMode: {{ join ", " ((.Values.persistence | default dict).accessModes | default (list "ReadWriteOnce")) }}
+  MountPath: {{ (.Values.persistence | default dict).mountPath | default "/data" }}
+
+  A PVC carrega `helm.sh/resource-policy: keep` e NÃO é removida por `helm uninstall`.
+  Para remover manualmente após descomissionar o release:
+
+    kubectl delete pvc {{ include "chart.pvcName" . }} -n {{ .Release.Namespace }}
+
+  Para redimensionar (o Helm não aplica mudanças de tamanho em PVCs existentes):
+
+    kubectl patch pvc {{ include "chart.pvcName" . }} -n {{ .Release.Namespace }} \
+      -p '{"spec":{"resources":{"requests":{"storage":"<novo-tamanho>"}}}}'
+{{- end }}

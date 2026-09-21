@@ -1,0 +1,228 @@
+# Image settings (digest overrides tag when non-empty — immutable deploys)
+image:
+  repository: ""
+  tag: "latest"
+  digest: ""
+  pullPolicy: IfNotPresent
+
+# Service settings
+service:
+  type: ClusterIP
+  port: 8080
+
+# Perfil de workload: web (HTTP), worker (background), grpc (gRPC), cronjob (worker + CronJob)
+# Ref.: https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/
+workload:
+  profile: web
+  workerProbes:
+    # tcp: tcpSocket on port; exec: command; none: no readiness/liveness (risky for rollouts)
+    type: tcp
+    # If null, uses service.port
+    port: null
+    exec:
+      command: []
+  grpc:
+    # Se true, usa httpGet nos probes (compatível com qualquer cluster). Se false, usa probe tipo grpc (Kubernetes 1.24+).
+    useHttpProbes: false
+    # Nome do serviço gRPC de health (opcional). Vazio = default do kubelet.
+    healthService: ""
+
+# Replica count (overridden by HPA minReplicas when HPA is enabled)
+replicaCount: 1
+
+deployment:
+  strategy:
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+
+probes:
+  # Master on/off switch (legacy). When true, startup/readiness/liveness probes are rendered
+  # (http/tcp/grpc per workload.profile). When false, no /health-check required; rollouts are less observable.
+  enabled: false
+  # mode: canonical switch. "off" suppresses probes on ANY profile (web/worker/grpc); "tcp"/"http"
+  # select the web shape. Profile-specific TYPE selectors stay authoritative for HOW probes are shaped:
+  # worker uses workload.workerProbes.type, grpc uses workload.grpc.useHttpProbes. On web, mode overrides
+  # enabled. Leave empty to rely on probes.enabled for backward compatibility (enabled: true = http, false = off).
+  mode: ""
+  # path: endpoint compartilhado pelas três probes no modo http. Cada probe pode
+  # sobrescrever individualmente via startup/readiness/liveness.path (abaixo);
+  # quando ausente, herda este valor — mantendo o contrato de path único.
+  path: /health-check
+  startup:
+    # path: ""   # opcional: sobrescreve probes.path só para a startup probe (modo http)
+    failureThreshold: 30
+    periodSeconds: 5
+  readiness:
+    # path: ""   # opcional: sobrescreve probes.path só para a readiness probe (modo http)
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+  liveness:
+    # path: ""   # opcional: sobrescreve probes.path só para a liveness probe (modo http)
+    initialDelaySeconds: 15
+    periodSeconds: 20
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+resources: {}
+hpa: {}
+
+ingress:
+  className: nginx
+  path: /
+  tls: false
+  tlsSecret: ""
+  annotations: {}
+
+resourceQuota:
+  enabled: true
+  pods: "30"
+
+# NetworkPolicy: when enabled, allows ingress only from pods in the SAME namespace on the
+# service port (an allow-from-same-namespace baseline, not a global default-deny). The rule is
+# fixed; there is no per-namespace-label override.
+networkPolicy:
+  enabled: false
+
+# Prefer maxUnavailable (default) to avoid single-replica deadlocks with minAvailable: 1.
+# Set minAvailable explicitly only if you need the legacy behavior.
+pdb:
+  maxUnavailable: 1
+
+config:
+  enabled: false
+
+secret:
+  enabled: false
+
+cronjob:
+  enabled: false
+
+# Persistent storage (PVC) — opt-in.
+# Quando enabled=true, o chart cria um PersistentVolumeClaim e monta-o em
+# `mountPath` no Deployment e/ou CronJob. Por padrão é desabilitado para
+# preservar 100% do comportamento existente (helm template diff = 0).
+#
+# Notas de segurança/operação:
+#   - Mantenha `accessModes: [ReadWriteOnce]` para storage classes block (ex.: pd-standard)
+#     — neste caso o chart força `strategy: Recreate` no Deployment para evitar
+#     deadlock de attach durante rollouts.
+#   - Use `ReadWriteMany` apenas em storage classes que suportem (ex.: NFS/Filestore);
+#     o chart preserva RollingUpdate neste cenário.
+#   - O PVC carrega anotação `helm.sh/resource-policy: keep` para evitar perda de
+#     dados em `helm uninstall`. Remoção é manual e intencional.
+persistence:
+  enabled: false
+  # Tamanho da PVC (ex.: 1Gi, 10Gi). Obrigatório quando enabled=true.
+  # ATENÇÃO: `helm.sh/resource-policy: keep` impede o Helm de atualizar a PVC após a criação.
+  # Alterações de tamanho exigem resize manual:
+  #   kubectl patch pvc <release>-data -n <namespace> \
+  #     -p '{"spec":{"resources":{"requests":{"storage":"<novo-tamanho>"}}}}'
+  size: 1Gi
+  # Vazio => usa a default StorageClass do cluster.
+  storageClass: ""
+  accessModes:
+    - ReadWriteOnce
+  # Caminho onde o volume será montado dentro do container.
+  mountPath: /data
+  # Sub-path opcional dentro do volume.
+  subPath: ""
+  # Anotações adicionais aplicadas à PVC (merged com `helm.sh/resource-policy: keep`).
+  annotations: {}
+  # Nome custom da PVC. Vazio => "<release>-data".
+  name: ""
+
+# Workload Identity Federation para autenticação sem chaves estáticas.
+# Este bloco descreve a CLOUD DE DESTINO da autenticação; ele é independente de
+# cloud.provider, que descreve onde o workload está executando.
+#
+# Exemplos:
+#   GKE -> AWS: cloud.provider=gcp + workloadIdentity.target=aws
+#   EKS -> GCP: cloud.provider=aws + workloadIdentity.target=gcp
+#
+# O chart projeta um JWT temporário da Kubernetes ServiceAccount. O kubelet renova
+# esse token automaticamente. Configuração de OIDC Provider, trust policy, IAM Role,
+# Workload Identity Pool e bindings permanece fora do chart.
+workloadIdentity:
+  enabled: false
+  # Destino da federação: aws ou gcp.
+  target: ""
+
+  token:
+    # Audience do JWT. Para AWS STS, normalmente "sts.amazonaws.com".
+    # Para GCP, deve coincidir com allowedAudiences do Workload Identity Provider.
+    audience: "sts.amazonaws.com"
+    expirationSeconds: 3600
+    fileName: token
+    # Default por target: aws → /var/run/secrets/aws-iam-token/serviceaccount (convenção IRSA);
+    # gcp → /var/run/secrets/workload-identity. Sobrescreva apenas se necessário.
+    mountPath: ""
+    # 420 decimal = 0644. Mantém o token root-owned legível pelo processo non-root.
+    defaultMode: 420
+
+  aws:
+    # IAM Role cuja trust policy aceita o issuer/sub/aud do token Kubernetes.
+    roleArn: ""
+    region: sa-east-1
+    roleSessionName: ""
+
+  gcp:
+    # Nome do ConfigMap (no mesmo namespace do pod) que contém o external_account JSON.
+    # O chart monta o ConfigMap em /var/run/secrets/google/ e injeta GOOGLE_APPLICATION_CREDENTIALS.
+    # O ConfigMap deve existir no namespace antes do deploy; crie-o via Terraform/Ansible de infra.
+    credentialsConfigMapName: ""
+    # Chave dentro do ConfigMap que contém o JSON. Padrão: external-account.json.
+    credentialsConfigMapKey: "external-account.json"
+    projectId: ""
+
+# DEPRECATED: compatibilidade temporária com o contrato EKS -> GCP já existente.
+# Não habilite este bloco junto com workloadIdentity. Novos consumidores devem usar:
+#   workloadIdentity.enabled=true
+#   workloadIdentity.target=gcp
+# Enquanto este bloco estiver habilitado, audience e mountPath permanecem idênticos
+# ao comportamento anterior.
+gcpWorkloadIdentity:
+  enabled: false
+  expirationSeconds: 3600
+  audience: "sts.amazonaws.com"
+  mountPath: /var/run/secrets/eks.amazonaws.com/serviceaccount
+
+environmentName: develop
+
+# DNS strategy for AWS deployments (cloud.provider is set by the cloud profile YAML, not here).
+# cloud.dns.mode controls which DNS model is active:
+#   gcp-legacy  — transitional: pipeline creates a CNAME in GCP Cloud DNS (default, backward-compat).
+#   aws-native  — new model: DNS is created automatically in AWS; uses .corp domain.
+# Set cluster, domain, includeClusterInHost in your helmValuesFile for aws-native deployments.
+cloud:
+  dns:
+    mode: gcp-legacy
+    cluster: ""
+    domain: corp
+    includeClusterInHost: false
+
+serviceAccount:
+  enabled: true
+  name: ""
+  annotations: {}
+  # Default false (least privilege). Set to true only when the workload needs
+  # to call the Kubernetes API server (and bind a Role to the SA accordingly).
+  automountServiceAccountToken: false
+
+# Pod-level security defaults. The chart enforces non-root but bakes in NO language-specific UID:
+# the pipeline injects runAsUser/fsGroup per language (java 1001, dotnet 1654) at deploy time so
+# the chart stays language-neutral. Set runAsUser/fsGroup here only for standalone (non-pipeline) use,
+# and make it match the image USER.
+podSecurityContext:
+  runAsNonRoot: true
+  # runAsUser: <injected per language by the deploy pipeline>
+  # fsGroup:   <injected per language by the deploy pipeline>
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL

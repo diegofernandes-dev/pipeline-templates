@@ -1,0 +1,113 @@
+{{- if (include "chart.isDeployment" .) | eq "true" }}
+{{- include "chart.validatePersistence" . -}}
+{{- include "chart.validateWorkloadIdentity" . -}}
+{{- $configEnabled := (include "chart.configEffectiveEnabled" .) | eq "true" -}}
+{{- $secretEnabled := get (.Values.secret | default (dict)) "enabled" | default false -}}
+{{- $r := .Values.resources | default dict -}}
+{{- $limits := $r.limits | default dict -}}
+{{- $requests := $r.requests | default dict -}}
+{{- $limCpu := $limits.cpu | default $r.limitscpu | default "500m" -}}
+{{- $limMem := $limits.memory | default $r.limitsmemory | default "300Mi" -}}
+{{- $reqCpu := $requests.cpu | default $r.requestscpu | default "25m" -}}
+{{- $reqMem := $requests.memory | default $r.requestsmemory | default "150Mi" -}}
+{{- $dep := default dict .Values.deployment -}}
+{{- $strat := default dict $dep.strategy -}}
+{{- $roll := default dict $strat.rollingUpdate -}}
+{{- $svcPort := .Values.service.port | default 8080 -}}
+{{- $profile := include "chart.workloadMode" . -}}
+{{- $portName := include "chart.portName" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Release.Name }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/workload-profile: {{ $profile }}
+    app.kubernetes.io/managed-by: {{ .Release.Service | default "Helm" }}
+    app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+    helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | quote }}
+spec:
+  {{- /* When the HPA owns scaling (hpa.minreplicas set), omit replicas so each
+         helm upgrade does not reset the replica count and fight the autoscaler. */ -}}
+  {{- if not (.Values.hpa | default dict).minreplicas }}
+  replicas: {{ .Values.replicaCount | default 1 }}
+  {{- end }}
+  {{- if (include "chart.persistenceForcesRecreate" .) | eq "true" }}
+  strategy:
+    # Forçado para Recreate porque persistence.accessModes contém ReadWriteOnce:
+    # RollingUpdate causaria deadlock de attach do volume entre o pod antigo e o novo.
+    type: Recreate
+  {{- else }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: {{ $roll.maxUnavailable | default 0 }}
+      maxSurge: {{ $roll.maxSurge | default 1 }}
+  {{- end }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Release.Name }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ .Release.Name }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+      {{- if or $configEnabled $secretEnabled }}
+      annotations:
+        {{- if $configEnabled }}
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- end }}
+        {{- if $secretEnabled }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- end }}
+      {{- end }}
+    spec:
+      {{- $sa := .Values.serviceAccount | default dict }}
+      {{- if $sa.enabled }}
+      serviceAccountName: {{ $sa.name | default (printf "%s-sa" .Release.Name) }}
+      automountServiceAccountToken: {{ ternary $sa.automountServiceAccountToken false (hasKey $sa "automountServiceAccountToken") }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if (include "chart.needsVolumes" .) | eq "true" }}
+      volumes:
+        {{- include "common.volumes" . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ include "chart.image" . }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy | default "IfNotPresent" }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if (include "chart.needsVolumes" .) | eq "true" }}
+          volumeMounts:
+            {{- include "common.volumeMounts" . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: {{ $portName }}
+              containerPort: {{ $svcPort }}
+              protocol: TCP
+          {{- with include "chart.probes" . }}
+          {{- . | nindent 10 }}
+          {{- end }}
+          resources:
+            limits:
+              cpu: {{ $limCpu | quote }}
+              memory: {{ $limMem | quote }}
+            requests:
+              cpu: {{ $reqCpu | quote }}
+              memory: {{ $reqMem | quote }}
+          {{- with include "common.workloadIdentityEnv" . }}
+          {{- . | nindent 10 }}
+          {{- end }}
+          {{- with include "common.envFrom" . }}
+          {{- . | nindent 10 }}
+          {{- end }}
+{{- end }}
