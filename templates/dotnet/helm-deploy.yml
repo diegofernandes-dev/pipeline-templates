@@ -72,8 +72,8 @@ stages:
                     AWS_DEFAULT_REGION: ${{ parameters.awsRegion }}
                     IMAGE_REPOSITORY: $(imageRepository)
                     IMAGE_TAG: $(imageTag)
-                    # Optional lab override: pre-provisioned secret name (EKS uses node/IRSA — leave unset).
-                    ECR_PULL_SECRET: $(ECR_PULL_SECRET)
+                    # ECR_PULL_SECRET: optional pipeline variable only (do not map $(ECR_PULL_SECRET) here —
+                    # an unset macro becomes the literal string and would force a bogus imagePullSecret).
                   inputs:
                     targetType: inline
                     script: |
@@ -129,12 +129,13 @@ stages:
                         --set-string "httpRoute.environment=${ADO_ENVIRONMENT}"
                       )
 
-                      # Baseline AWS/EKS: no imagePullSecrets (node/IRSA). Optional name for lab-only pre-provisioned secret.
+                      # Default: no imagePullSecrets (cluster/node runtime must reach ECR).
+                      # Optional lab: set pipeline variable ECR_PULL_SECRET to a pre-provisioned secret name.
                       if [[ -n "${ECR_PULL_SECRET:-}" ]]; then
                         HELM_SET+=(--set-string "imagePullSecrets[0].name=${ECR_PULL_SECRET}")
                         echo "Using pre-provisioned imagePullSecret: ${ECR_PULL_SECRET}"
                       else
-                        echo "No imagePullSecret — expecting cluster-native ECR pull"
+                        echo "No imagePullSecret — cluster/node runtime must have ECR access"
                       fi
 
                       echo "##[group]helm upgrade ${HELM_RELEASE} → ${IMAGE_REPOSITORY}:${IMAGE_TAG} (${ADO_ENVIRONMENT})"

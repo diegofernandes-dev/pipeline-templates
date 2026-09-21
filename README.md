@@ -66,7 +66,7 @@ Só CI (ex.: PR): `deployEnvironments: []` (default) — sem Container/Deploy.
 | Probes | contrato obrigatório `GET /health-check` (startup/liveness/readiness) |
 | HPA | CPU 70%; `minReplicas`/`maxReplicas` = política de disponibilidade (default lab 1/3) |
 | PDB | **off** por default (inútil com 1 réplica + maxUnavailable 1) |
-| Pull ECR | sem `imagePullSecret` — EKS via node/IRSA |
+| Pull ECR | pipeline não cria `imagePullSecret`; cluster/node runtime deve ter acesso ao ECR |
 | HTTPRoute | hostnames + Gateway derivados do Environment |
 | Security | non-root, seccomp, drop caps, read-only root + `/tmp` |
 
@@ -94,7 +94,9 @@ O agent (`containerPool`) e o kube context / conta AWS ainda são os **ambientai
 
 ### Lab (Rancher) — ECR pull
 
-O baseline **não** cria `ecr-pull`. Em cluster sem IAM de node para ECR (ex. Rancher), provisione o secret fora da plataforma e defina a variável de pipeline `ECR_PULL_SECRET` com o nome do secret.
+Baseline AWS/EKS: o pipeline **não** cria `imagePullSecret`; o cluster/node runtime deve ter acesso apropriado ao ECR.
+
+Em lab sem esse acesso (ex. Rancher), provisione o secret fora da plataforma e defina a variável de pipeline `ECR_PULL_SECRET` com o nome do secret. Variável ausente ⇒ nenhum `imagePullSecret`.
 
 ## Parâmetros principais
 

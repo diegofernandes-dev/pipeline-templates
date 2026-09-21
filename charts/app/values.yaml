@@ -5,7 +5,8 @@ image:
   tag: latest
   pullPolicy: IfNotPresent
 
-# Empty on AWS/EKS (node/IRSA). Lab may set via --set imagePullSecrets[0].name=…
+# Empty by default — pipeline does not create imagePullSecrets; cluster/node runtime pulls from ECR.
+# Lab may pass a pre-provisioned secret name via pipeline variable ECR_PULL_SECRET.
 imagePullSecrets: []
 
 serviceAccount:
