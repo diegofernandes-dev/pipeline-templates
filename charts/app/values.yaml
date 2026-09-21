@@ -30,3 +30,13 @@ autoscaling:
   minReplicas: 1
   maxReplicas: 3
   targetCPUUtilizationPercentage: 70
+
+httpRoute:
+  enabled: true
+  parentRefs:
+    - name: d-asa-com-br-internal-gateway
+      namespace: asa-infra-nginx-gateway
+      group: gateway.networking.k8s.io
+      kind: Gateway
+  # Empty ⇒ default hostname <release>.dev.asa.corp
+  hostnames: []

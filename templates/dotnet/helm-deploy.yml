@@ -132,4 +132,4 @@ stages:
                         --timeout "${HELM_TIMEOUT}"
                       echo "##[endgroup]"
 
-                      kubectl -n "${HELM_NAMESPACE}" get deploy,svc,hpa,pods -l "app=${HELM_RELEASE}" -o wide
+                      kubectl -n "${HELM_NAMESPACE}" get deploy,svc,hpa,httproute,pods -l "app=${HELM_RELEASE}" -o wide

@@ -8,7 +8,7 @@ Templates YAML reutilizáveis para Azure DevOps (GitHub → `extends`).
 |---------|--------|
 | [`templates/dotnet/ci.yml`](templates/dotnet/ci.yml) | CI → ECR → Helm (promução) |
 | [`templates/dotnet/helm-deploy.yml`](templates/dotnet/helm-deploy.yml) | Stage Helm por Environment |
-| [`charts/app`](charts/app) | Chart da plataforma (Deployment + Service + HPA) |
+| [`charts/app`](charts/app) | Chart da plataforma (Deployment + Service + HPA + HTTPRoute) |
 
 ## Consumo
 
@@ -65,7 +65,16 @@ Só CI (ex.: PR): `deployEnvironments: []` (default) — sem Container/Deploy.
 | Conta AWS / registry ECR | `aws sts get-caller-identity` no agent |
 | Helm chart | fixo: `charts/app` |
 
-Chart `charts/app`: resources, porta `http`, probes `/health-check`, HPA. Build `linux/amd64`. Helm `--atomic --wait`.
+Chart `charts/app`: resources, porta `http`, probes `/health-check`, HPA, HTTPRoute. Build `linux/amd64`. Helm `--atomic --wait`.
+
+### HTTPRoute
+
+| Campo | Regra |
+|-------|--------|
+| parentRefs | Fixos da plataforma: Gateway `d-asa-com-br-internal-gateway` em `asa-infra-nginx-gateway` |
+| hostname | Default `<applicationName>.dev.asa.corp` (override via `httpRoute.hostnames` no chart) |
+
+No lab, sem o Gateway instalado, o HTTPRoute é criado mas o parent pode ficar não-Accepted até o Gateway existir. DNS / `exposeAsaComBr` → Item 13.
 
 ### Ambientes e Variable Groups
 
