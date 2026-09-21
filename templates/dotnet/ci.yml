@@ -197,6 +197,7 @@ stages:
                     --local context="${DOCKER_CONTEXT}" \
                     --local dockerfile="${DOCKERFILE_DIR}" \
                     --opt "filename=${DOCKERFILE_NAME}" \
+                    --opt platform=linux/amd64 \
                     --output "type=image,name=${IMAGE_REF},push=true"
                   echo "##[endgroup]"
 
@@ -288,8 +289,9 @@ stages:
                     --set-string "image.repository=${IMAGE_REPOSITORY}" \
                     --set-string "image.tag=${IMAGE_TAG}" \
                     --set-string "imagePullSecrets[0].name=${PULL_SECRET}" \
+                    --atomic \
                     --wait \
                     --timeout "${HELM_TIMEOUT}"
                   echo "##[endgroup]"
 
-                  kubectl -n "${HELM_NAMESPACE}" get deploy,svc,pods -l "app=${HELM_RELEASE}" -o wide
+                  kubectl -n "${HELM_NAMESPACE}" get deploy,svc,hpa,pods -l "app=${HELM_RELEASE}" -o wide

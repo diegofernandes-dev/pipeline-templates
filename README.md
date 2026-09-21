@@ -7,7 +7,7 @@ Templates YAML reutilizáveis para Azure DevOps (GitHub → `extends`).
 | Caminho | Escopo |
 |---------|--------|
 | [`templates/dotnet/ci.yml`](templates/dotnet/ci.yml) | CI → ECR → Helm (opcional) |
-| [`charts/app`](charts/app) | Chart mínimo (Deployment + Service) |
+| [`charts/app`](charts/app) | Chart da plataforma (Deployment + Service + HPA) |
 
 ## Consumo
 
@@ -41,6 +41,10 @@ extends:
 | Namespace | `asa-<applicationName>` (cria/usa idempotente) |
 | Conta AWS / registry ECR | `aws sts get-caller-identity` no agent |
 | Helm chart | fixo: `charts/app` (sem `helmChartPath` público) |
+
+Chart `charts/app`: resources explícitos, porta `http`, probes em `/health-check`, HPA dono das réplicas.
+
+Build de imagem fixa `linux/amd64`. Helm deploy usa `--atomic --wait`.
 
 Obrigatório quando `buildImage` ou `deployEnabled` é `true`.
 
