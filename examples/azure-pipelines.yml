@@ -13,9 +13,8 @@ extends:
   template: templates/dotnet/ci.yml@templates
   parameters:
     solution: '**/*.sln'
+    applicationName: sample-api
     buildImage: true
     containerPool: 'PG-AWS-EKS'
-    ecrRepository: 'my-api'
     deployEnabled: true
-    helmReleaseName: 'sample-api'
     helmNamespace: 'proving-ground-app'

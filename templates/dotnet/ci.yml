@@ -28,6 +28,12 @@ parameters:
     type: object
     default: []
 
+  # Identidade única da aplicação. Deriva: ECR repository e Helm release.
+  - name: applicationName
+    displayName: Nome da aplicação (identidade única)
+    type: string
+    default: ''
+
   - name: buildImage
     displayName: Build e push da imagem Docker para o ECR
     type: boolean
@@ -48,11 +54,6 @@ parameters:
     type: string
     default: 'us-east-1'
 
-  - name: ecrRepository
-    displayName: Nome do repositório ECR (ex. sample-api)
-    type: string
-    default: ''
-
   - name: dockerfile
     displayName: Caminho do Dockerfile
     type: string
@@ -67,11 +68,6 @@ parameters:
     displayName: Deploy Helm no cluster (Rancher) via o mesmo agent pool
     type: boolean
     default: false
-
-  - name: helmReleaseName
-    displayName: Nome do release Helm
-    type: string
-    default: 'sample-api'
 
   - name: helmNamespace
     displayName: Namespace Kubernetes do release
@@ -156,7 +152,7 @@ stages:
                 AWS_REGION: ${{ parameters.awsRegion }}
                 AWS_DEFAULT_REGION: ${{ parameters.awsRegion }}
                 AWS_ACCOUNT_ID: ${{ parameters.awsAccountId }}
-                ECR_REPOSITORY: ${{ parameters.ecrRepository }}
+                APPLICATION_NAME: ${{ parameters.applicationName }}
                 DOCKERFILE: ${{ parameters.dockerfile }}
                 DOCKER_CONTEXT: ${{ parameters.dockerContext }}
                 IMAGE_TAG: $(Build.SourceVersion)
@@ -170,10 +166,12 @@ stages:
 
                   export PATH="/opt/tenv3/container-build-tools/bin:${PATH}"
 
-                  if [[ -z "${ECR_REPOSITORY:-}" ]]; then
-                    echo "##vso[task.logissue type=error]ecrRepository is required when buildImage=true"
+                  if [[ -z "${APPLICATION_NAME:-}" ]]; then
+                    echo "##vso[task.logissue type=error]applicationName is required when buildImage=true"
                     exit 1
                   fi
+
+                  ECR_REPOSITORY="${APPLICATION_NAME}"
 
                   if [[ ! -f "${DOCKERFILE}" ]]; then
                     echo "##vso[task.logissue type=error]Dockerfile not found: ${DOCKERFILE}"
@@ -245,7 +243,7 @@ stages:
             - task: Bash@3
               displayName: helm upgrade --install
               env:
-                HELM_RELEASE: ${{ parameters.helmReleaseName }}
+                APPLICATION_NAME: ${{ parameters.applicationName }}
                 HELM_NAMESPACE: ${{ parameters.helmNamespace }}
                 HELM_CHART_PATH: ${{ parameters.helmChartPath }}
                 HELM_TIMEOUT: ${{ parameters.helmTimeout }}
@@ -259,6 +257,13 @@ stages:
                 targetType: inline
                 script: |
                   set -Eeuo pipefail
+
+                  if [[ -z "${APPLICATION_NAME:-}" ]]; then
+                    echo "##vso[task.logissue type=error]applicationName is required when deployEnabled=true"
+                    exit 1
+                  fi
+
+                  HELM_RELEASE="${APPLICATION_NAME}"
 
                   WORKSPACE="${PIPELINE_WORKSPACE:-${AGENT_BUILDDIRECTORY}}"
                   CHART_DIR="${WORKSPACE}/pipeline-templates/${HELM_CHART_PATH}"

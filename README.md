@@ -27,12 +27,20 @@ extends:
   template: templates/dotnet/ci.yml@templates
   parameters:
     solution: '**/*.sln'
+    applicationName: sample-api
     buildImage: true
-    ecrRepository: 'my-api'
     deployEnabled: true
-    helmReleaseName: 'sample-api'
-    helmNamespace: 'proving-ground-app'
+    helmNamespace: proving-ground-app
 ```
+
+`applicationName` é a identidade única da aplicação. A plataforma deriva:
+
+| Derivado | Regra |
+|----------|--------|
+| ECR repository | `applicationName` |
+| Helm release | `applicationName` |
+
+Obrigatório quando `buildImage` ou `deployEnabled` é `true`.
 
 Pool `PG-AWS-EKS`: BuildKit (`buildctl`/`crane`) + AWS/ECR + `helm`/`kubectl`.
 
@@ -40,10 +48,8 @@ Pool `PG-AWS-EKS`: BuildKit (`buildctl`/`crane`) + AWS/ECR + `helm`/`kubectl`.
 
 | Parâmetro | Default | Descrição |
 |-----------|---------|-----------|
+| `applicationName` | `''` | Identidade da app (ECR + Helm release) |
 | `buildImage` | `false` | Build/push ECR |
 | `deployEnabled` | `false` | Helm deploy (requer `buildImage`) |
-| `ecrRepository` | `''` | Repo ECR |
 | `containerPool` | `PG-AWS-EKS` | Agent self-hosted |
-| `helmReleaseName` | `sample-api` | Release |
-| `helmNamespace` | `proving-ground-app` | Namespace |
-| `helmChartPath` | `charts/app` | Chart no repo de templates |
+| `helmNamespace` | `proving-ground-app` | Namespace (temporário até bootstrap self-service) |
