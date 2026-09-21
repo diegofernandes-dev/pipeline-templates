@@ -8,6 +8,7 @@ Templates YAML reutilizáveis para Azure DevOps (GitHub → `extends`).
 |---------|--------|
 | [`templates/dotnet/ci.yml`](templates/dotnet/ci.yml) | CI → ECR → Helm (promução) |
 | [`templates/dotnet/helm-deploy.yml`](templates/dotnet/helm-deploy.yml) | Stage Helm por Environment |
+| [`docker/dotnet/Dockerfile`](docker/dotnet/Dockerfile) | Dockerfile plataforma (.NET web/API) |
 | [`charts/app`](charts/app) | Chart da plataforma (Deployment, Service, HPA, PDB, SA, HTTPRoute) |
 
 ## Consumo
@@ -29,6 +30,7 @@ extends:
   parameters:
     solution: '**/*.sln'
     applicationName: sample-api
+    dotnetProject: src/Sample.Api/Sample.Api.csproj
     deployEnvironments:
       - name: develop
         variableGroups: []
@@ -64,8 +66,9 @@ Só CI (ex.: PR): `deployEnvironments: []` (default) — sem Container/Deploy.
 | Namespace | `asa-<applicationName>` (mesmo nome em cada cluster; sem sufixo) |
 | Conta AWS / registry ECR | `aws sts get-caller-identity` no agent |
 | Helm chart | fixo: `charts/app` |
+| Dockerfile | fixo: `docker/dotnet/Dockerfile` (`dotnetProject` = csproj a publicar) |
 
-Chart `charts/app`: resources, porta `http`, startup/liveness/readiness em `/health-check`, HPA, PDB (`maxUnavailable: 1`), ServiceAccount dedicado, securityContext (seccomp, drop caps, read-only root + `/tmp`; `runAsNonRoot` off até a imagem definir USER), HTTPRoute. Build `linux/amd64`. Helm `--atomic --wait`.
+Chart `charts/app`: resources, porta `http`, startup/liveness/readiness em `/health-check`, HPA, PDB (`maxUnavailable: 1`), ServiceAccount dedicado, securityContext (non-root, seccomp, drop caps, read-only root + `/tmp`), HTTPRoute. Build `linux/amd64`. Helm `--atomic --wait`.
 
 NetworkPolicy **não** entra no baseline lab: Rancher Desktop sem CNI com enforcement de NetworkPolicy evidenciado.
 
@@ -98,6 +101,7 @@ Pool `PG-AWS-EKS`: BuildKit + AWS/ECR + `helm`/`kubectl`.
 | Parâmetro | Default | Descrição |
 |-----------|---------|-----------|
 | `applicationName` | `''` | Identidade (ECR + release + namespace); obrigatório se houver deploy |
+| `dotnetProject` | `''` | Path do `.csproj` publicado na imagem; obrigatório se houver Container |
 | `deployEnvironments` | `[]` | Ambientes + VGs; vazio = só CI |
 | `exposeAsaComBr` | `false` | Hostname legado `.d.asa.com.br` + annotation ExternalDNS |
 | `containerPool` | `PG-AWS-EKS` | Agent self-hosted |

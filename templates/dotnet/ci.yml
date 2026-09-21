@@ -54,15 +54,11 @@ parameters:
     type: string
     default: 'us-east-1'
 
-  - name: dockerfile
-    displayName: Caminho do Dockerfile
+  # Path do .csproj a publicar na imagem (obrigatório quando há Container).
+  - name: dotnetProject
+    displayName: Caminho do .csproj da aplicação
     type: string
-    default: 'Dockerfile'
-
-  - name: dockerContext
-    displayName: Contexto do docker build
-    type: string
-    default: '.'
+    default: ''
 
   - name: helmTimeout
     displayName: Timeout do helm upgrade --wait
@@ -130,6 +126,12 @@ stages:
             name: ${{ parameters.containerPool }}
           steps:
             - checkout: self
+              displayName: Checkout application
+              path: app
+
+            - checkout: templates
+              displayName: Checkout platform Dockerfile
+              path: pipeline-templates
 
             - task: Bash@3
               name: dockerBuildPush
@@ -138,8 +140,7 @@ stages:
                 AWS_REGION: ${{ parameters.awsRegion }}
                 AWS_DEFAULT_REGION: ${{ parameters.awsRegion }}
                 APPLICATION_NAME: ${{ parameters.applicationName }}
-                DOCKERFILE: ${{ parameters.dockerfile }}
-                DOCKER_CONTEXT: ${{ parameters.dockerContext }}
+                DOTNET_PROJECT: ${{ parameters.dotnetProject }}
                 IMAGE_TAG: $(Build.SourceVersion)
                 # PG-AWS-EKS (tenv3) usa BuildKit sidecar + crane — sem Docker Engine.
                 BUILDKIT_HOST: unix:///run/buildkit/buildkitd.sock
@@ -147,7 +148,6 @@ stages:
                 targetType: inline
                 script: |
                   set -Eeuo pipefail
-                  cd "${BUILD_SOURCESDIRECTORY}"
 
                   export PATH="/opt/tenv3/container-build-tools/bin:${PATH}"
 
@@ -156,12 +156,25 @@ stages:
                     exit 1
                   fi
 
-                  ECR_REPOSITORY="${APPLICATION_NAME}"
-
-                  if [[ ! -f "${DOCKERFILE}" ]]; then
-                    echo "##vso[task.logissue type=error]Dockerfile not found: ${DOCKERFILE}"
+                  if [[ -z "${DOTNET_PROJECT:-}" ]]; then
+                    echo "##vso[task.logissue type=error]dotnetProject is required when deployEnvironments is set"
                     exit 1
                   fi
+
+                  WORKSPACE="${PIPELINE_WORKSPACE:-${AGENT_BUILDDIRECTORY}}"
+                  APP_CONTEXT="${WORKSPACE}/app"
+                  if [[ ! -f "${APP_CONTEXT}/${DOTNET_PROJECT}" ]]; then
+                    echo "##vso[task.logissue type=error]dotnetProject not found in app context: ${APP_CONTEXT}/${DOTNET_PROJECT}"
+                    exit 1
+                  fi
+
+                  DOCKERFILE_DIR="${WORKSPACE}/pipeline-templates/docker/dotnet"
+                  if [[ ! -f "${DOCKERFILE_DIR}/Dockerfile" ]]; then
+                    echo "##vso[task.logissue type=error]Platform Dockerfile not found: ${DOCKERFILE_DIR}/Dockerfile"
+                    exit 1
+                  fi
+
+                  ECR_REPOSITORY="${APPLICATION_NAME}"
 
                   if ! command -v buildctl >/dev/null || ! command -v crane >/dev/null; then
                     echo "##vso[task.logissue type=error]buildctl/crane not found — pool ${{ parameters.containerPool }} must expose BuildKit tools"
@@ -180,8 +193,6 @@ stages:
 
                   REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
                   IMAGE_REF="${REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
-                  DOCKERFILE_DIR="$(cd "$(dirname "${DOCKERFILE}")" && pwd)"
-                  DOCKERFILE_NAME="$(basename "${DOCKERFILE}")"
 
                   echo "##[group]ecr login ${REGISTRY}"
                   aws ecr get-login-password --region "${AWS_REGION}" \
@@ -197,12 +208,13 @@ stages:
                   fi
                   echo "##[endgroup]"
 
-                  echo "##[group]buildctl build+push ${IMAGE_REF}"
+                  echo "##[group]buildctl build+push ${IMAGE_REF} (PROJECT=${DOTNET_PROJECT})"
                   buildctl build \
                     --frontend dockerfile.v0 \
-                    --local context="${DOCKER_CONTEXT}" \
+                    --local context="${APP_CONTEXT}" \
                     --local dockerfile="${DOCKERFILE_DIR}" \
-                    --opt "filename=${DOCKERFILE_NAME}" \
+                    --opt filename=Dockerfile \
+                    --opt "build-arg:PROJECT=${DOTNET_PROJECT}" \
                     --opt platform=linux/amd64 \
                     --output "type=image,name=${IMAGE_REF},push=true"
                   echo "##[endgroup]"
