@@ -19,4 +19,8 @@ extends:
     exposeAsaComBr: false
     deployEnvironments:
       - name: develop
+        containerPool: PG-AWS-EKS
+        variableGroups: []
+      - name: homolog
+        containerPool: PG-AWS-EKS-HML
         variableGroups: []

@@ -36,11 +36,12 @@ parameters:
     default: ''
 
   # Lista ordenada de ambientes para promover a mesma imagem.
-  # Ex.: [{ name: homolog, variableGroups: [app-hml, shared-hml] }, { name: production, variableGroups: [app-prd] }]
-  # name ∈ { develop, homolog, production }. variableGroups pode ser [].
-  # Lista vazia ⇒ só CI (sem Container/Deploy).
+  # Ex.: [{ name: homolog, containerPool: PG-AWS-EKS-HML, variableGroups: [app-hml] }]
+  # name ∈ { develop, homolog, production }.
+  # containerPool (opcional): pool do Deploy desse ambiente; default = parâmetro containerPool.
+  # variableGroups pode ser []. Lista vazia ⇒ só CI (sem Container/Deploy).
   - name: deployEnvironments
-    displayName: Ambientes ADO (+ variable groups por ambiente)
+    displayName: Ambientes ADO (+ pool e variable groups por ambiente)
     type: object
     default: []
 
@@ -307,7 +308,7 @@ stages:
         dependsOn:
           - Container
         applicationName: ${{ parameters.applicationName }}
-        containerPool: ${{ parameters.containerPool }}
+        containerPool: ${{ coalesce(parameters.deployEnvironments[0].containerPool, parameters.containerPool) }}
         awsRegion: ${{ parameters.awsRegion }}
         helmTimeout: ${{ parameters.helmTimeout }}
         exposeAsaComBr: ${{ parameters.exposeAsaComBr }}
@@ -321,7 +322,7 @@ stages:
           - Container
           - Deploy_${{ parameters.deployEnvironments[0].name }}
         applicationName: ${{ parameters.applicationName }}
-        containerPool: ${{ parameters.containerPool }}
+        containerPool: ${{ coalesce(parameters.deployEnvironments[1].containerPool, parameters.containerPool) }}
         awsRegion: ${{ parameters.awsRegion }}
         helmTimeout: ${{ parameters.helmTimeout }}
         exposeAsaComBr: ${{ parameters.exposeAsaComBr }}
@@ -335,7 +336,7 @@ stages:
           - Container
           - Deploy_${{ parameters.deployEnvironments[1].name }}
         applicationName: ${{ parameters.applicationName }}
-        containerPool: ${{ parameters.containerPool }}
+        containerPool: ${{ coalesce(parameters.deployEnvironments[2].containerPool, parameters.containerPool) }}
         awsRegion: ${{ parameters.awsRegion }}
         helmTimeout: ${{ parameters.helmTimeout }}
         exposeAsaComBr: ${{ parameters.exposeAsaComBr }}

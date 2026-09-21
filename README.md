@@ -34,11 +34,14 @@ extends:
     dotnetProject: src/Sample.Api/Sample.Api.csproj
     deployEnvironments:
       - name: develop
+        containerPool: PG-AWS-EKS
         variableGroups: []
       - name: homolog
+        containerPool: PG-AWS-EKS-HML
         variableGroups:
           - sample-api-homolog
       - name: production
+        containerPool: PG-AWS-EKS
         variableGroups:
           - sample-api-production
 ```
@@ -84,9 +87,16 @@ Gateway namespace: `asa-infra-nginx-gateway`. DNS: ExternalDNS observa `HTTPRout
 
 ### Environments vs target AWS/Kubernetes
 
-Hoje o Environment ADO controla: **ordem de promoção**, **approvals**, **hostnames**, **Gateway**.
+O Environment ADO controla: **ordem de promoção**, **approvals**, **hostnames**, **Gateway**.
 
-O agent (`containerPool`) e o kube context / conta AWS ainda são os **ambientais do pool** (lab: mesmo Rancher + mesmas credenciais para develop/hml/prd). Não há engine de target: quando HML/PRD tiverem pools ou contexts distintos, isso entra via pool/credencial do Environment — não via parâmetros novos no template.
+O **target físico** (cluster / kube context / conta AWS ambient) é o do **agent pool** do Deploy:
+
+| Campo | Papel |
+|-------|--------|
+| `containerPool` (raiz) | Pool do stage Container (build/push ECR) |
+| `deployEnvironments[].containerPool` | Pool do Deploy daquele ambiente (opcional; default = `containerPool` raiz) |
+
+O agent de cada pool já carrega o kubeconfig do cluster em que roda. Não há parâmetro de kubeContext/awsAccount no template.
 
 ### Variable Groups
 
@@ -105,9 +115,9 @@ Em lab sem esse acesso (ex. Rancher), provisione o secret fora da plataforma e d
 | `applicationName` | `''` | Identidade; obrigatório se houver deploy |
 | `dotnetProject` | `''` | `.csproj` a publicar; TFM → tag aspnet |
 | `dotnetVersion` | `10.x` | SDK do agent CI |
-| `deployEnvironments` | `[]` | Ambientes + VGs; vazio = só CI |
+| `deployEnvironments` | `[]` | Ambientes + `containerPool`/`variableGroups` por env; vazio = só CI |
 | `exposeAsaComBr` | `false` | Hostname legado `.asa.com.br` em `spec.hostnames` |
-| `containerPool` | `PG-AWS-EKS` | Agent self-hosted |
+| `containerPool` | `PG-AWS-EKS` | Pool do Container (+ default dos Deploys sem override) |
 
 ## Testes
 
