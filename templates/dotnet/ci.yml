@@ -1,4 +1,4 @@
-# Template de CI para aplicações .NET 10 (restore → build → test → imagem ECR).
+# Template de CI/.NET → ECR → Helm (promução por Environments ADO).
 # Consumir via extends a partir de outro repositório.
 parameters:
   - name: solution
@@ -35,10 +35,14 @@ parameters:
     type: string
     default: ''
 
-  - name: buildImage
-    displayName: Build e push da imagem Docker para o ECR
-    type: boolean
-    default: false
+  # Lista ordenada de ambientes para promover a mesma imagem.
+  # Ex.: [{ name: homolog, variableGroups: [app-hml, shared-hml] }, { name: production, variableGroups: [app-prd] }]
+  # name ∈ { develop, homolog, production }. variableGroups pode ser [].
+  # Lista vazia ⇒ só CI (sem Container/Deploy).
+  - name: deployEnvironments
+    displayName: Ambientes ADO (+ variable groups por ambiente)
+    type: object
+    default: []
 
   - name: containerPool
     displayName: Agent pool com Docker + acesso ao ECR
@@ -59,11 +63,6 @@ parameters:
     displayName: Contexto do docker build
     type: string
     default: '.'
-
-  - name: deployEnabled
-    displayName: Deploy Helm no cluster (Rancher) via o mesmo agent pool
-    type: boolean
-    default: false
 
   - name: helmTimeout
     displayName: Timeout do helm upgrade --wait
@@ -113,7 +112,7 @@ stages:
               arguments: --configuration ${{ parameters.buildConfiguration }} --no-build --logger trx
               publishTestResults: true
 
-  - ${{ if eq(parameters.buildImage, true) }}:
+  - ${{ if gt(length(parameters.deployEnvironments), 0) }}:
     - stage: Container
       displayName: Docker Build and Push
       dependsOn: CI
@@ -147,7 +146,7 @@ stages:
                   export PATH="/opt/tenv3/container-build-tools/bin:${PATH}"
 
                   if [[ -z "${APPLICATION_NAME:-}" ]]; then
-                    echo "##vso[task.logissue type=error]applicationName is required when buildImage=true"
+                    echo "##vso[task.logissue type=error]applicationName is required when deployEnvironments is set"
                     exit 1
                   fi
 
@@ -209,95 +208,37 @@ stages:
                   echo "##vso[task.setvariable variable=imageRepository;isOutput=true]${IMAGE_REPOSITORY}"
                   echo "Pushed ${IMAGE_REF}"
 
-  - ${{ if and(eq(parameters.buildImage, true), eq(parameters.deployEnabled, true)) }}:
-    - stage: DeployDevelop
-      displayName: Deploy develop
-      dependsOn: Container
-      condition: succeeded()
-      variables:
-        imageRepository: $[ stageDependencies.Container.DockerBuildPush.outputs['dockerBuildPush.imageRepository'] ]
-        imageTag: $[ stageDependencies.Container.DockerBuildPush.outputs['dockerBuildPush.imageTag'] ]
-      jobs:
-        - deployment: HelmDeployDevelop
-          displayName: Helm upgrade (develop)
-          environment: develop
-          pool:
-            name: ${{ parameters.containerPool }}
-          strategy:
-            runOnce:
-              deploy:
-                steps:
-                  - checkout: templates
-                    displayName: Checkout chart
-                    path: pipeline-templates
+    - template: helm-deploy.yml
+      parameters:
+        environmentName: ${{ parameters.deployEnvironments[0].name }}
+        variableGroups: ${{ parameters.deployEnvironments[0].variableGroups }}
+        dependsOn:
+          - Container
+        applicationName: ${{ parameters.applicationName }}
+        containerPool: ${{ parameters.containerPool }}
+        awsRegion: ${{ parameters.awsRegion }}
+        helmTimeout: ${{ parameters.helmTimeout }}
 
-                  - task: Bash@3
-                    displayName: helm upgrade --install
-                    env:
-                      APPLICATION_NAME: ${{ parameters.applicationName }}
-                      HELM_TIMEOUT: ${{ parameters.helmTimeout }}
-                      AWS_REGION: ${{ parameters.awsRegion }}
-                      AWS_DEFAULT_REGION: ${{ parameters.awsRegion }}
-                      IMAGE_REPOSITORY: $(imageRepository)
-                      IMAGE_TAG: $(imageTag)
-                    inputs:
-                      targetType: inline
-                      script: |
-                        set -Eeuo pipefail
+  - ${{ if gt(length(parameters.deployEnvironments), 1) }}:
+    - template: helm-deploy.yml
+      parameters:
+        environmentName: ${{ parameters.deployEnvironments[1].name }}
+        variableGroups: ${{ parameters.deployEnvironments[1].variableGroups }}
+        dependsOn:
+          - Deploy_${{ parameters.deployEnvironments[0].name }}
+        applicationName: ${{ parameters.applicationName }}
+        containerPool: ${{ parameters.containerPool }}
+        awsRegion: ${{ parameters.awsRegion }}
+        helmTimeout: ${{ parameters.helmTimeout }}
 
-                        if [[ -z "${APPLICATION_NAME:-}" ]]; then
-                          echo "##vso[task.logissue type=error]applicationName is required when deployEnabled=true"
-                          exit 1
-                        fi
-
-                        HELM_RELEASE="${APPLICATION_NAME}"
-                        # Same namespace name in every cluster (no env suffix).
-                        HELM_NAMESPACE="asa-${APPLICATION_NAME}"
-
-                        WORKSPACE="${PIPELINE_WORKSPACE:-${AGENT_BUILDDIRECTORY}}"
-                        CHART_DIR="${WORKSPACE}/pipeline-templates/charts/app"
-
-                        if [[ ! -f "${CHART_DIR}/Chart.yaml" ]]; then
-                          echo "##vso[task.logissue type=error]Chart not found: ${CHART_DIR}"
-                          exit 1
-                        fi
-
-                        if [[ -z "${IMAGE_REPOSITORY:-}" || -z "${IMAGE_TAG:-}" ]]; then
-                          echo "##vso[task.logissue type=error]imageRepository/imageTag missing from Container stage"
-                          exit 1
-                        fi
-
-                        echo "##[group]ensure namespace ${HELM_NAMESPACE}"
-                        kubectl create namespace "${HELM_NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
-                        echo "##[endgroup]"
-
-                        AWS_ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
-                        if [[ -z "${AWS_ACCOUNT_ID}" || "${AWS_ACCOUNT_ID}" == "None" ]]; then
-                          echo "##vso[task.logissue type=error]Could not resolve AWS account id from sts (agent ambient credentials)"
-                          exit 1
-                        fi
-
-                        REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
-                        PULL_SECRET="ecr-pull"
-
-                        echo "##[group]ecr imagePullSecret (${PULL_SECRET})"
-                        ECR_PASS="$(aws ecr get-login-password --region "${AWS_REGION}")"
-                        kubectl -n "${HELM_NAMESPACE}" create secret docker-registry "${PULL_SECRET}" \
-                          --docker-server="${REGISTRY}" \
-                          --docker-username=AWS \
-                          --docker-password="${ECR_PASS}" \
-                          --dry-run=client -o yaml | kubectl apply -f -
-                        echo "##[endgroup]"
-
-                        echo "##[group]helm upgrade ${HELM_RELEASE} → ${IMAGE_REPOSITORY}:${IMAGE_TAG}"
-                        helm upgrade --install "${HELM_RELEASE}" "${CHART_DIR}" \
-                          --namespace "${HELM_NAMESPACE}" \
-                          --set-string "image.repository=${IMAGE_REPOSITORY}" \
-                          --set-string "image.tag=${IMAGE_TAG}" \
-                          --set-string "imagePullSecrets[0].name=${PULL_SECRET}" \
-                          --atomic \
-                          --wait \
-                          --timeout "${HELM_TIMEOUT}"
-                        echo "##[endgroup]"
-
-                        kubectl -n "${HELM_NAMESPACE}" get deploy,svc,hpa,pods -l "app=${HELM_RELEASE}" -o wide
+  - ${{ if gt(length(parameters.deployEnvironments), 2) }}:
+    - template: helm-deploy.yml
+      parameters:
+        environmentName: ${{ parameters.deployEnvironments[2].name }}
+        variableGroups: ${{ parameters.deployEnvironments[2].variableGroups }}
+        dependsOn:
+          - Deploy_${{ parameters.deployEnvironments[1].name }}
+        applicationName: ${{ parameters.applicationName }}
+        containerPool: ${{ parameters.containerPool }}
+        awsRegion: ${{ parameters.awsRegion }}
+        helmTimeout: ${{ parameters.helmTimeout }}

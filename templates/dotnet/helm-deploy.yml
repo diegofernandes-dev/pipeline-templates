@@ -1,0 +1,135 @@
+# Stage reutilizável: Helm deploy em um Environment ADO.
+# Namespace: asa-<applicationName> (sem sufixo; mesmo nome em cada cluster).
+parameters:
+  - name: environmentName
+    type: string
+
+  - name: variableGroups
+    type: object
+    default: []
+
+  - name: dependsOn
+    type: object
+    default:
+      - Container
+
+  - name: applicationName
+    type: string
+
+  - name: containerPool
+    type: string
+    default: 'PG-AWS-EKS'
+
+  - name: awsRegion
+    type: string
+    default: 'us-east-1'
+
+  - name: helmTimeout
+    type: string
+    default: '5m'
+
+stages:
+  - stage: Deploy_${{ parameters.environmentName }}
+    displayName: Deploy ${{ parameters.environmentName }}
+    dependsOn: ${{ parameters.dependsOn }}
+    condition: succeeded()
+    variables:
+      - name: imageRepository
+        value: $[ stageDependencies.Container.DockerBuildPush.outputs['dockerBuildPush.imageRepository'] ]
+      - name: imageTag
+        value: $[ stageDependencies.Container.DockerBuildPush.outputs['dockerBuildPush.imageTag'] ]
+      - ${{ each vg in parameters.variableGroups }}:
+        - group: ${{ vg }}
+    jobs:
+      - deployment: Helm_${{ parameters.environmentName }}
+        displayName: Helm upgrade (${{ parameters.environmentName }})
+        environment: ${{ parameters.environmentName }}
+        pool:
+          name: ${{ parameters.containerPool }}
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: templates
+                  displayName: Checkout chart
+                  path: pipeline-templates
+
+                - task: Bash@3
+                  displayName: helm upgrade --install
+                  env:
+                    APPLICATION_NAME: ${{ parameters.applicationName }}
+                    ADO_ENVIRONMENT: ${{ parameters.environmentName }}
+                    HELM_TIMEOUT: ${{ parameters.helmTimeout }}
+                    AWS_REGION: ${{ parameters.awsRegion }}
+                    AWS_DEFAULT_REGION: ${{ parameters.awsRegion }}
+                    IMAGE_REPOSITORY: $(imageRepository)
+                    IMAGE_TAG: $(imageTag)
+                  inputs:
+                    targetType: inline
+                    script: |
+                      set -Eeuo pipefail
+
+                      case "${ADO_ENVIRONMENT}" in
+                        develop|homolog|production) ;;
+                        *)
+                          echo "##vso[task.logissue type=error]Unsupported environment '${ADO_ENVIRONMENT}' (allowed: develop, homolog, production)"
+                          exit 1
+                          ;;
+                      esac
+
+                      if [[ -z "${APPLICATION_NAME:-}" ]]; then
+                        echo "##vso[task.logissue type=error]applicationName is required when deployEnvironments is set"
+                        exit 1
+                      fi
+
+                      HELM_RELEASE="${APPLICATION_NAME}"
+                      # Same namespace name in every cluster (no env suffix).
+                      HELM_NAMESPACE="asa-${APPLICATION_NAME}"
+
+                      WORKSPACE="${PIPELINE_WORKSPACE:-${AGENT_BUILDDIRECTORY}}"
+                      CHART_DIR="${WORKSPACE}/pipeline-templates/charts/app"
+
+                      if [[ ! -f "${CHART_DIR}/Chart.yaml" ]]; then
+                        echo "##vso[task.logissue type=error]Chart not found: ${CHART_DIR}"
+                        exit 1
+                      fi
+
+                      if [[ -z "${IMAGE_REPOSITORY:-}" || -z "${IMAGE_TAG:-}" ]]; then
+                        echo "##vso[task.logissue type=error]imageRepository/imageTag missing from Container stage"
+                        exit 1
+                      fi
+
+                      echo "##[group]ensure namespace ${HELM_NAMESPACE}"
+                      kubectl create namespace "${HELM_NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
+                      echo "##[endgroup]"
+
+                      AWS_ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+                      if [[ -z "${AWS_ACCOUNT_ID}" || "${AWS_ACCOUNT_ID}" == "None" ]]; then
+                        echo "##vso[task.logissue type=error]Could not resolve AWS account id from sts (agent ambient credentials)"
+                        exit 1
+                      fi
+
+                      REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+                      PULL_SECRET="ecr-pull"
+
+                      echo "##[group]ecr imagePullSecret (${PULL_SECRET})"
+                      ECR_PASS="$(aws ecr get-login-password --region "${AWS_REGION}")"
+                      kubectl -n "${HELM_NAMESPACE}" create secret docker-registry "${PULL_SECRET}" \
+                        --docker-server="${REGISTRY}" \
+                        --docker-username=AWS \
+                        --docker-password="${ECR_PASS}" \
+                        --dry-run=client -o yaml | kubectl apply -f -
+                      echo "##[endgroup]"
+
+                      echo "##[group]helm upgrade ${HELM_RELEASE} → ${IMAGE_REPOSITORY}:${IMAGE_TAG} (${ADO_ENVIRONMENT})"
+                      helm upgrade --install "${HELM_RELEASE}" "${CHART_DIR}" \
+                        --namespace "${HELM_NAMESPACE}" \
+                        --set-string "image.repository=${IMAGE_REPOSITORY}" \
+                        --set-string "image.tag=${IMAGE_TAG}" \
+                        --set-string "imagePullSecrets[0].name=${PULL_SECRET}" \
+                        --atomic \
+                        --wait \
+                        --timeout "${HELM_TIMEOUT}"
+                      echo "##[endgroup]"
+
+                      kubectl -n "${HELM_NAMESPACE}" get deploy,svc,hpa,pods -l "app=${HELM_RELEASE}" -o wide

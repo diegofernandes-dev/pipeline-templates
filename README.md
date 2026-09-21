@@ -6,7 +6,8 @@ Templates YAML reutilizáveis para Azure DevOps (GitHub → `extends`).
 
 | Caminho | Escopo |
 |---------|--------|
-| [`templates/dotnet/ci.yml`](templates/dotnet/ci.yml) | CI → ECR → Helm (opcional) |
+| [`templates/dotnet/ci.yml`](templates/dotnet/ci.yml) | CI → ECR → Helm (promução) |
+| [`templates/dotnet/helm-deploy.yml`](templates/dotnet/helm-deploy.yml) | Stage Helm por Environment |
 | [`charts/app`](charts/app) | Chart da plataforma (Deployment + Service + HPA) |
 
 ## Consumo
@@ -28,45 +29,60 @@ extends:
   parameters:
     solution: '**/*.sln'
     applicationName: sample-api
-    buildImage: true
-    deployEnabled: true
+    deployEnvironments:
+      - name: develop
+        variableGroups: []
+      - name: homolog
+        variableGroups:
+          - sample-api-homolog
+          - shared-platform-homolog
+      - name: production
+        variableGroups:
+          - sample-api-production
 ```
 
-`applicationName` é a identidade única da aplicação. A plataforma deriva:
+Só HML → PRD:
+
+```yaml
+deployEnvironments:
+  - name: homolog
+    variableGroups:
+      - sample-api-homolog
+  - name: production
+    variableGroups:
+      - sample-api-production
+```
+
+Só CI (ex.: PR): `deployEnvironments: []` (default) — sem Container/Deploy.
+
+`applicationName` é a identidade única. A plataforma deriva:
 
 | Derivado | Regra |
 |----------|--------|
 | ECR repository | `applicationName` |
 | Helm release | `applicationName` |
-| Namespace | `asa-<applicationName>` (mesmo nome em cada cluster; sem sufixo de ambiente) |
+| Namespace | `asa-<applicationName>` (mesmo nome em cada cluster; sem sufixo) |
 | Conta AWS / registry ECR | `aws sts get-caller-identity` no agent |
-| Helm chart | fixo: `charts/app` (sem `helmChartPath` público) |
+| Helm chart | fixo: `charts/app` |
 
-Chart `charts/app`: resources explícitos, porta `http`, probes em `/health-check`, HPA dono das réplicas.
+Chart `charts/app`: resources, porta `http`, probes `/health-check`, HPA. Build `linux/amd64`. Helm `--atomic --wait`.
 
-Build de imagem fixa `linux/amd64`. Helm deploy usa `--atomic --wait`.
+### Ambientes e Variable Groups
 
-Obrigatório quando `buildImage` ou `deployEnabled` é `true`.
+| Campo | Regra |
+|-------|--------|
+| `deployEnvironments[].name` | `develop` \| `homolog` \| `production` (Environment ADO) |
+| `deployEnvironments[].variableGroups` | Lista 0..N de Variable Groups daquele stage |
+| Ordem | Ordem da lista = ordem dos stages (mesma imagem/SHA) |
 
-### Ambientes ADO
+Pré-requisito: Environments ADO criados no projeto. Approvals ficam na Environment (portal).
 
-| Environment | No template hoje |
-|-------------|------------------|
-| `develop` | Stage `DeployDevelop` (ativo quando `deployEnabled`) |
-| `homolog` | Próximo incremento |
-| `production` | Próximo incremento |
-
-Namespace **não** muda por ambiente: o mesmo `asa-<applicationName>` em clusters diferentes. A imagem promovida é a mesma (tag = commit SHA).
-
-Pré-requisito: Environment `develop` criado no projeto Azure DevOps.
-
-Pool `PG-AWS-EKS`: BuildKit (`buildctl`/`crane`) + AWS/ECR + `helm`/`kubectl`. Credenciais AWS são as do agent (ambient).
+Pool `PG-AWS-EKS`: BuildKit + AWS/ECR + `helm`/`kubectl`.
 
 ## Parâmetros principais
 
 | Parâmetro | Default | Descrição |
 |-----------|---------|-----------|
-| `applicationName` | `''` | Identidade da app (ECR + release + namespace) |
-| `buildImage` | `false` | Build/push ECR |
-| `deployEnabled` | `false` | Helm deploy em `develop` com chart `charts/app` (requer `buildImage`) |
+| `applicationName` | `''` | Identidade (ECR + release + namespace); obrigatório se houver deploy |
+| `deployEnvironments` | `[]` | Ambientes + VGs; vazio = só CI |
 | `containerPool` | `PG-AWS-EKS` | Agent self-hosted |
