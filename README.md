@@ -40,6 +40,7 @@ extends:
 | Helm release | `applicationName` |
 | Namespace | `asa-<applicationName>` (cria/usa idempotente) |
 | Conta AWS / registry ECR | `aws sts get-caller-identity` no agent |
+| Helm chart | fixo: `charts/app` (sem `helmChartPath` público) |
 
 Obrigatório quando `buildImage` ou `deployEnabled` é `true`.
 
@@ -51,5 +52,5 @@ Pool `PG-AWS-EKS`: BuildKit (`buildctl`/`crane`) + AWS/ECR + `helm`/`kubectl`. C
 |-----------|---------|-----------|
 | `applicationName` | `''` | Identidade da app (ECR + release + namespace) |
 | `buildImage` | `false` | Build/push ECR |
-| `deployEnabled` | `false` | Helm deploy (requer `buildImage`) |
+| `deployEnabled` | `false` | Helm deploy com chart `charts/app` (requer `buildImage`) |
 | `containerPool` | `PG-AWS-EKS` | Agent self-hosted |
