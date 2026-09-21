@@ -8,7 +8,7 @@ Templates YAML reutilizáveis para Azure DevOps (GitHub → `extends`).
 |---------|--------|
 | [`templates/dotnet/ci.yml`](templates/dotnet/ci.yml) | CI → ECR → Helm (promução) |
 | [`templates/dotnet/helm-deploy.yml`](templates/dotnet/helm-deploy.yml) | Stage Helm por Environment |
-| [`charts/app`](charts/app) | Chart da plataforma (Deployment + Service + HPA + HTTPRoute) |
+| [`charts/app`](charts/app) | Chart da plataforma (Deployment, Service, HPA, PDB, SA, HTTPRoute) |
 
 ## Consumo
 
@@ -65,15 +65,19 @@ Só CI (ex.: PR): `deployEnvironments: []` (default) — sem Container/Deploy.
 | Conta AWS / registry ECR | `aws sts get-caller-identity` no agent |
 | Helm chart | fixo: `charts/app` |
 
-Chart `charts/app`: resources, porta `http`, probes `/health-check`, HPA, HTTPRoute. Build `linux/amd64`. Helm `--atomic --wait`.
+Chart `charts/app`: resources, porta `http`, startup/liveness/readiness em `/health-check`, HPA, PDB (`maxUnavailable: 1`), ServiceAccount dedicado, securityContext (non-root, read-only root + `/tmp`), HTTPRoute. Build `linux/amd64`. Helm `--atomic --wait`.
 
-### HTTPRoute
+NetworkPolicy **não** entra no baseline lab: Rancher Desktop sem CNI com enforcement de NetworkPolicy evidenciado.
 
-| Campo | Regra |
-|-------|--------|
-| parentRefs | Fixos da plataforma: Gateway `d-asa-com-br-internal-gateway` em `asa-infra-nginx-gateway` |
-| hostname (sempre) | `<applicationName>.dev.asa.corp` |
-| `exposeAsaComBr: true` | + `<applicationName>.d.asa.com.br` e annotation ExternalDNS nesse FQDN |
+### HTTPRoute / DNS por Environment
+
+| Environment ADO | Hostname corp | Hostname legado (`exposeAsaComBr`) |
+|-----------------|---------------|-------------------------------------|
+| `develop` | `<app>.dev.asa.corp` | `<app>.d.asa.com.br` |
+| `homolog` | `<app>.hml.asa.corp` | `<app>.h.asa.com.br` |
+| `production` | `<app>.prd.asa.corp` | `<app>.p.asa.com.br` |
+
+parentRefs: Gateway `d-asa-com-br-internal-gateway` em `asa-infra-nginx-gateway`.
 
 No lab Rancher, sem Gateway/ExternalDNS, o HTTPRoute sobe; parent pode ficar não-Accepted e o DNS não é registrado de fato.
 

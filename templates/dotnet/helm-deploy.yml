@@ -137,9 +137,10 @@ stages:
                         --set-string "image.tag=${IMAGE_TAG}" \
                         --set-string "imagePullSecrets[0].name=${PULL_SECRET}" \
                         --set "httpRoute.exposeAsaComBr=${EXPOSE_FLAG}" \
+                        --set-string "httpRoute.environment=${ADO_ENVIRONMENT}" \
                         --atomic \
                         --wait \
                         --timeout "${HELM_TIMEOUT}"
                       echo "##[endgroup]"
 
-                      kubectl -n "${HELM_NAMESPACE}" get deploy,svc,hpa,httproute,pods -l "app=${HELM_RELEASE}" -o wide
+                      kubectl -n "${HELM_NAMESPACE}" get deploy,svc,hpa,pdb,httproute,sa,pods -l "app=${HELM_RELEASE}" -o wide

@@ -7,6 +7,11 @@ image:
 
 imagePullSecrets: []
 
+serviceAccount:
+  create: true
+  name: ""
+  automountServiceAccountToken: false
+
 service:
   port: 8080
 
@@ -24,6 +29,22 @@ probes:
   periodSeconds: 10
   timeoutSeconds: 3
   failureThreshold: 3
+  startup:
+    failureThreshold: 30
+    periodSeconds: 5
+
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  privileged: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
 
 autoscaling:
   enabled: true
@@ -31,13 +52,19 @@ autoscaling:
   maxReplicas: 3
   targetCPUUtilizationPercentage: 70
 
+pdb:
+  enabled: true
+  maxUnavailable: 1
+
 httpRoute:
   enabled: true
   exposeAsaComBr: false
+  # develop | homolog | production — derives *.asa.corp / *.asa.com.br hostnames
+  environment: develop
   parentRefs:
     - name: d-asa-com-br-internal-gateway
       namespace: asa-infra-nginx-gateway
       group: gateway.networking.k8s.io
       kind: Gateway
-  # Empty ⇒ default hostname <release>.dev.asa.corp (+ .d.asa.com.br when exposeAsaComBr)
+  # Empty ⇒ derived from environment; non-empty overrides completely
   hostnames: []
