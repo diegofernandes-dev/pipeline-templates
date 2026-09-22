@@ -139,7 +139,7 @@ assert_contains "$OUT_GCP" "\"audience\": \"${WIF_AUD}\"" "external_account audi
 assert_contains "$OUT_GCP" "\"file\": \"/var/run/secrets/eks.amazonaws.com/serviceaccount/token\"" "credential_source.file"
 assert_contains "$OUT_GCP" "serviceAccounts/${WIF_SA}:generateAccessToken" "SA impersonation URL"
 assert_contains "$OUT_GCP" "serviceAccountToken:" "projected ServiceAccount token"
-assert_contains "$OUT_GCP" "audience: \"${WIF_AUD}\"" "projected token audience = gcp.audience"
+assert_contains "$OUT_GCP" 'audience: "sts.amazonaws.com"' "projected token audience = sts.amazonaws.com"
 assert_contains "$OUT_GCP" "expirationSeconds: 3600" "WIF token expiration"
 assert_contains "$OUT_GCP" 'mountPath: "/var/run/secrets/eks.amazonaws.com/serviceaccount"' "WIF token mountPath"
 assert_contains "$OUT_GCP" 'name: "sample-api-wif-credentials"' "GCP credentials ConfigMap volume"
@@ -149,6 +149,14 @@ assert_contains "$OUT_GCP" 'value: "/var/run/secrets/google/external-account.jso
 assert_contains "$OUT_GCP" "GOOGLE_CLOUD_PROJECT" "GOOGLE_CLOUD_PROJECT set"
 assert_contains "$OUT_GCP" 'value: "my-gcp-project"' "projectId value"
 assert_contains "$OUT_GCP" "checksum/wif:" "pod rolls on WIF ConfigMap change"
+
+echo "== WIF token.audience override =="
+OUT_AUD_OVR="$(render develop \
+  --set-string "workloadIdentity.gcp.audience=${WIF_AUD}" \
+  --set-string "workloadIdentity.gcp.serviceAccountEmail=${WIF_SA}" \
+  --set-string workloadIdentity.token.audience=custom-token-audience)"
+assert_contains "$OUT_AUD_OVR" 'audience: "custom-token-audience"' "projected token uses token.audience override"
+assert_contains "$OUT_AUD_OVR" "\"audience\": \"${WIF_AUD}\"" "external_account audience unchanged by token override"
 
 echo "== IRSA + GCP WIF composition =="
 OUT_BOTH="$(render develop \

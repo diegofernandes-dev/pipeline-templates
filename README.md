@@ -138,7 +138,7 @@ Runtime é sempre **EKS**. Sem manifesto de identidade ⇒ SA sem IRSA, sem WIF.
 
 **EKS → AWS (IRSA):** annotation no manifesto; Role IAM fora do chart.
 
-**EKS → GCP:** `workloadIdentity.gcp` no manifesto (`audience`, `serviceAccountEmail`, opcional `projectId`). O chart gera o ConfigMap `external_account` e o projected token — sem CM pré-provisionado. Opt-out: `workloadIdentity: false`. `automountServiceAccountToken` permanece `false`.
+**EKS → GCP:** `workloadIdentity.gcp` no manifesto (`audience` = provider GCP no `external_account`, `serviceAccountEmail`, opcional `projectId`). O projected SA token usa `token.audience` (default `sts.amazonaws.com`, contrato corporativo EKS→GCP). Chart gera o ConfigMap — sem CM pré-provisionado. Opt-out: `workloadIdentity: false`. `automountServiceAccountToken` permanece `false`.
 
 IRSA e GCP WIF podem coexistir no mesmo ServiceAccount/pod.
 

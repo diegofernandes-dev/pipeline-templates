@@ -26,13 +26,7 @@ external-account.json
 {{- define "chart.workloadIdentityTokenAudience" -}}
 {{- $wi := .Values.workloadIdentity | default dict -}}
 {{- $token := $wi.token | default dict -}}
-{{- $gcp := $wi.gcp | default dict -}}
-{{- $override := $token.audience | default "" -}}
-{{- if $override -}}
-{{- $override -}}
-{{- else -}}
-{{- $gcp.audience | default "" -}}
-{{- end -}}
+{{- $token.audience | default "sts.amazonaws.com" -}}
 {{- end }}
 
 {{- define "chart.workloadIdentityTokenExpirationSeconds" -}}

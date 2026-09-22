@@ -14,6 +14,7 @@ autoscaling:
 #     eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT:role/sample-api-develop
 
 # Chart creates {release}-wif-credentials ConfigMap (external_account). No pre-provisioned CM.
+# gcp.audience = external_account aud; token.audience defaults to sts.amazonaws.com (projected JWT).
 # workloadIdentity:
 #   gcp:
 #     audience: //iam.googleapis.com/projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/POOL/providers/PROVIDER
