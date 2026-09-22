@@ -165,8 +165,11 @@ Em lab sem esse acesso (ex. Rancher), provisione o secret fora da plataforma e d
 ## Testes
 
 ```bash
+helm lint charts/app
 ./tests/chart-invariants.sh
 ```
+
+Cobre baseline API, IRSA, WIF, ConfigMap, ExternalSecret, PVC, CronJob, PDB, HTTPRoute e os principais estados inválidos (WIF incompleto, PVC+HPA, CronJob/ESO/persistence parciais).
 
 ## Freeze (Helm)
 

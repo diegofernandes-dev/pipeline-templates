@@ -1,5 +1,13 @@
 #!/usr/bin/env bash
 # Minimal chart invariants — no heavy test framework.
+#
+# Matrix (freeze hardening Item 5):
+#   happy: baseline API, IRSA, GCP WIF, IRSA+WIF, ConfigMap, ExternalSecret,
+#          PVC, CronJob, PDB, HTTPRoute
+#   fail:  WIF incomplete, PVC+HPA, PVC+replicas>1, persistence:true,
+#          cronJob:true, CronJob without command/args, ExternalSecret partial,
+#          externalSecret:true, persistence without size
+# Run: helm lint charts/app && ./tests/chart-invariants.sh
 set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -49,6 +57,7 @@ assert_not_contains "$LIMITS" "cpu:" "no CPU under limits"
 echo "== HPA / Deployment replicas =="
 OUT="$(render develop)"
 assert_contains "$OUT" "kind: HorizontalPodAutoscaler" "HPA rendered when enabled"
+assert_contains "$OUT" "averageUtilization: 70" "HPA target CPU 70"
 assert_not_contains "$OUT" "replicas:" "Deployment omits replicas when HPA enabled"
 
 echo "== PDB default off =="
@@ -72,6 +81,7 @@ assert_contains "$OUT" "runAsNonRoot: true" "pod runAsNonRoot"
 assert_contains "$OUT" "readOnlyRootFilesystem: true" "readOnlyRootFilesystem"
 assert_contains "$OUT" "allowPrivilegeEscalation: false" "no privilege escalation"
 assert_contains "$OUT" "type: RuntimeDefault" "seccomp RuntimeDefault"
+assert_contains "$OUT" "- ALL" "capabilities drop ALL"
 assert_contains "$OUT" "kind: Service" "Service rendered"
 assert_contains "$OUT" "targetPort: http" "Service targetPort http"
 assert_contains "$OUT" "containerPort: 8080" "containerPort 8080"
@@ -197,6 +207,7 @@ OUT_ES="$(render develop \
   --set-string 'externalSecret.data[0].remoteRef.key=asa/sample-api/develop/cs' \
   --set-string 'externalSecret.data[0].remoteRef.property=password')"
 assert_contains "$OUT_ES" "kind: ExternalSecret" "ExternalSecret rendered"
+assert_contains "$OUT_ES" "kind: ClusterSecretStore" "default SecretStore kind"
 assert_contains "$OUT_ES" "name: sample-api-secret" "target Secret name"
 assert_contains "$OUT_ES" "secretRef:" "envFrom secretRef"
 assert_contains "$OUT_ES" 'property: "password"' "remoteRef.property rendered"
@@ -228,6 +239,14 @@ if OUT_ES_STORE="$(render develop \
   FAILED=1
 else
   assert_contains "$OUT_ES_STORE" "externalSecret.data" "fail message for store without data"
+fi
+
+echo "== externalSecret rejects bare true =="
+if OUT_ES_TRUE="$(render develop --set externalSecret=true 2>&1)"; then
+  echo "FAIL: externalSecret: true should fail template"
+  FAILED=1
+else
+  assert_contains "$OUT_ES_TRUE" "externalSecret: true is invalid" "fail message for externalSecret: true"
 fi
 
 echo "== manifesto-style HPA override =="
@@ -311,6 +330,28 @@ assert_not_contains "$CRON_SECTION" "startupProbe:" "CronJob has no startupProbe
 assert_not_contains "$CRON_SECTION" "livenessProbe:" "CronJob has no livenessProbe"
 assert_not_contains "$CRON_SECTION" "readinessProbe:" "CronJob has no readinessProbe"
 
+echo "== cronJob accepts command without args =="
+OUT_CRON_CMD="$(render develop \
+  --set-string 'cronJob.schedule=0 7 * * *' \
+  --set-string 'cronJob.command[0]=dotnet' \
+  --set-string 'cronJob.command[1]=Sample.Api.dll')"
+assert_contains "$OUT_CRON_CMD" "kind: CronJob" "CronJob rendered with command only"
+assert_contains "$OUT_CRON_CMD" "dotnet" "CronJob command"
+
+echo "== cronJob + PVC: CronJob still without PVC mount =="
+OUT_CRON_PVC="$(render develop \
+  --set autoscaling=false \
+  --set replicaCount=1 \
+  --set-string persistence.mountPath=/data \
+  --set-string persistence.size=1Gi \
+  --set-string 'cronJob.schedule=0 8 * * *' \
+  --set-string 'cronJob.args[0]=--mode=job')"
+assert_contains "$OUT_CRON_PVC" "kind: PersistentVolumeClaim" "PVC present with CronJob"
+assert_contains "$OUT_CRON_PVC" "kind: CronJob" "CronJob present with PVC"
+CRON_PVC_SECTION="$(awk '/kind: CronJob/,/^---$/ {print}' <<<"$OUT_CRON_PVC")"
+assert_not_contains "$CRON_PVC_SECTION" "persistentVolumeClaim:" "CronJob does not mount PVC when persistence on"
+assert_contains "$OUT_CRON_PVC" 'mountPath: "/data"' "Deployment still mounts PVC with CronJob"
+
 echo "== cronJob reuses config + WIF =="
 WIF_AUD="//iam.googleapis.com/projects/123456789/locations/global/workloadIdentityPools/pool/providers/eks"
 WIF_SA="app-sa@my-gcp-project.iam.gserviceaccount.com"
@@ -350,6 +391,16 @@ if OUT_PVC_TRUE="$(render develop --set persistence=true 2>&1)"; then
   FAILED=1
 else
   assert_contains "$OUT_PVC_TRUE" "persistence: true is invalid" "fail message for persistence: true"
+fi
+
+echo "== persistence rejects mountPath without size =="
+if OUT_PVC_NOSIZE="$(render develop \
+  --set autoscaling=false \
+  --set-string persistence.mountPath=/data 2>&1)"; then
+  echo "FAIL: persistence mountPath without size should fail template"
+  FAILED=1
+else
+  assert_contains "$OUT_PVC_NOSIZE" "persistence.size" "fail message for mountPath without size"
 fi
 
 echo "== cronJob rejects bare true =="
