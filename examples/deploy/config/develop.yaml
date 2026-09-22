@@ -1,7 +1,7 @@
 # Example per-environment manifesto (copy to the app repo as deploy/config/develop.yaml).
 # Pipeline applies: helm upgrade -f deploy/config/<ADO_ENVIRONMENT>.yaml
 # Rule: if you set a block, it applies. Omit the block to keep chart defaults.
-# Do NOT put secret values here — use externalSecret refs (ESO) or a pre-provisioned ConfigMap for WIF JSON.
+# Do NOT put secret values here — use externalSecret refs (ESO).
 
 autoscaling:
   minReplicas: 1
@@ -13,11 +13,13 @@ autoscaling:
 #   annotations:
 #     eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT:role/sample-api-develop
 
+# Chart creates {release}-wif-credentials ConfigMap (external_account). No pre-provisioned CM.
 # workloadIdentity:
-#   enabled: true
 #   gcp:
-#     credentialsConfigMapName: wif-gcp-credentials
+#     audience: //iam.googleapis.com/projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/POOL/providers/PROVIDER
+#     serviceAccountEmail: app-sa@my-gcp-project.iam.gserviceaccount.com
 #     projectId: my-gcp-project
+# workloadIdentity: false   # opt-out for this env
 
 config:
   API_URL: https://api.dev.example

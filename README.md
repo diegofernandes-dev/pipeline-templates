@@ -119,7 +119,7 @@ O Deploy faz `helm upgrade -f deploy/config/<Environment>.yaml` quando o ficheir
 | `config` (map não vazio) | ConfigMap `{app}-config` → `envFrom` |
 | `externalSecret.data` + `secretStoreRef.name` | CR ExternalSecret → Secret `{app}-secret` → `envFrom` (requer ESO) |
 | `serviceAccount.annotations` | IRSA (`eks.amazonaws.com/role-arn`) |
-| `workloadIdentity` | WIF EKS→GCP (CM pré-existente / ESO; sem JSON no Git) |
+| `workloadIdentity.gcp.audience` (+ `serviceAccountEmail`) | WIF EKS→GCP; chart cria `{app}-wif-credentials` (`external_account`) |
 | `autoscaling` (map) | HPA; para desligar no env: `autoscaling: false` |
 | `resources` / `pdb` | Overrides por env |
 
@@ -135,7 +135,7 @@ Runtime é sempre **EKS**. Sem manifesto de identidade ⇒ SA sem IRSA, sem WIF.
 
 **EKS → AWS (IRSA):** annotation no manifesto; Role IAM fora do chart.
 
-**EKS → GCP:** `workloadIdentity` no manifesto + ConfigMap `external_account` (ou sync ESO). `automountServiceAccountToken` permanece `false`; WIF usa projected token.
+**EKS → GCP:** `workloadIdentity.gcp` no manifesto (`audience`, `serviceAccountEmail`, opcional `projectId`). O chart gera o ConfigMap `external_account` e o projected token — sem CM pré-provisionado. Opt-out: `workloadIdentity: false`. `automountServiceAccountToken` permanece `false`.
 
 IRSA e GCP WIF podem coexistir no mesmo ServiceAccount/pod.
 

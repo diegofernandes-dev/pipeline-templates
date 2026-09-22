@@ -1,16 +1,38 @@
 {{/*
-EKS → GCP Workload Identity Federation (projected SA token + external_account ConfigMap).
+EKS → GCP Workload Identity Federation.
+Chart renders external_account ConfigMap from manifesto (no pre-provisioned CM).
 IRSA (eks.amazonaws.com/role-arn) is configured separately via serviceAccount.annotations.
+Presence: gcp.audience non-empty ⇒ on. Opt-out: workloadIdentity: false
 */}}
 
 {{- define "chart.workloadIdentityEnabled" -}}
-{{- if .Values.workloadIdentity.enabled -}}true{{- else -}}false{{- end -}}
+{{- $wi := .Values.workloadIdentity -}}
+{{- if kindIs "bool" $wi -}}
+{{- if $wi -}}true{{- else -}}false{{- end -}}
+{{- else -}}
+{{- $gcp := ($wi | default dict).gcp | default dict -}}
+{{- if $gcp.audience | default "" -}}true{{- else -}}false{{- end -}}
+{{- end -}}
+{{- end }}
+
+{{- define "chart.workloadIdentityConfigMapName" -}}
+{{- printf "%s-wif-credentials" .Release.Name -}}
+{{- end }}
+
+{{- define "chart.workloadIdentityCredentialsKey" -}}
+external-account.json
 {{- end }}
 
 {{- define "chart.workloadIdentityTokenAudience" -}}
 {{- $wi := .Values.workloadIdentity | default dict -}}
 {{- $token := $wi.token | default dict -}}
-{{- $token.audience | default "sts.amazonaws.com" -}}
+{{- $gcp := $wi.gcp | default dict -}}
+{{- $override := $token.audience | default "" -}}
+{{- if $override -}}
+{{- $override -}}
+{{- else -}}
+{{- $gcp.audience | default "" -}}
+{{- end -}}
 {{- end }}
 
 {{- define "chart.workloadIdentityTokenExpirationSeconds" -}}
@@ -41,20 +63,40 @@ aws-token
 {{- $token.defaultMode | default 420 -}}
 {{- end }}
 
+{{- define "chart.workloadIdentityTokenFilePath" -}}
+{{- printf "%s/%s" (include "chart.workloadIdentityTokenMountPath" .) (include "chart.workloadIdentityTokenFileName" .) -}}
+{{- end }}
+
 {{- define "chart.workloadIdentityGCPCredentialsPath" -}}
+{{- printf "/var/run/secrets/google/%s" (include "chart.workloadIdentityCredentialsKey" .) -}}
+{{- end }}
+
+{{- define "chart.workloadIdentityExternalAccount" -}}
 {{- $wi := .Values.workloadIdentity | default dict -}}
 {{- $gcp := $wi.gcp | default dict -}}
-{{- $key := $gcp.credentialsConfigMapKey | default "external-account.json" -}}
-{{- printf "/var/run/secrets/google/%s" $key -}}
+{{- $cred := dict
+  "type" "external_account"
+  "audience" ($gcp.audience | required "workloadIdentity.gcp.audience is required")
+  "subject_token_type" "urn:ietf:params:oauth:token-type:jwt"
+  "token_url" "https://sts.googleapis.com/v1/token"
+  "credential_source" (dict
+    "file" (include "chart.workloadIdentityTokenFilePath" .)
+    "format" (dict "type" "text")
+  )
+  "service_account_impersonation_url" (printf "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/%s:generateAccessToken" ($gcp.serviceAccountEmail | required "workloadIdentity.gcp.serviceAccountEmail is required"))
+ -}}
+{{- $cred | toPrettyJson -}}
 {{- end }}
 
 {{- define "chart.validateWorkloadIdentity" -}}
-{{- if .Values.workloadIdentity.enabled -}}
+{{- if (include "chart.workloadIdentityEnabled" .) | eq "true" -}}
 {{- if not .Values.serviceAccount.create -}}
 {{- fail "workloadIdentity requires serviceAccount.create=true" -}}
 {{- end -}}
-{{- $gcp := .Values.workloadIdentity.gcp | default dict -}}
-{{- $_ := required "workloadIdentity.gcp.credentialsConfigMapName is required when workloadIdentity.enabled=true" ($gcp.credentialsConfigMapName | default "") -}}
+{{- $wi := .Values.workloadIdentity | default dict -}}
+{{- $gcp := $wi.gcp | default dict -}}
+{{- $_ := required "workloadIdentity.gcp.audience is required when workloadIdentity is set" ($gcp.audience | default "") -}}
+{{- $_ := required "workloadIdentity.gcp.serviceAccountEmail is required when workloadIdentity is set" ($gcp.serviceAccountEmail | default "") -}}
 {{- $expiration := include "chart.workloadIdentityTokenExpirationSeconds" . | int -}}
 {{- if lt $expiration 600 -}}
 {{- fail "workloadIdentity.token.expirationSeconds must be >= 600" -}}
@@ -81,12 +123,9 @@ env:
 - name: {{ include "chart.workloadIdentityTokenVolumeName" . }}
   mountPath: {{ include "chart.workloadIdentityTokenMountPath" . | quote }}
   readOnly: true
-{{- $gcp := .Values.workloadIdentity.gcp | default dict -}}
-{{- if $gcp.credentialsConfigMapName | default "" }}
 - name: gcp-credentials
   mountPath: /var/run/secrets/google
   readOnly: true
-{{- end }}
 {{- end }}
 {{- end }}
 
@@ -100,11 +139,8 @@ env:
           audience: {{ include "chart.workloadIdentityTokenAudience" . | quote }}
           expirationSeconds: {{ include "chart.workloadIdentityTokenExpirationSeconds" . }}
           path: {{ include "chart.workloadIdentityTokenFileName" . | quote }}
-{{- $gcp := .Values.workloadIdentity.gcp | default dict -}}
-{{- if $gcp.credentialsConfigMapName | default "" }}
 - name: gcp-credentials
   configMap:
-    name: {{ $gcp.credentialsConfigMapName | quote }}
-{{- end }}
+    name: {{ include "chart.workloadIdentityConfigMapName" . | quote }}
 {{- end }}
 {{- end }}

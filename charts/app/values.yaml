@@ -17,18 +17,18 @@ serviceAccount:
   automountServiceAccountToken: false
 
 # EKS → GCP Workload Identity Federation (Pub/Sub etc.). Opt-in via manifesto.
-# Point credentialsConfigMapName at a pre-existing ConfigMap (or one synced by ESO).
+# Presence: gcp.audience non-empty ⇒ on (chart creates external_account ConfigMap).
+# Opt-out in an env: workloadIdentity: false
+# token.audience defaults to gcp.audience (projected SA token).
 workloadIdentity:
-  enabled: false
   token:
-    audience: sts.amazonaws.com
     expirationSeconds: 3600
     fileName: token
     mountPath: /var/run/secrets/eks.amazonaws.com/serviceaccount
     defaultMode: 420
   gcp:
-    credentialsConfigMapName: ""
-    credentialsConfigMapKey: external-account.json
+    audience: ""
+    serviceAccountEmail: ""
     projectId: ""
 
 # Non-sensitive app config → ConfigMap → envFrom.

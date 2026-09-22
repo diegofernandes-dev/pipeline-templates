@@ -92,31 +92,41 @@ OUT_IRSA="$(render develop --set-string 'serviceAccount.annotations.eks\.amazona
 assert_contains "$OUT_IRSA" "eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/sample-api" "IRSA annotation on ServiceAccount"
 assert_contains "$OUT_IRSA" "kind: ServiceAccount" "ServiceAccount rendered with IRSA"
 
+WIF_AUD="//iam.googleapis.com/projects/123456789/locations/global/workloadIdentityPools/pool/providers/eks"
+WIF_SA="app-sa@my-gcp-project.iam.gserviceaccount.com"
+
 echo "== GCP WIF (EKS → GCP) =="
 OUT_GCP="$(render develop \
-  --set workloadIdentity.enabled=true \
-  --set-string workloadIdentity.gcp.credentialsConfigMapName=gcp-external-account-config \
+  --set-string "workloadIdentity.gcp.audience=${WIF_AUD}" \
+  --set-string "workloadIdentity.gcp.serviceAccountEmail=${WIF_SA}" \
   --set-string workloadIdentity.gcp.projectId=my-gcp-project)"
+assert_contains "$OUT_GCP" "name: sample-api-wif-credentials" "chart-owned WIF ConfigMap"
+assert_contains "$OUT_GCP" '"type": "external_account"' "external_account type"
+assert_contains "$OUT_GCP" "\"audience\": \"${WIF_AUD}\"" "external_account audience"
+assert_contains "$OUT_GCP" "\"file\": \"/var/run/secrets/eks.amazonaws.com/serviceaccount/token\"" "credential_source.file"
+assert_contains "$OUT_GCP" "serviceAccounts/${WIF_SA}:generateAccessToken" "SA impersonation URL"
 assert_contains "$OUT_GCP" "serviceAccountToken:" "projected ServiceAccount token"
-assert_contains "$OUT_GCP" 'audience: "sts.amazonaws.com"' "WIF token audience"
+assert_contains "$OUT_GCP" "audience: \"${WIF_AUD}\"" "projected token audience = gcp.audience"
 assert_contains "$OUT_GCP" "expirationSeconds: 3600" "WIF token expiration"
 assert_contains "$OUT_GCP" 'mountPath: "/var/run/secrets/eks.amazonaws.com/serviceaccount"' "WIF token mountPath"
-assert_contains "$OUT_GCP" 'name: "gcp-external-account-config"' "GCP credentials ConfigMap volume"
+assert_contains "$OUT_GCP" 'name: "sample-api-wif-credentials"' "GCP credentials ConfigMap volume"
 assert_contains "$OUT_GCP" "mountPath: /var/run/secrets/google" "GCP credentials mount"
 assert_contains "$OUT_GCP" "GOOGLE_APPLICATION_CREDENTIALS" "GOOGLE_APPLICATION_CREDENTIALS set"
 assert_contains "$OUT_GCP" 'value: "/var/run/secrets/google/external-account.json"' "ADC path"
 assert_contains "$OUT_GCP" "GOOGLE_CLOUD_PROJECT" "GOOGLE_CLOUD_PROJECT set"
 assert_contains "$OUT_GCP" 'value: "my-gcp-project"' "projectId value"
+assert_contains "$OUT_GCP" "checksum/wif:" "pod rolls on WIF ConfigMap change"
 
 echo "== IRSA + GCP WIF composition =="
 OUT_BOTH="$(render develop \
   --set-string 'serviceAccount.annotations.eks\.amazonaws\.com/role-arn=arn:aws:iam::123456789012:role/sample-api' \
-  --set workloadIdentity.enabled=true \
-  --set-string workloadIdentity.gcp.credentialsConfigMapName=gcp-external-account-config)"
+  --set-string "workloadIdentity.gcp.audience=${WIF_AUD}" \
+  --set-string "workloadIdentity.gcp.serviceAccountEmail=${WIF_SA}")"
 SA_COUNT="$(grep -c 'kind: ServiceAccount' <<<"$OUT_BOTH" || true)"
 assert_contains "$OUT_BOTH" "eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/sample-api" "composed IRSA annotation"
 assert_contains "$OUT_BOTH" "serviceAccountToken:" "composed projected token"
 assert_contains "$OUT_BOTH" "GOOGLE_APPLICATION_CREDENTIALS" "composed GCP ADC"
+assert_contains "$OUT_BOTH" "name: sample-api-wif-credentials" "composed chart-owned WIF ConfigMap"
 if [[ "$SA_COUNT" -ne 1 ]]; then
   echo "FAIL: expected exactly one ServiceAccount (got ${SA_COUNT})"
   FAILED=1
