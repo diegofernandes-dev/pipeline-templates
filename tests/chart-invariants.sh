@@ -54,11 +54,29 @@ assert_not_contains "$OUT" "replicas:" "Deployment omits replicas when HPA enabl
 echo "== PDB default off =="
 assert_not_contains "$OUT" "kind: PodDisruptionBudget" "PDB not rendered by default"
 
+echo "== PDB enabled =="
+OUT_PDB="$(render develop --set pdb.enabled=true --set pdb.maxUnavailable=1)"
+assert_contains "$OUT_PDB" "kind: PodDisruptionBudget" "PDB rendered when enabled"
+assert_contains "$OUT_PDB" "name: sample-api" "PDB name"
+assert_contains "$OUT_PDB" "maxUnavailable: 1" "PDB maxUnavailable"
+assert_contains "$OUT_PDB" "app: sample-api" "PDB selector matches Deployment"
+
 echo "== probes contract =="
 assert_contains "$OUT" "path: /health-check" "probes use /health-check"
 assert_contains "$OUT" "startupProbe:" "startupProbe present"
 assert_contains "$OUT" "livenessProbe:" "livenessProbe present"
 assert_contains "$OUT" "readinessProbe:" "readinessProbe present"
+
+echo "== security + service contract =="
+assert_contains "$OUT" "runAsNonRoot: true" "pod runAsNonRoot"
+assert_contains "$OUT" "readOnlyRootFilesystem: true" "readOnlyRootFilesystem"
+assert_contains "$OUT" "allowPrivilegeEscalation: false" "no privilege escalation"
+assert_contains "$OUT" "type: RuntimeDefault" "seccomp RuntimeDefault"
+assert_contains "$OUT" "kind: Service" "Service rendered"
+assert_contains "$OUT" "targetPort: http" "Service targetPort http"
+assert_contains "$OUT" "containerPort: 8080" "containerPort 8080"
+assert_contains "$OUT" "automountServiceAccountToken: false" "SA token not automounted"
+assert_contains "$OUT" "mountPath: /tmp" "tmp emptyDir mount"
 
 echo "== hostnames by environment =="
 OUT_DEV="$(render develop)"
@@ -75,6 +93,18 @@ OUT_EXPOSE="$(render develop --set httpRoute.exposeAsaComBr=true)"
 assert_contains "$OUT_EXPOSE" "sample-api.dev.asa.corp" "expose keeps corp"
 assert_contains "$OUT_EXPOSE" "sample-api.d.asa.com.br" "expose adds asa.com.br"
 assert_not_contains "$OUT_EXPOSE" "external-dns.alpha.kubernetes.io/hostname" "no ExternalDNS annotation duplicate"
+
+echo "== HTTPRoute hostnames override =="
+OUT_HOSTS="$(render develop \
+  --set-string 'httpRoute.hostnames[0]=custom.example.com' \
+  --set-string 'httpRoute.hostnames[1]=alt.example.com')"
+assert_contains "$OUT_HOSTS" "custom.example.com" "custom hostname override"
+assert_contains "$OUT_HOSTS" "alt.example.com" "second custom hostname"
+assert_not_contains "$OUT_HOSTS" "sample-api.dev.asa.corp" "derived corp hostname skipped when hostnames set"
+
+echo "== HTTPRoute disabled =="
+OUT_NO_ROUTE="$(render develop --set httpRoute.enabled=false)"
+assert_not_contains "$OUT_NO_ROUTE" "kind: HTTPRoute" "HTTPRoute off when enabled=false"
 
 echo "== Gateway by environment =="
 assert_contains "$OUT_DEV" "name: d-asa-com-br-internal-gateway" "develop gateway"
@@ -156,10 +186,12 @@ echo "== externalSecret + secretRef =="
 OUT_ES="$(render develop \
   --set-string externalSecret.secretStoreRef.name=aws-secretsmanager \
   --set-string 'externalSecret.data[0].secretKey=ConnectionStrings__Default' \
-  --set-string 'externalSecret.data[0].remoteRef.key=asa/sample-api/develop/cs')"
+  --set-string 'externalSecret.data[0].remoteRef.key=asa/sample-api/develop/cs' \
+  --set-string 'externalSecret.data[0].remoteRef.property=password')"
 assert_contains "$OUT_ES" "kind: ExternalSecret" "ExternalSecret rendered"
 assert_contains "$OUT_ES" "name: sample-api-secret" "target Secret name"
 assert_contains "$OUT_ES" "secretRef:" "envFrom secretRef"
+assert_contains "$OUT_ES" 'property: "password"' "remoteRef.property rendered"
 assert_not_contains "$OUT_ES" "kind: ConfigMap" "no ConfigMap when only externalSecret"
 
 echo "== config + externalSecret composition =="
@@ -266,6 +298,40 @@ assert_contains "$OUT_CRON_ID" "name: sample-api-wif-credentials" "CronJob WIF C
 echo "== cronJob opt-out =="
 OUT_NO_CRON="$(render develop --set cronJob=false)"
 assert_not_contains "$OUT_NO_CRON" "kind: CronJob" "CronJob off when cronJob: false"
+
+echo "== WIF rejects missing serviceAccountEmail =="
+if OUT_WIF_BAD="$(render develop \
+  --set-string "workloadIdentity.gcp.audience=${WIF_AUD}" 2>&1)"; then
+  echo "FAIL: WIF without serviceAccountEmail should fail template"
+  FAILED=1
+else
+  assert_contains "$OUT_WIF_BAD" "serviceAccountEmail" "fail message for WIF without email"
+fi
+
+echo "== WIF opt-out =="
+OUT_NO_WIF="$(render develop --set workloadIdentity=false)"
+assert_not_contains "$OUT_NO_WIF" "GOOGLE_APPLICATION_CREDENTIALS" "WIF off when workloadIdentity: false"
+assert_not_contains "$OUT_NO_WIF" "name: sample-api-wif-credentials" "no WIF ConfigMap when opted out"
+
+echo "== persistence rejects bare true =="
+if OUT_PVC_TRUE="$(render develop --set persistence=true 2>&1)"; then
+  echo "FAIL: persistence: true should fail template"
+  FAILED=1
+else
+  assert_contains "$OUT_PVC_TRUE" "persistence: true is invalid" "fail message for persistence: true"
+fi
+
+echo "== cronJob rejects bare true =="
+if OUT_CRON_TRUE="$(render develop --set cronJob=true 2>&1)"; then
+  echo "FAIL: cronJob: true should fail template"
+  FAILED=1
+else
+  assert_contains "$OUT_CRON_TRUE" "cronJob: true is invalid" "fail message for cronJob: true"
+fi
+
+echo "== persistence opt-out =="
+OUT_NO_PVC="$(render develop --set persistence=false)"
+assert_not_contains "$OUT_NO_PVC" "kind: PersistentVolumeClaim" "PVC off when persistence: false"
 
 if [[ "$FAILED" -ne 0 ]]; then
   echo "Some invariants failed"
