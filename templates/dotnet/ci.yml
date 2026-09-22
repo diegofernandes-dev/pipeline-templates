@@ -289,24 +289,29 @@ stages:
                   fi
                   echo "##[endgroup]"
 
-                  echo "##[group]buildctl build+push ${IMAGE_REF} (RUNTIME_IMAGE=${RUNTIME_IMAGE} APP_DLL=${APP_DLL})"
-                  buildctl build \
-                    --frontend dockerfile.v0 \
-                    --local context="${APP_CONTEXT}" \
-                    --local dockerfile="${DOCKERFILE_DIR}" \
-                    --opt filename=Dockerfile \
-                    --opt "build-arg:RUNTIME_IMAGE=${RUNTIME_IMAGE}" \
-                    --opt "build-arg:APP_DLL=${APP_DLL}" \
-                    --opt platform=linux/amd64 \
-                    --output "type=image,name=${IMAGE_REF},push=true"
-                  echo "##[endgroup]"
-
                   IMAGE_REPOSITORY="${REGISTRY}/${ECR_REPOSITORY}"
+
+                  # Commit SHA tags + ECR IMMUTABLE: re-runs of the same commit must reuse, not overwrite.
+                  if EXISTING_DIGEST="$(crane digest "${IMAGE_REF}" 2>/dev/null)"; then
+                    echo "Image ${IMAGE_REF} already exists (${EXISTING_DIGEST}) — skipping build/push (immutable tag)"
+                  else
+                    echo "##[group]buildctl build+push ${IMAGE_REF} (RUNTIME_IMAGE=${RUNTIME_IMAGE} APP_DLL=${APP_DLL})"
+                    buildctl build \
+                      --frontend dockerfile.v0 \
+                      --local context="${APP_CONTEXT}" \
+                      --local dockerfile="${DOCKERFILE_DIR}" \
+                      --opt filename=Dockerfile \
+                      --opt "build-arg:RUNTIME_IMAGE=${RUNTIME_IMAGE}" \
+                      --opt "build-arg:APP_DLL=${APP_DLL}" \
+                      --opt platform=linux/amd64 \
+                      --output "type=image,name=${IMAGE_REF},push=true"
+                    echo "##[endgroup]"
+                    echo "Pushed ${IMAGE_REF}"
+                  fi
 
                   echo "##vso[task.setvariable variable=imageRef;isOutput=true]${IMAGE_REF}"
                   echo "##vso[task.setvariable variable=imageTag;isOutput=true]${IMAGE_TAG}"
                   echo "##vso[task.setvariable variable=imageRepository;isOutput=true]${IMAGE_REPOSITORY}"
-                  echo "Pushed ${IMAGE_REF}"
 
     - template: helm-deploy.yml
       parameters:
