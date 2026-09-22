@@ -1,4 +1,5 @@
 {{- include "chart.validateWorkloadIdentity" . }}
+{{- include "chart.validatePersistence" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -77,8 +78,17 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            {{- if (include "chart.persistenceEnabled" .) | eq "true" }}
+            - name: data
+              mountPath: {{ .Values.persistence.mountPath | quote }}
+            {{- end }}
             {{- include "app.workloadIdentityVolumeMounts" . | nindent 12 }}
       volumes:
         - name: tmp
           emptyDir: {}
+        {{- if (include "chart.persistenceEnabled" .) | eq "true" }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "chart.persistencePvcName" . }}
+        {{- end }}
         {{- include "app.workloadIdentityVolumes" . | nindent 8 }}

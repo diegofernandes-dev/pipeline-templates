@@ -178,6 +178,48 @@ OUT_NO_HPA="$(render develop --set autoscaling=false)"
 assert_not_contains "$OUT_NO_HPA" "kind: HorizontalPodAutoscaler" "HPA off when autoscaling: false"
 assert_contains "$OUT_NO_HPA" "replicas:" "Deployment uses replicas when HPA off"
 
+echo "== persistence baseline =="
+assert_not_contains "$OUT_DEV" "kind: PersistentVolumeClaim" "no PVC by default"
+
+echo "== persistence PVC + mount =="
+OUT_PVC="$(render develop \
+  --set autoscaling=false \
+  --set replicaCount=1 \
+  --set-string persistence.mountPath=/data \
+  --set-string persistence.size=1Gi \
+  --set-string persistence.storageClassName=gp3)"
+assert_contains "$OUT_PVC" "kind: PersistentVolumeClaim" "PVC rendered"
+assert_contains "$OUT_PVC" "name: sample-api-data" "PVC name"
+assert_contains "$OUT_PVC" "helm.sh/resource-policy: keep" "PVC keep on uninstall"
+assert_contains "$OUT_PVC" "ReadWriteOnce" "RWO access mode"
+assert_contains "$OUT_PVC" 'storage: "1Gi"' "PVC size"
+assert_contains "$OUT_PVC" 'storageClassName: "gp3"' "storageClassName"
+assert_contains "$OUT_PVC" "claimName: sample-api-data" "Deployment PVC volume"
+assert_contains "$OUT_PVC" 'mountPath: "/data"' "Deployment mountPath"
+assert_not_contains "$OUT_PVC" "kind: HorizontalPodAutoscaler" "HPA off with persistence"
+
+echo "== persistence rejects HPA =="
+if OUT_PVC_HPA="$(render develop \
+  --set-string persistence.mountPath=/data \
+  --set-string persistence.size=1Gi 2>&1)"; then
+  echo "FAIL: persistence+HPA should fail template"
+  FAILED=1
+else
+  assert_contains "$OUT_PVC_HPA" "persistence requires autoscaling: false" "fail message for HPA+persistence"
+fi
+
+echo "== persistence rejects replicaCount > 1 =="
+if OUT_PVC_REP="$(render develop \
+  --set autoscaling=false \
+  --set replicaCount=2 \
+  --set-string persistence.mountPath=/data \
+  --set-string persistence.size=1Gi 2>&1)"; then
+  echo "FAIL: persistence+replicaCount>1 should fail template"
+  FAILED=1
+else
+  assert_contains "$OUT_PVC_REP" "persistence requires replicaCount: 1" "fail message for replicas+persistence"
+fi
+
 if [[ "$FAILED" -ne 0 ]]; then
   echo "Some invariants failed"
   exit 1

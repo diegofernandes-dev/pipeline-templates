@@ -120,6 +120,7 @@ O Deploy faz `helm upgrade -f deploy/config/<Environment>.yaml` quando o ficheir
 | `externalSecret.data` + `secretStoreRef.name` | CR ExternalSecret → Secret `{app}-secret` → `envFrom` (requer ESO) |
 | `serviceAccount.annotations` | IRSA (`eks.amazonaws.com/role-arn`) |
 | `workloadIdentity.gcp.audience` (+ `serviceAccountEmail`) | WIF EKS→GCP; chart cria `{app}-wif-credentials` (`external_account`) |
+| `persistence.mountPath` (+ `size`) | PVC `{app}-data` (RWO, `resource-policy: keep`); exige `autoscaling: false` e `replicaCount: 1` |
 | `autoscaling` (map) | HPA; para desligar no env: `autoscaling: false` |
 | `resources` / `pdb` | Overrides por env |
 

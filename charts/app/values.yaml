@@ -31,6 +31,14 @@ workloadIdentity:
     serviceAccountEmail: ""
     projectId: ""
 
+# Opt-in PVC (1 claim → 1 mountPath). Presence: mountPath non-empty ⇒ on.
+# Requires autoscaling: false and replicaCount: 1 (RWO). Opt-out: persistence: false
+# PVC keeps data on helm uninstall (helm.sh/resource-policy: keep).
+persistence:
+  mountPath: ""
+  size: ""
+  storageClassName: ""
+
 # Non-sensitive app config → ConfigMap → envFrom.
 # Non-empty map ⇒ on. Omit or {} ⇒ off. (no enabled/data nesting)
 config: {}

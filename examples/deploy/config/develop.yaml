@@ -21,6 +21,13 @@ autoscaling:
 #     projectId: my-gcp-project
 # workloadIdentity: false   # opt-out for this env
 
+# RWO PVC — requires autoscaling: false and replicaCount: 1. Survives helm uninstall (keep).
+# persistence:
+#   mountPath: /data
+#   size: 1Gi
+#   # storageClassName: gp3
+# persistence: false
+
 config:
   API_URL: https://api.dev.example
   FEATURE_FLAG: "true"
