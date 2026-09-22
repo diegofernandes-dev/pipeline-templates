@@ -24,7 +24,7 @@ resources:
       type: github
       name: diegofernandes-dev/pipeline-templates
       endpoint: github-diegofernandes-dev
-      ref: refs/tags/v1.0.0
+      ref: refs/tags/v2.0.0
 
 extends:
   template: templates/dotnet/ci.yml@templates
@@ -66,13 +66,13 @@ Só CI (ex.: PR): `deployEnvironments: []` (default) — sem Container/Deploy.
 | Item | Valor |
 |------|--------|
 | Resources | request CPU `150m`, memory `256Mi`; limit memory `512Mi`; **sem** CPU limit |
-| Probes | contrato `GET /health-check` (startup + liveness + readiness) |
+| Probes | **opt-in** (default off). Sem endpoint presumido — ver seção Probes |
 | HPA | CPU 70%; `minReplicas`/`maxReplicas` = política de disponibilidade (default lab 1/3) |
 | PDB | **off** por default (inútil com 1 réplica + maxUnavailable 1); toggle `pdb.enabled` |
 | Pull ECR | pipeline não cria `imagePullSecret`; cluster/node runtime deve ter acesso ao ECR |
 | HTTPRoute | hostnames + Gateway derivados do Environment (pipeline); `httpRoute.enabled` |
 | Security | non-root, seccomp, drop caps, read-only root + `/tmp` |
-| Opt-ins (manifesto) | IRSA, WIF, config, ExternalSecret, PVC, CronJob |
+| Opt-ins (manifesto) | IRSA, WIF, config, ExternalSecret, PVC, CronJob, **probes** |
 
 Build `linux/amd64`. Helm `--reset-values --atomic --wait`.
 
@@ -123,12 +123,46 @@ O Deploy faz `helm upgrade -f deploy/config/<Environment>.yaml` quando o ficheir
 | `workloadIdentity.gcp.audience` (+ `serviceAccountEmail`) | WIF EKS→GCP; chart cria `{app}-wif-credentials` (`external_account`) |
 | `persistence.mountPath` (+ `size`) | PVC `{app}-data` (RWO, `resource-policy: keep`); exige `autoscaling: false` e `replicaCount: 1` |
 | `cronJob.schedule` + `command` e/ou `args` | CronJob `{app}-cron` (adicional à API; reusa image/SA/config/WIF; sem probes/PVC; labels sem `app=` do Service; schedule sem command/args falha no Helm) |
+| `probes.path` ou `probes.<tipo>.path` | HTTP probes no Deployment (opt-in; default off; ver Probes) |
 | `autoscaling` (map) | HPA; para desligar no env: `autoscaling: false` |
 | `resources` / `pdb` | Overrides por env (`pdb` ainda usa `enabled`) |
 
 Regra do manifesto: **preencheu o bloco ⇒ aplica**. Sem flags `enabled` / nesting `data` em `config`. Omitir o bloco mantém o default do chart.
 
-**Fica fora do manifesto:** `image.*` (CI), `httpRoute.environment` / Gateway (pipeline), probes/security (contrato do chart), valores secretos.
+**Fica fora do manifesto:** `image.*` (CI), `httpRoute.environment` / Gateway (pipeline), securityContext (contrato do chart), valores secretos.
+
+### Probes (opt-in, v2.0.0)
+
+**v1.0.0** (tag imutável): probes sempre ativos em `GET /health-check`.
+
+**v2.0.0+:** nenhum probe por default — a app declara o que expõe.
+
+```yaml
+probes: false          # opt-out explícito (default do chart é {} = off)
+```
+
+```yaml
+probes:
+  path: /health-check  # os três probes no mesmo path
+```
+
+```yaml
+probes:
+  startup:
+    path: /startup
+  readiness:
+    path: /ready
+  liveness:
+    path: /live
+```
+
+```yaml
+probes:
+  readiness:
+    path: /healthz     # só readiness
+```
+
+`probes.path` e `probes.<tipo>.path` **não** podem coexistir. `probes: true` e path sem `/` inicial falham no Helm. Timings usam defaults da plataforma.
 
 **Dependência de plataforma — External Secrets:** usar `externalSecret` exige o External Secrets Operator instalado no cluster (`ExternalSecret` CRD) e um `ClusterSecretStore`/`SecretStore` referenciável. Sem ESO, omita o bloco (não há fallback VG→Secret).
 
@@ -169,22 +203,26 @@ helm lint charts/app
 ./tests/chart-invariants.sh
 ```
 
-Cobre baseline API, IRSA, WIF, ConfigMap, ExternalSecret, PVC, CronJob, PDB, HTTPRoute e os principais estados inválidos (WIF incompleto, PVC+HPA, CronJob/ESO/persistence parciais).
+Cobre baseline API (sem probes por default), IRSA, WIF, ConfigMap, ExternalSecret, PVC, CronJob, PDB, HTTPRoute, probes opt-in e estados inválidos.
 
 ## Freeze (Helm)
 
-**Status: FROZEN** at chart `app` **v1.0.0** (API .NET → EKS).
+| Tag | Chart | Probes |
+|-----|-------|--------|
+| `v1.0.0` | 1.0.0 | sempre `/health-check` (imutável) |
+| `v2.0.0` | 2.0.0 | **opt-in**; default sem probes |
 
-Pin de consumo imutável: Git tag **`v1.0.0`** (`ref: refs/tags/v1.0.0`). Não use `refs/heads/main` em pipelines de produção.
+Pin imutável recomendado: `ref: refs/tags/v2.0.0` (ou `v1.0.0` se ainda no contrato antigo). Não use `refs/heads/main` em pipelines de produção.
 
-Escopo **dentro** do freeze:
+Escopo **dentro** do freeze funcional (capabilities):
 
 ```text
 CI → ECR → Helm
-Deployment + Service + SA + probes + security + resources
+Deployment + Service + SA + security + resources
+Probes HTTP opt-in (manifesto)
 HPA / PDB (opt)
 HTTPRoute + Gateway por Environment
-Manifesto: config, ExternalSecret, IRSA, WIF, PVC, CronJob
+Manifesto: config, ExternalSecret, IRSA, WIF, PVC, CronJob, probes
 ```
 
 **Não** entra sem consumidor real + decisão explícita:
@@ -196,5 +234,6 @@ Manifesto: config, ExternalSecret, IRSA, WIF, PVC, CronJob
 - GKE / multicloud de deploy
 - Image signing, Sonar, cache de build como contrato do template
 - `workloadType` / framework genérico de workloads
+- tcpSocket/exec/gRPC probes / probe engine genérico
 
 Novas capabilities: só com necessidade comprovada e incremento aprovado (bump de chart version).

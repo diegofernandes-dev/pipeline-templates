@@ -80,16 +80,14 @@ resources:
   limits:
     memory: 512Mi
 
-# Platform contract: ASP.NET health endpoint at /health-check (startup/liveness/readiness).
-probes:
-  path: /health-check
-  initialDelaySeconds: 10
-  periodSeconds: 10
-  timeoutSeconds: 3
-  failureThreshold: 3
-  startup:
-    failureThreshold: 30
-    periodSeconds: 5
+# Opt-in HTTP probes (v2). Default {} = no probes (safe for apps without a health endpoint).
+# Explicit opt-out: probes: false
+# Compact: probes.path → startup + readiness + liveness on the same path.
+# Partial: probes.<startup|readiness|liveness>.path independently (only those render).
+# probes.path and probes.<type>.path cannot coexist. probes: true is invalid.
+# Timings use platform defaults in the template when a probe is rendered.
+# (Default must be a map so manifesto -f can set probes.path; bool false blocks Helm merge.)
+probes: {}
 
 podSecurityContext:
   runAsNonRoot: true

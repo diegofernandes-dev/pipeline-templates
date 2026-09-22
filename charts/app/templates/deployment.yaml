@@ -1,5 +1,6 @@
 {{- include "chart.validateWorkloadIdentity" . }}
 {{- include "chart.validatePersistence" . }}
+{{- include "chart.validateProbes" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -67,28 +68,42 @@ spec:
             - name: http
               containerPort: {{ .Values.service.port }}
               protocol: TCP
+          {{- $startupPath := include "chart.probeStartupPath" . -}}
+          {{- $readinessPath := include "chart.probeReadinessPath" . -}}
+          {{- $livenessPath := include "chart.probeLivenessPath" . -}}
+          {{- $probeCfg := (.Values.probes | default dict) -}}
+          {{- if not (kindIs "map" $probeCfg) -}}{{- $probeCfg = dict -}}{{- end -}}
+          {{- $startupCfg := $probeCfg.startup | default dict -}}
+          {{- $readinessCfg := $probeCfg.readiness | default dict -}}
+          {{- $livenessCfg := $probeCfg.liveness | default dict -}}
+          {{- if $startupPath }}
           startupProbe:
             httpGet:
-              path: {{ .Values.probes.path }}
+              path: {{ $startupPath | quote }}
               port: http
-            failureThreshold: {{ .Values.probes.startup.failureThreshold }}
-            periodSeconds: {{ .Values.probes.startup.periodSeconds }}
+            failureThreshold: {{ $startupCfg.failureThreshold | default 30 }}
+            periodSeconds: {{ $startupCfg.periodSeconds | default 5 }}
+          {{- end }}
+          {{- if $livenessPath }}
           livenessProbe:
             httpGet:
-              path: {{ .Values.probes.path }}
+              path: {{ $livenessPath | quote }}
               port: http
-            initialDelaySeconds: {{ .Values.probes.initialDelaySeconds }}
-            periodSeconds: {{ .Values.probes.periodSeconds }}
-            timeoutSeconds: {{ .Values.probes.timeoutSeconds }}
-            failureThreshold: {{ .Values.probes.failureThreshold }}
+            initialDelaySeconds: {{ $livenessCfg.initialDelaySeconds | default 10 }}
+            periodSeconds: {{ $livenessCfg.periodSeconds | default 10 }}
+            timeoutSeconds: {{ $livenessCfg.timeoutSeconds | default 3 }}
+            failureThreshold: {{ $livenessCfg.failureThreshold | default 3 }}
+          {{- end }}
+          {{- if $readinessPath }}
           readinessProbe:
             httpGet:
-              path: {{ .Values.probes.path }}
+              path: {{ $readinessPath | quote }}
               port: http
-            initialDelaySeconds: {{ .Values.probes.initialDelaySeconds }}
-            periodSeconds: {{ .Values.probes.periodSeconds }}
-            timeoutSeconds: {{ .Values.probes.timeoutSeconds }}
-            failureThreshold: {{ .Values.probes.failureThreshold }}
+            initialDelaySeconds: {{ $readinessCfg.initialDelaySeconds | default 10 }}
+            periodSeconds: {{ $readinessCfg.periodSeconds | default 10 }}
+            timeoutSeconds: {{ $readinessCfg.timeoutSeconds | default 3 }}
+            failureThreshold: {{ $readinessCfg.failureThreshold | default 3 }}
+          {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:

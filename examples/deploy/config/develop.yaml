@@ -36,6 +36,14 @@ autoscaling:
 #   args: ["Sample.Api.dll", "--mode=job"]
 # cronJob: false
 
+# HTTP probes — opt-in (v2). Default off (no /health-check presumed).
+# probes: false
+# probes:
+#   path: /health-check
+# probes:
+#   readiness:
+#     path: /healthz
+
 config:
   API_URL: https://api.dev.example
   FEATURE_FLAG: "true"

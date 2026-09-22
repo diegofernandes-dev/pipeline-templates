@@ -2,11 +2,12 @@
 # Minimal chart invariants — no heavy test framework.
 #
 # Matrix (freeze hardening Item 5):
-#   happy: baseline API, IRSA, GCP WIF, IRSA+WIF, ConfigMap, ExternalSecret,
-#          PVC, CronJob, PDB, HTTPRoute
+#   happy: baseline API (no probes by default), IRSA, GCP WIF, IRSA+WIF, ConfigMap, ExternalSecret,
+#          PVC, CronJob, PDB, HTTPRoute, probes global/partial
 #   fail:  WIF incomplete, PVC+HPA, PVC+replicas>1, persistence:true,
 #          cronJob:true, CronJob without command/args, ExternalSecret partial,
-#          externalSecret:true, persistence without size
+#          externalSecret:true, persistence without size,
+#          probes:true, probes global+specific, invalid probe path
 # Run: helm lint charts/app && ./tests/chart-invariants.sh
 set -Eeuo pipefail
 
@@ -70,11 +71,70 @@ assert_contains "$OUT_PDB" "name: sample-api" "PDB name"
 assert_contains "$OUT_PDB" "maxUnavailable: 1" "PDB maxUnavailable"
 assert_contains "$OUT_PDB" "app: sample-api" "PDB selector matches Deployment"
 
-echo "== probes contract =="
-assert_contains "$OUT" "path: /health-check" "probes use /health-check"
-assert_contains "$OUT" "startupProbe:" "startupProbe present"
-assert_contains "$OUT" "livenessProbe:" "livenessProbe present"
-assert_contains "$OUT" "readinessProbe:" "readinessProbe present"
+echo "== probes baseline (opt-in) =="
+assert_not_contains "$OUT" "startupProbe:" "no startupProbe by default"
+assert_not_contains "$OUT" "livenessProbe:" "no livenessProbe by default"
+assert_not_contains "$OUT" "readinessProbe:" "no readinessProbe by default"
+assert_not_contains "$OUT" "/health-check" "no presumed /health-check"
+
+echo "== probes global path =="
+OUT_PROBES_GLOBAL="$(render develop --set-json 'probes={"path":"/health-check"}')"
+assert_contains "$OUT_PROBES_GLOBAL" "startupProbe:" "global path renders startupProbe"
+assert_contains "$OUT_PROBES_GLOBAL" "livenessProbe:" "global path renders livenessProbe"
+assert_contains "$OUT_PROBES_GLOBAL" "readinessProbe:" "global path renders readinessProbe"
+GLOBAL_START="$(awk '/startupProbe:/,/livenessProbe:|readinessProbe:|resources:/ {print}' <<<"$OUT_PROBES_GLOBAL")"
+GLOBAL_LIVE="$(awk '/livenessProbe:/,/readinessProbe:|resources:/ {print}' <<<"$OUT_PROBES_GLOBAL")"
+GLOBAL_READY="$(awk '/readinessProbe:/,/resources:/ {print}' <<<"$OUT_PROBES_GLOBAL")"
+assert_contains "$GLOBAL_START" 'path: "/health-check"' "startup uses global path"
+assert_contains "$GLOBAL_LIVE" 'path: "/health-check"' "liveness uses global path"
+assert_contains "$GLOBAL_READY" 'path: "/health-check"' "readiness uses global path"
+
+echo "== probes three distinct paths =="
+OUT_PROBES_3="$(render develop --set-json 'probes={"startup":{"path":"/startup"},"readiness":{"path":"/ready"},"liveness":{"path":"/live"}}')"
+P3_START="$(awk '/startupProbe:/,/livenessProbe:|readinessProbe:|resources:/ {print}' <<<"$OUT_PROBES_3")"
+P3_LIVE="$(awk '/livenessProbe:/,/readinessProbe:|resources:/ {print}' <<<"$OUT_PROBES_3")"
+P3_READY="$(awk '/readinessProbe:/,/resources:/ {print}' <<<"$OUT_PROBES_3")"
+assert_contains "$P3_START" 'path: "/startup"' "startup path /startup"
+assert_contains "$P3_LIVE" 'path: "/live"' "liveness path /live"
+assert_contains "$P3_READY" 'path: "/ready"' "readiness path /ready"
+
+echo "== probes readiness only =="
+OUT_PROBES_READY="$(render develop --set-json 'probes={"readiness":{"path":"/healthz"}}')"
+assert_contains "$OUT_PROBES_READY" "readinessProbe:" "readiness-only renders readiness"
+assert_contains "$OUT_PROBES_READY" 'path: "/healthz"' "readiness path /healthz"
+assert_not_contains "$OUT_PROBES_READY" "startupProbe:" "readiness-only has no startup"
+assert_not_contains "$OUT_PROBES_READY" "livenessProbe:" "readiness-only has no liveness"
+
+echo "== probes liveness only =="
+OUT_PROBES_LIVE="$(render develop --set-json 'probes={"liveness":{"path":"/live"}}')"
+assert_contains "$OUT_PROBES_LIVE" "livenessProbe:" "liveness-only renders liveness"
+assert_contains "$OUT_PROBES_LIVE" 'path: "/live"' "liveness path /live"
+assert_not_contains "$OUT_PROBES_LIVE" "startupProbe:" "liveness-only has no startup"
+assert_not_contains "$OUT_PROBES_LIVE" "readinessProbe:" "liveness-only has no readiness"
+
+echo "== probes rejects global + specific =="
+if OUT_PROBES_AMBIG="$(render develop --set-json 'probes={"path":"/health-check","readiness":{"path":"/ready"}}' 2>&1)"; then
+  echo "FAIL: probes.path + specific path should fail template"
+  FAILED=1
+else
+  assert_contains "$OUT_PROBES_AMBIG" "cannot coexist" "fail message for global+specific"
+fi
+
+echo "== probes rejects invalid path =="
+if OUT_PROBES_BADPATH="$(render develop --set-json 'probes={"path":"healthz"}' 2>&1)"; then
+  echo "FAIL: probe path without leading / should fail template"
+  FAILED=1
+else
+  assert_contains "$OUT_PROBES_BADPATH" "must start with /" "fail message for invalid path"
+fi
+
+echo "== probes rejects bare true =="
+if OUT_PROBES_TRUE="$(render develop --set probes=true 2>&1)"; then
+  echo "FAIL: probes: true should fail template"
+  FAILED=1
+else
+  assert_contains "$OUT_PROBES_TRUE" "probes: true is invalid" "fail message for probes: true"
+fi
 
 echo "== security + service contract =="
 assert_contains "$OUT" "runAsNonRoot: true" "pod runAsNonRoot"
