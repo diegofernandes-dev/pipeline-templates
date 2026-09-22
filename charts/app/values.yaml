@@ -32,8 +32,8 @@ workloadIdentity:
     projectId: ""
 
 # Opt-in PVC (1 claim → 1 mountPath). Presence: mountPath non-empty ⇒ on.
-# Requires autoscaling: false and replicaCount: 1 (RWO). Opt-out: persistence: false
-# PVC keeps data on helm uninstall (helm.sh/resource-policy: keep).
+# Requires autoscaling: false and replicaCount: 1 (RWO). Forces Deployment strategy Recreate.
+# Opt-out: persistence: false. PVC keeps data on helm uninstall (helm.sh/resource-policy: keep).
 persistence:
   mountPath: ""
   size: ""

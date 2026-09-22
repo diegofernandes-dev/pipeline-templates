@@ -215,6 +215,8 @@ assert_contains "$OUT_NO_HPA" "replicas:" "Deployment uses replicas when HPA off
 
 echo "== persistence baseline =="
 assert_not_contains "$OUT_DEV" "kind: PersistentVolumeClaim" "no PVC by default"
+assert_contains "$OUT_DEV" "type: RollingUpdate" "RollingUpdate when persistence off"
+assert_not_contains "$OUT_DEV" "type: Recreate" "no Recreate when persistence off"
 
 echo "== persistence PVC + mount =="
 OUT_PVC="$(render develop \
@@ -231,6 +233,7 @@ assert_contains "$OUT_PVC" 'storage: "1Gi"' "PVC size"
 assert_contains "$OUT_PVC" 'storageClassName: "gp3"' "storageClassName"
 assert_contains "$OUT_PVC" "claimName: sample-api-data" "Deployment PVC volume"
 assert_contains "$OUT_PVC" 'mountPath: "/data"' "Deployment mountPath"
+assert_contains "$OUT_PVC" "type: Recreate" "Recreate strategy when persistence on"
 assert_not_contains "$OUT_PVC" "kind: HorizontalPodAutoscaler" "HPA off with persistence"
 
 echo "== persistence rejects HPA =="

@@ -12,6 +12,14 @@ spec:
   {{- if not ((include "chart.autoscalingEnabled" .) | eq "true") }}
   replicas: {{ .Values.replicaCount }}
   {{- end }}
+  {{- if (include "chart.persistenceEnabled" .) | eq "true" }}
+  strategy:
+    # RWO PVC: RollingUpdate can Multi-Attach before the old pod releases the volume.
+    type: Recreate
+  {{- else }}
+  strategy:
+    type: RollingUpdate
+  {{- end }}
   selector:
     matchLabels:
       app: {{ .Release.Name }}
