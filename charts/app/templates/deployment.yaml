@@ -1,3 +1,4 @@
+{{- include "chart.validateWorkloadIdentity" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -36,6 +37,9 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
+          {{- with include "app.workloadIdentityEnv" . }}
+          {{- . | nindent 10 }}
+          {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.service.port }}
@@ -67,6 +71,8 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            {{- include "app.workloadIdentityVolumeMounts" . | nindent 12 }}
       volumes:
         - name: tmp
           emptyDir: {}
+        {{- include "app.workloadIdentityVolumes" . | nindent 8 }}

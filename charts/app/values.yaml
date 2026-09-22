@@ -12,7 +12,24 @@ imagePullSecrets: []
 serviceAccount:
   create: true
   name: ""
+  # IRSA: pipeline sets eks.amazonaws.com/role-arn when SA_ROLE_ARN is configured.
+  annotations: {}
   automountServiceAccountToken: false
+
+# EKS → GCP Workload Identity Federation (Pub/Sub etc.). Opt-in only.
+# Requires a pre-existing ConfigMap with external_account JSON (or pipeline creates it).
+workloadIdentity:
+  enabled: false
+  token:
+    audience: sts.amazonaws.com
+    expirationSeconds: 3600
+    fileName: token
+    mountPath: /var/run/secrets/eks.amazonaws.com/serviceaccount
+    defaultMode: 420
+  gcp:
+    credentialsConfigMapName: ""
+    credentialsConfigMapKey: external-account.json
+    projectId: ""
 
 service:
   port: 8080

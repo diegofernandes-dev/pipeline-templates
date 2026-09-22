@@ -82,6 +82,48 @@ assert_contains "$OUT_DEV" "namespace: asa-infra-nginx-gateway" "gateway namespa
 echo "== applicationName-derived names =="
 assert_contains "$OUT_DEV" "name: sample-api" "release name on resources"
 
+echo "== workload identity baseline =="
+assert_not_contains "$OUT_DEV" "eks.amazonaws.com/role-arn" "no IRSA annotation by default"
+assert_not_contains "$OUT_DEV" "serviceAccountToken:" "no projected WI token by default"
+assert_not_contains "$OUT_DEV" "GOOGLE_APPLICATION_CREDENTIALS" "no GCP ADC env by default"
+
+echo "== IRSA (EKS → AWS) =="
+OUT_IRSA="$(render develop --set-string 'serviceAccount.annotations.eks\.amazonaws\.com/role-arn=arn:aws:iam::123456789012:role/sample-api')"
+assert_contains "$OUT_IRSA" "eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/sample-api" "IRSA annotation on ServiceAccount"
+assert_contains "$OUT_IRSA" "kind: ServiceAccount" "ServiceAccount rendered with IRSA"
+
+echo "== GCP WIF (EKS → GCP) =="
+OUT_GCP="$(render develop \
+  --set workloadIdentity.enabled=true \
+  --set-string workloadIdentity.gcp.credentialsConfigMapName=gcp-external-account-config \
+  --set-string workloadIdentity.gcp.projectId=my-gcp-project)"
+assert_contains "$OUT_GCP" "serviceAccountToken:" "projected ServiceAccount token"
+assert_contains "$OUT_GCP" 'audience: "sts.amazonaws.com"' "WIF token audience"
+assert_contains "$OUT_GCP" "expirationSeconds: 3600" "WIF token expiration"
+assert_contains "$OUT_GCP" 'mountPath: "/var/run/secrets/eks.amazonaws.com/serviceaccount"' "WIF token mountPath"
+assert_contains "$OUT_GCP" 'name: "gcp-external-account-config"' "GCP credentials ConfigMap volume"
+assert_contains "$OUT_GCP" "mountPath: /var/run/secrets/google" "GCP credentials mount"
+assert_contains "$OUT_GCP" "GOOGLE_APPLICATION_CREDENTIALS" "GOOGLE_APPLICATION_CREDENTIALS set"
+assert_contains "$OUT_GCP" 'value: "/var/run/secrets/google/external-account.json"' "ADC path"
+assert_contains "$OUT_GCP" "GOOGLE_CLOUD_PROJECT" "GOOGLE_CLOUD_PROJECT set"
+assert_contains "$OUT_GCP" 'value: "my-gcp-project"' "projectId value"
+
+echo "== IRSA + GCP WIF composition =="
+OUT_BOTH="$(render develop \
+  --set-string 'serviceAccount.annotations.eks\.amazonaws\.com/role-arn=arn:aws:iam::123456789012:role/sample-api' \
+  --set workloadIdentity.enabled=true \
+  --set-string workloadIdentity.gcp.credentialsConfigMapName=gcp-external-account-config)"
+SA_COUNT="$(grep -c 'kind: ServiceAccount' <<<"$OUT_BOTH" || true)"
+assert_contains "$OUT_BOTH" "eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/sample-api" "composed IRSA annotation"
+assert_contains "$OUT_BOTH" "serviceAccountToken:" "composed projected token"
+assert_contains "$OUT_BOTH" "GOOGLE_APPLICATION_CREDENTIALS" "composed GCP ADC"
+if [[ "$SA_COUNT" -ne 1 ]]; then
+  echo "FAIL: expected exactly one ServiceAccount (got ${SA_COUNT})"
+  FAILED=1
+else
+  echo "OK: single ServiceAccount with IRSA + GCP WIF"
+fi
+
 if [[ "$FAILED" -ne 0 ]]; then
   echo "Some invariants failed"
   exit 1

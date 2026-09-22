@@ -113,6 +113,19 @@ stages:
                       kubectl create namespace "${HELM_NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
                       echo "##[endgroup]"
 
+                      # Optional identity from Variable Groups — read from job env only (never map
+                      # $(VAR) in task env:; unset macros become literal strings).
+                      SA_ROLE_ARN="${SA_ROLE_ARN:-}"
+                      WORKLOAD_IDENTITY_GCP_CREDENTIALS_CM_NAME="${WORKLOAD_IDENTITY_GCP_CREDENTIALS_CM_NAME:-}"
+                      WORKLOAD_IDENTITY_GCP_CREDENTIALS_JSON="${WORKLOAD_IDENTITY_GCP_CREDENTIALS_JSON:-}"
+                      WORKLOAD_IDENTITY_GCP_PROJECT_ID="${WORKLOAD_IDENTITY_GCP_PROJECT_ID:-}"
+                      WORKLOAD_IDENTITY_AUDIENCE="${WORKLOAD_IDENTITY_AUDIENCE:-}"
+                      [[ "$SA_ROLE_ARN" == '$('*')' ]] && SA_ROLE_ARN=""
+                      [[ "$WORKLOAD_IDENTITY_GCP_CREDENTIALS_CM_NAME" == '$('*')' ]] && WORKLOAD_IDENTITY_GCP_CREDENTIALS_CM_NAME=""
+                      [[ "$WORKLOAD_IDENTITY_GCP_CREDENTIALS_JSON" == '$('*')' ]] && WORKLOAD_IDENTITY_GCP_CREDENTIALS_JSON=""
+                      [[ "$WORKLOAD_IDENTITY_GCP_PROJECT_ID" == '$('*')' ]] && WORKLOAD_IDENTITY_GCP_PROJECT_ID=""
+                      [[ "$WORKLOAD_IDENTITY_AUDIENCE" == '$('*')' ]] && WORKLOAD_IDENTITY_AUDIENCE=""
+
                       echo "##[group]aws caller identity (ambient credentials on agent)"
                       aws sts get-caller-identity
                       echo "##[endgroup]"
@@ -136,6 +149,42 @@ stages:
                         echo "Using pre-provisioned imagePullSecret: ${ECR_PULL_SECRET}"
                       else
                         echo "No imagePullSecret — cluster/node runtime must have ECR access"
+                      fi
+
+                      if [[ -n "$SA_ROLE_ARN" ]]; then
+                        HELM_SET+=(--set-string "serviceAccount.annotations.eks\.amazonaws\.com/role-arn=${SA_ROLE_ARN}")
+                        echo "ServiceAccount IRSA binding: eks.amazonaws.com/role-arn=${SA_ROLE_ARN}"
+                      fi
+
+                      if [[ -n "$WORKLOAD_IDENTITY_GCP_CREDENTIALS_JSON" || -n "$WORKLOAD_IDENTITY_GCP_CREDENTIALS_CM_NAME" ]]; then
+                        if [[ -n "$WORKLOAD_IDENTITY_GCP_CREDENTIALS_JSON" ]]; then
+                          : "${WORKLOAD_IDENTITY_GCP_CREDENTIALS_CM_NAME:=wif-gcp-credentials}"
+                        fi
+                        if [[ -z "$WORKLOAD_IDENTITY_GCP_CREDENTIALS_CM_NAME" ]]; then
+                          echo "##vso[task.logissue type=error]Set WORKLOAD_IDENTITY_GCP_CREDENTIALS_JSON or WORKLOAD_IDENTITY_GCP_CREDENTIALS_CM_NAME for GCP WIF"
+                          exit 1
+                        fi
+                        HELM_SET+=(--set workloadIdentity.enabled=true)
+                        HELM_SET+=(--set-string "workloadIdentity.gcp.credentialsConfigMapName=${WORKLOAD_IDENTITY_GCP_CREDENTIALS_CM_NAME}")
+                        if [[ -n "$WORKLOAD_IDENTITY_AUDIENCE" ]]; then
+                          HELM_SET+=(--set-string "workloadIdentity.token.audience=${WORKLOAD_IDENTITY_AUDIENCE}")
+                        fi
+                        if [[ -n "$WORKLOAD_IDENTITY_GCP_PROJECT_ID" ]]; then
+                          HELM_SET+=(--set-string "workloadIdentity.gcp.projectId=${WORKLOAD_IDENTITY_GCP_PROJECT_ID}")
+                        fi
+                        echo "GCP Workload Identity Federation enabled (ConfigMap: ${WORKLOAD_IDENTITY_GCP_CREDENTIALS_CM_NAME})"
+                      fi
+
+                      if [[ -n "$WORKLOAD_IDENTITY_GCP_CREDENTIALS_JSON" ]]; then
+                        echo "##[group]apply GCP external_account ConfigMap ${WORKLOAD_IDENTITY_GCP_CREDENTIALS_CM_NAME}"
+                        _cm_tmp="$(mktemp)"
+                        printf '%s' "$WORKLOAD_IDENTITY_GCP_CREDENTIALS_JSON" | base64 -d > "$_cm_tmp"
+                        kubectl create configmap "${WORKLOAD_IDENTITY_GCP_CREDENTIALS_CM_NAME}" \
+                          --namespace "${HELM_NAMESPACE}" \
+                          --from-file=external-account.json="$_cm_tmp" \
+                          --dry-run=client -o yaml | kubectl apply -f -
+                        rm -f "$_cm_tmp"
+                        echo "##[endgroup]"
                       fi
 
                       echo "##[group]helm upgrade ${HELM_RELEASE} → ${IMAGE_REPOSITORY}:${IMAGE_TAG} (${ADO_ENVIRONMENT})"

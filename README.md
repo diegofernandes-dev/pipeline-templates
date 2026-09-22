@@ -102,6 +102,24 @@ O agent de cada pool já carrega o kubeconfig do cluster em que roda. Não há p
 
 `deployEnvironments[].variableGroups` anexa Variable Groups ao stage Deploy. Uso concreto: secrets/config **do ambiente** quando existirem. Lista vazia é válida. Não há sistema genérico de ConfigMap/Secret no chart.
 
+### Identidade do workload (opt-in)
+
+Runtime é sempre **EKS**. Identidade externa é opt-in via Variable Groups — variáveis ausentes ⇒ baseline (SA sem IRSA, sem WIF GCP).
+
+| Variável (VG) | Efeito |
+|---------------|--------|
+| `SA_ROLE_ARN` | Annotation `eks.amazonaws.com/role-arn` no ServiceAccount (IRSA nativo) |
+| `WORKLOAD_IDENTITY_GCP_CREDENTIALS_CM_NAME` | Habilita WIF GCP; monta ConfigMap pré-existente com `external_account` JSON |
+| `WORKLOAD_IDENTITY_GCP_CREDENTIALS_JSON` | Base64 do JSON; pipeline cria/atualiza o ConfigMap (default name: `wif-gcp-credentials`) |
+| `WORKLOAD_IDENTITY_GCP_PROJECT_ID` | Opcional → `GOOGLE_CLOUD_PROJECT` no pod |
+| `WORKLOAD_IDENTITY_AUDIENCE` | Opcional → audience do projected SA token (default chart: `sts.amazonaws.com`) |
+
+**EKS → AWS (IRSA):** Role IAM já existe fora do chart; pipeline só anota o SA.
+
+**EKS → GCP (Pub/Sub etc.):** projected ServiceAccount token + ConfigMap `external_account` + `GOOGLE_APPLICATION_CREDENTIALS`. Pool/Provider GCP e bindings permanecem infra externa.
+
+IRSA e GCP WIF podem coexistir no mesmo pod/ServiceAccount. `automountServiceAccountToken` permanece `false`; WIF usa projected token explícito.
+
 ### Lab (Rancher) — ECR pull
 
 Baseline AWS/EKS: o pipeline **não** cria `imagePullSecret`; o cluster/node runtime deve ter acesso apropriado ao ECR.
