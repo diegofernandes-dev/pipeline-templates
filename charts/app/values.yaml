@@ -31,15 +31,13 @@ workloadIdentity:
     credentialsConfigMapKey: external-account.json
     projectId: ""
 
-# Non-sensitive app config → ConfigMap → envFrom (manifesto: config.enabled + config.data).
-config:
-  enabled: false
-  data: {}
+# Non-sensitive app config → ConfigMap → envFrom.
+# Non-empty map ⇒ on. Omit or {} ⇒ off. (no enabled/data nesting)
+config: {}
 
-# Application secrets via External Secrets Operator (manifesto declares refs only — no secret values in Git).
-# Requires ESO + SecretStore/ClusterSecretStore on the cluster (platform infra).
+# Application secrets via External Secrets Operator (refs only — no secret values in Git).
+# Non-empty data[] + secretStoreRef.name ⇒ on. Requires ESO on the cluster.
 externalSecret:
-  enabled: false
   refreshInterval: 1h
   secretStoreRef:
     kind: ClusterSecretStore
@@ -82,9 +80,8 @@ securityContext:
     drop:
       - ALL
 
-# Technical HPA baseline (CPU). min/max are availability policy — override per env if needed.
+# HPA baseline (CPU). Non-empty map ⇒ on. To disable in an env manifesto: autoscaling: false
 autoscaling:
-  enabled: true
   minReplicas: 1
   maxReplicas: 3
   targetCPUUtilizationPercentage: 70

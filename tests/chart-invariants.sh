@@ -131,9 +131,8 @@ assert_not_contains "$OUT_DEV" "envFrom:" "no envFrom by default"
 
 echo "== config ConfigMap + envFrom =="
 OUT_CFG="$(render develop \
-  --set config.enabled=true \
-  --set-string config.data.API_URL=https://api.dev.example \
-  --set-string config.data.FEATURE_FLAG=true)"
+  --set-string config.API_URL=https://api.dev.example \
+  --set-string config.FEATURE_FLAG=true)"
 assert_contains "$OUT_CFG" "kind: ConfigMap" "ConfigMap rendered"
 assert_contains "$OUT_CFG" "name: sample-api-config" "ConfigMap name"
 assert_contains "$OUT_CFG" "API_URL:" "config key API_URL"
@@ -142,7 +141,6 @@ assert_contains "$OUT_CFG" "checksum/config:" "config checksum annotation"
 
 echo "== externalSecret + secretRef =="
 OUT_ES="$(render develop \
-  --set externalSecret.enabled=true \
   --set-string externalSecret.secretStoreRef.name=aws-secretsmanager \
   --set-string 'externalSecret.data[0].secretKey=ConnectionStrings__Default' \
   --set-string 'externalSecret.data[0].remoteRef.key=asa/sample-api/develop/cs')"
@@ -153,9 +151,7 @@ assert_not_contains "$OUT_ES" "kind: ConfigMap" "no ConfigMap when only external
 
 echo "== config + externalSecret composition =="
 OUT_RT="$(render develop \
-  --set config.enabled=true \
-  --set-string config.data.API_URL=https://api.dev.example \
-  --set externalSecret.enabled=true \
+  --set-string config.API_URL=https://api.dev.example \
   --set-string externalSecret.secretStoreRef.name=aws-secretsmanager \
   --set-string 'externalSecret.data[0].secretKey=DB_PASSWORD' \
   --set-string 'externalSecret.data[0].remoteRef.key=asa/sample-api/develop/db')"
@@ -166,6 +162,11 @@ echo "== manifesto-style HPA override =="
 OUT_HPA="$(render develop --set autoscaling.minReplicas=2 --set autoscaling.maxReplicas=5)"
 assert_contains "$OUT_HPA" "minReplicas: 2" "HPA minReplicas from overlay"
 assert_contains "$OUT_HPA" "maxReplicas: 5" "HPA maxReplicas from overlay"
+
+echo "== autoscaling opt-out =="
+OUT_NO_HPA="$(render develop --set autoscaling=false)"
+assert_not_contains "$OUT_NO_HPA" "kind: HorizontalPodAutoscaler" "HPA off when autoscaling: false"
+assert_contains "$OUT_NO_HPA" "replicas:" "Deployment uses replicas when HPA off"
 
 if [[ "$FAILED" -ne 0 ]]; then
   echo "Some invariants failed"

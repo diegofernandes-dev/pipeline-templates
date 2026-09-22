@@ -1,4 +1,4 @@
-{{- if .Values.config.enabled }}
+{{- if (include "chart.configEnabled" .) | eq "true" }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -8,7 +8,7 @@ metadata:
     app.kubernetes.io/name: {{ .Release.Name }}
     app.kubernetes.io/instance: {{ .Release.Name }}
 data:
-  {{- range $key, $value := .Values.config.data }}
+  {{- range $key, $value := .Values.config }}
   {{ $key }}: {{ $value | quote }}
   {{- end }}
 {{- end }}

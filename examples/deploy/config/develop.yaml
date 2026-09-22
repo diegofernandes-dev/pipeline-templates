@@ -1,12 +1,13 @@
 # Example per-environment manifesto (copy to the app repo as deploy/config/develop.yaml).
 # Pipeline applies: helm upgrade -f deploy/config/<ADO_ENVIRONMENT>.yaml
+# Rule: if you set a block, it applies. Omit the block to keep chart defaults.
 # Do NOT put secret values here — use externalSecret refs (ESO) or a pre-provisioned ConfigMap for WIF JSON.
 
 autoscaling:
-  enabled: true
   minReplicas: 1
   maxReplicas: 3
   targetCPUUtilizationPercentage: 70
+# autoscaling: false   # opt-out of HPA for this env
 
 # serviceAccount:
 #   annotations:
@@ -19,13 +20,10 @@ autoscaling:
 #     projectId: my-gcp-project
 
 config:
-  enabled: true
-  data:
-    API_URL: https://api.dev.example
-    FEATURE_FLAG: "true"
+  API_URL: https://api.dev.example
+  FEATURE_FLAG: "true"
 
 # externalSecret:
-#   enabled: true
 #   secretStoreRef:
 #     kind: ClusterSecretStore
 #     name: aws-secretsmanager

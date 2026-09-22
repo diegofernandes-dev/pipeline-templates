@@ -116,11 +116,14 @@ O Deploy faz `helm upgrade -f deploy/config/<Environment>.yaml` quando o ficheir
 
 | No manifesto | Efeito |
 |--------------|--------|
-| `config.data` | ConfigMap `{app}-config` → `envFrom` |
-| `externalSecret` | CR ExternalSecret → Secret `{app}-secret` → `envFrom` (requer ESO no cluster) |
+| `config` (map não vazio) | ConfigMap `{app}-config` → `envFrom` |
+| `externalSecret.data` + `secretStoreRef.name` | CR ExternalSecret → Secret `{app}-secret` → `envFrom` (requer ESO) |
 | `serviceAccount.annotations` | IRSA (`eks.amazonaws.com/role-arn`) |
 | `workloadIdentity` | WIF EKS→GCP (CM pré-existente / ESO; sem JSON no Git) |
-| `autoscaling` / `resources` / `pdb` | Overrides por env |
+| `autoscaling` (map) | HPA; para desligar no env: `autoscaling: false` |
+| `resources` / `pdb` | Overrides por env |
+
+Regra do manifesto: **preencheu o bloco ⇒ aplica**. Sem flags `enabled` / nesting `data` em `config`. Omitir o bloco mantém o default do chart.
 
 **Fica fora do manifesto:** `image.*` (CI), `httpRoute.environment` / Gateway (pipeline), probes/security (contrato do chart), valores secretos.
 
