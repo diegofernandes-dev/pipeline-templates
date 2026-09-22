@@ -120,6 +120,8 @@ Runtime é sempre **EKS**. Identidade externa é opt-in via Variable Groups — 
 
 IRSA e GCP WIF podem coexistir no mesmo pod/ServiceAccount. `automountServiceAccountToken` permanece `false`; WIF usa projected token explícito.
 
+Variáveis secret do Variable Group (ex.: `WORKLOAD_IDENTITY_GCP_CREDENTIALS_JSON`) são mapeadas no `env:` do task Deploy — requisito do Azure DevOps para secrets. Variável ausente vira literal `$(VAR)` e é ignorada pelo script; nunca logar o JSON de credenciais.
+
 ### Lab (Rancher) — ECR pull
 
 Baseline AWS/EKS: o pipeline **não** cria `imagePullSecret`; o cluster/node runtime deve ter acesso apropriado ao ECR.

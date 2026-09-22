@@ -74,6 +74,13 @@ stages:
                     IMAGE_TAG: $(imageTag)
                     # ECR_PULL_SECRET: optional pipeline variable only (do not map $(ECR_PULL_SECRET) here —
                     # an unset macro becomes the literal string and would force a bogus imagePullSecret).
+                    # Identity vars: secrets require explicit env mapping in ADO; absent vars become literal
+                    # $(VAR) and are cleared by the script guard before opt-in logic runs.
+                    SA_ROLE_ARN: $(SA_ROLE_ARN)
+                    WORKLOAD_IDENTITY_GCP_CREDENTIALS_CM_NAME: $(WORKLOAD_IDENTITY_GCP_CREDENTIALS_CM_NAME)
+                    WORKLOAD_IDENTITY_GCP_CREDENTIALS_JSON: $(WORKLOAD_IDENTITY_GCP_CREDENTIALS_JSON)
+                    WORKLOAD_IDENTITY_GCP_PROJECT_ID: $(WORKLOAD_IDENTITY_GCP_PROJECT_ID)
+                    WORKLOAD_IDENTITY_AUDIENCE: $(WORKLOAD_IDENTITY_AUDIENCE)
                   inputs:
                     targetType: inline
                     script: |
