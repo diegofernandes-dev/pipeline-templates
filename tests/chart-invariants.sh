@@ -316,6 +316,7 @@ WIF_AUD="//iam.googleapis.com/projects/123456789/locations/global/workloadIdenti
 WIF_SA="app-sa@my-gcp-project.iam.gserviceaccount.com"
 OUT_CRON_ID="$(render develop \
   --set-string 'cronJob.schedule=*/15 * * * *' \
+  --set-string 'cronJob.args[0]=--mode=job' \
   --set-string config.JOB_FLAG=true \
   --set-string "workloadIdentity.gcp.audience=${WIF_AUD}" \
   --set-string "workloadIdentity.gcp.serviceAccountEmail=${WIF_SA}")"
@@ -357,6 +358,15 @@ if OUT_CRON_TRUE="$(render develop --set cronJob=true 2>&1)"; then
   FAILED=1
 else
   assert_contains "$OUT_CRON_TRUE" "cronJob: true is invalid" "fail message for cronJob: true"
+fi
+
+echo "== cronJob rejects schedule without command/args =="
+if OUT_CRON_NO_ENTRY="$(render develop \
+  --set-string 'cronJob.schedule=0 6 * * *' 2>&1)"; then
+  echo "FAIL: cronJob schedule without command/args should fail template"
+  FAILED=1
+else
+  assert_contains "$OUT_CRON_NO_ENTRY" "cronJob requires command or args" "fail message for schedule without entrypoint"
 fi
 
 echo "== persistence opt-out =="

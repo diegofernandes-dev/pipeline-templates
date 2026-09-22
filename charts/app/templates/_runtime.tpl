@@ -97,9 +97,14 @@ false
 {{- if (include "chart.cronJobEnabled" .) | eq "true" -}}
 {{- $c := .Values.cronJob | default dict -}}
 {{- if kindIs "bool" $c -}}
-{{- fail "cronJob: true is invalid — set cronJob.schedule (or cronJob: false)" -}}
+{{- fail "cronJob: true is invalid — set cronJob.schedule and command or args (or cronJob: false)" -}}
 {{- end -}}
 {{- $_ := required "cronJob.schedule is required when cronJob is set" ($c.schedule | default "") -}}
+{{- $cmd := $c.command | default list -}}
+{{- $args := $c.args | default list -}}
+{{- if and (eq (len $cmd) 0) (eq (len $args) 0) -}}
+{{- fail "cronJob requires command or args when schedule is set (API entrypoint must not run as a CronJob)" -}}
+{{- end -}}
 {{- end -}}
 {{- end }}
 

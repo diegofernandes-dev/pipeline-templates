@@ -30,10 +30,10 @@ autoscaling:
 # persistence: false
 
 # Optional batch job (does not disable Deployment/Service/HPA/HTTPRoute). No PVC mount.
+# Requires schedule + command and/or args (otherwise helm template fails).
 # cronJob:
 #   schedule: "0 6 * * *"
-#   # command: ["dotnet"]
-#   # args: ["Sample.Api.dll", "--mode=job"]
+#   args: ["Sample.Api.dll", "--mode=job"]
 # cronJob: false
 
 config:

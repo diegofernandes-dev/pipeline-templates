@@ -42,7 +42,8 @@ persistence:
   storageClassName: ""
 
 # Opt-in CronJob (additional to the API Deployment — does not disable web resources).
-# Presence: schedule non-empty ⇒ on. Opt-out: cronJob: false
+# Presence: schedule non-empty ⇒ on. Requires command and/or args (fail-fast if both empty).
+# Opt-out: cronJob: false
 # Reuses image, SA, IRSA/WIF, config/secret, securityContext, resources. No HTTP probes. No PVC mount.
 cronJob:
   schedule: ""
