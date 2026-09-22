@@ -39,6 +39,18 @@ persistence:
   size: ""
   storageClassName: ""
 
+# Opt-in CronJob (additional to the API Deployment — does not disable web resources).
+# Presence: schedule non-empty ⇒ on. Opt-out: cronJob: false
+# Reuses image, SA, IRSA/WIF, config/secret, securityContext, resources. No HTTP probes. No PVC mount.
+cronJob:
+  schedule: ""
+  command: []
+  args: []
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+  backoffLimit: 2
+
 # Non-sensitive app config → ConfigMap → envFrom.
 # Non-empty map ⇒ on. Omit or {} ⇒ off. (no enabled/data nesting)
 config: {}

@@ -1,0 +1,81 @@
+{{- include "chart.validateCronJob" . }}
+{{- if (include "chart.cronJobEnabled" .) | eq "true" }}
+{{- $cj := .Values.cronJob -}}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "chart.cronJobName" . }}
+  labels:
+    app: {{ .Release.Name }}
+    app.kubernetes.io/name: {{ .Release.Name }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: cron
+spec:
+  schedule: {{ $cj.schedule | quote }}
+  concurrencyPolicy: {{ $cj.concurrencyPolicy | default "Forbid" }}
+  successfulJobsHistoryLimit: {{ $cj.successfulJobsHistoryLimit | default 3 }}
+  failedJobsHistoryLimit: {{ $cj.failedJobsHistoryLimit | default 1 }}
+  jobTemplate:
+    spec:
+      backoffLimit: {{ $cj.backoffLimit | default 2 }}
+      template:
+        metadata:
+          labels:
+            app: {{ .Release.Name }}
+            app.kubernetes.io/name: {{ .Release.Name }}
+            app.kubernetes.io/instance: {{ .Release.Name }}
+            app.kubernetes.io/component: cron
+          {{- $cfgOn := (include "chart.configEnabled" .) | eq "true" -}}
+          {{- $wifOn := (include "chart.workloadIdentityEnabled" .) | eq "true" -}}
+          {{- if or $cfgOn $wifOn }}
+          annotations:
+            {{- if $cfgOn }}
+            checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+            {{- end }}
+            {{- if $wifOn }}
+            checksum/wif: {{ include (print $.Template.BasePath "/wif-credentials.yaml") . | sha256sum }}
+            {{- end }}
+          {{- end }}
+        spec:
+          restartPolicy: OnFailure
+          {{- if .Values.serviceAccount.create }}
+          serviceAccountName: {{ default .Release.Name .Values.serviceAccount.name }}
+          automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
+          {{- end }}
+          {{- with .Values.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            {{- toYaml .Values.podSecurityContext | nindent 12 }}
+          containers:
+            - name: job
+              image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              securityContext:
+                {{- toYaml .Values.securityContext | nindent 16 }}
+              {{- with $cj.command }}
+              command:
+                {{- toYaml . | nindent 16 }}
+              {{- end }}
+              {{- with $cj.args }}
+              args:
+                {{- toYaml . | nindent 16 }}
+              {{- end }}
+              {{- with include "app.workloadIdentityEnv" . }}
+              {{- . | nindent 14 }}
+              {{- end }}
+              {{- with include "app.envFrom" . }}
+              {{- . | nindent 14 }}
+              {{- end }}
+              resources:
+                {{- toYaml .Values.resources | nindent 16 }}
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+                {{- include "app.workloadIdentityVolumeMounts" . | nindent 16 }}
+          volumes:
+            - name: tmp
+              emptyDir: {}
+            {{- include "app.workloadIdentityVolumes" . | nindent 12 }}
+{{- end }}

@@ -220,6 +220,48 @@ else
   assert_contains "$OUT_PVC_REP" "persistence requires replicaCount: 1" "fail message for replicas+persistence"
 fi
 
+echo "== cronJob baseline =="
+assert_not_contains "$OUT_DEV" "kind: CronJob" "no CronJob by default"
+
+echo "== cronJob additional to API =="
+OUT_CRON="$(render develop \
+  --set-string 'cronJob.schedule=0 6 * * *' \
+  --set-string 'cronJob.args[0]=--mode=job')"
+assert_contains "$OUT_CRON" "kind: CronJob" "CronJob rendered"
+assert_contains "$OUT_CRON" "name: sample-api-cron" "CronJob name"
+assert_contains "$OUT_CRON" 'schedule: "0 6 * * *"' "CronJob schedule"
+assert_contains "$OUT_CRON" "concurrencyPolicy: Forbid" "CronJob concurrency Forbid"
+assert_contains "$OUT_CRON" "restartPolicy: OnFailure" "CronJob restartPolicy"
+assert_contains "$OUT_CRON" "--mode=job" "CronJob args"
+assert_contains "$OUT_CRON" "kind: Deployment" "Deployment still present with CronJob"
+assert_contains "$OUT_CRON" "kind: Service" "Service still present with CronJob"
+assert_contains "$OUT_CRON" "kind: HorizontalPodAutoscaler" "HPA still present with CronJob"
+assert_contains "$OUT_CRON" "kind: HTTPRoute" "HTTPRoute still present with CronJob"
+# CronJob pod template must not inherit API HTTP probes
+CRON_SECTION="$(awk '/kind: CronJob/,/^---$/ {print}' <<<"$OUT_CRON")"
+assert_not_contains "$CRON_SECTION" "health-check" "CronJob has no HTTP probes"
+assert_not_contains "$CRON_SECTION" "persistentVolumeClaim:" "CronJob does not mount PVC"
+assert_not_contains "$CRON_SECTION" "startupProbe:" "CronJob has no startupProbe"
+assert_not_contains "$CRON_SECTION" "livenessProbe:" "CronJob has no livenessProbe"
+
+echo "== cronJob reuses config + WIF =="
+WIF_AUD="//iam.googleapis.com/projects/123456789/locations/global/workloadIdentityPools/pool/providers/eks"
+WIF_SA="app-sa@my-gcp-project.iam.gserviceaccount.com"
+OUT_CRON_ID="$(render develop \
+  --set-string 'cronJob.schedule=*/15 * * * *' \
+  --set-string config.JOB_FLAG=true \
+  --set-string "workloadIdentity.gcp.audience=${WIF_AUD}" \
+  --set-string "workloadIdentity.gcp.serviceAccountEmail=${WIF_SA}")"
+assert_contains "$OUT_CRON_ID" "kind: CronJob" "CronJob with identity"
+assert_contains "$OUT_CRON_ID" "configMapRef:" "CronJob envFrom config"
+assert_contains "$OUT_CRON_ID" "GOOGLE_APPLICATION_CREDENTIALS" "CronJob WIF env"
+assert_contains "$OUT_CRON_ID" "serviceAccountToken:" "CronJob projected token"
+assert_contains "$OUT_CRON_ID" "name: sample-api-wif-credentials" "CronJob WIF ConfigMap volume"
+
+echo "== cronJob opt-out =="
+OUT_NO_CRON="$(render develop --set cronJob=false)"
+assert_not_contains "$OUT_NO_CRON" "kind: CronJob" "CronJob off when cronJob: false"
+
 if [[ "$FAILED" -ne 0 ]]; then
   echo "Some invariants failed"
   exit 1

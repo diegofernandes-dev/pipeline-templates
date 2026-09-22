@@ -28,6 +28,13 @@ autoscaling:
 #   # storageClassName: gp3
 # persistence: false
 
+# Optional batch job (does not disable Deployment/Service/HPA/HTTPRoute). No PVC mount.
+# cronJob:
+#   schedule: "0 6 * * *"
+#   # command: ["dotnet"]
+#   # args: ["Sample.Api.dll", "--mode=job"]
+# cronJob: false
+
 config:
   API_URL: https://api.dev.example
   FEATURE_FLAG: "true"

@@ -58,6 +58,31 @@ false
 {{- end -}}
 {{- end }}
 
+{{- define "chart.cronJobEnabled" -}}
+{{- $c := .Values.cronJob -}}
+{{- if kindIs "bool" $c -}}
+{{- if $c -}}true{{- else -}}false{{- end -}}
+{{- else if and (kindIs "map" $c) ($c.schedule | default "") -}}
+true
+{{- else -}}
+false
+{{- end -}}
+{{- end }}
+
+{{- define "chart.cronJobName" -}}
+{{- printf "%s-cron" .Release.Name -}}
+{{- end }}
+
+{{- define "chart.validateCronJob" -}}
+{{- if (include "chart.cronJobEnabled" .) | eq "true" -}}
+{{- $c := .Values.cronJob | default dict -}}
+{{- if kindIs "bool" $c -}}
+{{- fail "cronJob: true is invalid — set cronJob.schedule (or cronJob: false)" -}}
+{{- end -}}
+{{- $_ := required "cronJob.schedule is required when cronJob is set" ($c.schedule | default "") -}}
+{{- end -}}
+{{- end }}
+
 {{- define "app.envFrom" -}}
 {{- $configEnabled := (include "chart.configEnabled" .) | eq "true" -}}
 {{- $esEnabled := (include "chart.externalSecretEnabled" .) | eq "true" -}}
