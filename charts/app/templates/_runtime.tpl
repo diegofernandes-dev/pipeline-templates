@@ -13,6 +13,26 @@ Presence-based toggles: non-empty map/list ⇒ on. No separate enabled flags for
 {{- if and (gt (len $data) 0) ($es.secretStoreRef.name | default "") -}}true{{- else -}}false{{- end -}}
 {{- end }}
 
+{{- define "chart.validateExternalSecret" -}}
+{{- $es := .Values.externalSecret | default dict -}}
+{{- if kindIs "bool" $es -}}
+{{- if $es -}}
+{{- fail "externalSecret: true is invalid — set externalSecret.data and externalSecret.secretStoreRef.name (or omit / externalSecret: false)" -}}
+{{- end -}}
+{{- else -}}
+{{- $data := $es.data | default list -}}
+{{- $store := ($es.secretStoreRef | default dict).name | default "" -}}
+{{- $hasData := gt (len $data) 0 -}}
+{{- $hasStore := ne $store "" -}}
+{{- if and $hasData (not $hasStore) -}}
+{{- fail "externalSecret.data requires externalSecret.secretStoreRef.name (partial ExternalSecret config is not allowed)" -}}
+{{- end -}}
+{{- if and $hasStore (not $hasData) -}}
+{{- fail "externalSecret.secretStoreRef.name requires externalSecret.data (partial ExternalSecret config is not allowed)" -}}
+{{- end -}}
+{{- end -}}
+{{- end }}
+
 {{- define "chart.autoscalingEnabled" -}}
 {{- $a := .Values.autoscaling -}}
 {{- if kindIs "bool" $a -}}

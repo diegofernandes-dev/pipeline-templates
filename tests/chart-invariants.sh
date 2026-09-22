@@ -211,6 +211,25 @@ OUT_RT="$(render develop \
 assert_contains "$OUT_RT" "configMapRef:" "composed configMapRef"
 assert_contains "$OUT_RT" "secretRef:" "composed secretRef"
 
+echo "== externalSecret rejects data without store ==="
+if OUT_ES_DATA="$(render develop \
+  --set-string 'externalSecret.data[0].secretKey=DB_PASSWORD' \
+  --set-string 'externalSecret.data[0].remoteRef.key=asa/sample-api/develop/db' 2>&1)"; then
+  echo "FAIL: externalSecret data without store should fail"
+  FAILED=1
+else
+  assert_contains "$OUT_ES_DATA" "secretStoreRef.name" "fail message for data without store"
+fi
+
+echo "== externalSecret rejects store without data =="
+if OUT_ES_STORE="$(render develop \
+  --set-string externalSecret.secretStoreRef.name=aws-secretsmanager 2>&1)"; then
+  echo "FAIL: externalSecret store without data should fail"
+  FAILED=1
+else
+  assert_contains "$OUT_ES_STORE" "externalSecret.data" "fail message for store without data"
+fi
+
 echo "== manifesto-style HPA override =="
 OUT_HPA="$(render develop --set autoscaling.minReplicas=2 --set autoscaling.maxReplicas=5)"
 assert_contains "$OUT_HPA" "minReplicas: 2" "HPA minReplicas from overlay"

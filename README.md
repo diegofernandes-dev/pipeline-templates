@@ -118,7 +118,7 @@ O Deploy faz `helm upgrade -f deploy/config/<Environment>.yaml` quando o ficheir
 | No manifesto | Efeito |
 |--------------|--------|
 | `config` (map não vazio) | ConfigMap `{app}-config` → `envFrom` |
-| `externalSecret.data` + `secretStoreRef.name` | CR ExternalSecret → Secret `{app}-secret` → `envFrom` (requer ESO) |
+| `externalSecret.data` + `secretStoreRef.name` | CR ExternalSecret → Secret `{app}-secret` → `envFrom` (**requer ESO** + SecretStore no cluster; config parcial falha no Helm) |
 | `serviceAccount.annotations` | IRSA (`eks.amazonaws.com/role-arn`) |
 | `workloadIdentity.gcp.audience` (+ `serviceAccountEmail`) | WIF EKS→GCP; chart cria `{app}-wif-credentials` (`external_account`) |
 | `persistence.mountPath` (+ `size`) | PVC `{app}-data` (RWO, `resource-policy: keep`); exige `autoscaling: false` e `replicaCount: 1` |
@@ -129,6 +129,8 @@ O Deploy faz `helm upgrade -f deploy/config/<Environment>.yaml` quando o ficheir
 Regra do manifesto: **preencheu o bloco ⇒ aplica**. Sem flags `enabled` / nesting `data` em `config`. Omitir o bloco mantém o default do chart.
 
 **Fica fora do manifesto:** `image.*` (CI), `httpRoute.environment` / Gateway (pipeline), probes/security (contrato do chart), valores secretos.
+
+**Dependência de plataforma — External Secrets:** usar `externalSecret` exige o External Secrets Operator instalado no cluster (`ExternalSecret` CRD) e um `ClusterSecretStore`/`SecretStore` referenciável. Sem ESO, omita o bloco (não há fallback VG→Secret).
 
 Exemplo: [`examples/deploy/config/develop.yaml`](examples/deploy/config/develop.yaml).
 

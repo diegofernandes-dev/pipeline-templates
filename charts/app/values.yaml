@@ -58,7 +58,8 @@ cronJob:
 config: {}
 
 # Application secrets via External Secrets Operator (refs only — no secret values in Git).
-# Non-empty data[] + secretStoreRef.name ⇒ on. Requires ESO on the cluster.
+# Opt-in: non-empty data[] AND secretStoreRef.name. Partial config fails at helm template.
+# Requires ESO CRDs + ClusterSecretStore/SecretStore on the target cluster (platform infra).
 externalSecret:
   refreshInterval: 1h
   secretStoreRef:
