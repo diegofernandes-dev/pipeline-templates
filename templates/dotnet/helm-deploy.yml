@@ -33,7 +33,8 @@ parameters:
     type: boolean
     default: false
 
-  # Directory in the app repo containing <environment>.yaml overlays (IRSA, WIF, HPA, config, externalSecret).
+  # Directory in the app repo containing <environment>.yaml overlays
+  # (IRSA, WIF, HPA, config, externalSecret, persistence, cronJob).
   - name: runtimeConfigPath
     type: string
     default: 'deploy/config'
@@ -171,5 +172,6 @@ stages:
                         --timeout "${HELM_TIMEOUT}"
                       echo "##[endgroup]"
 
-                      kubectl -n "${HELM_NAMESPACE}" get deploy,svc,hpa,pdb,sa,httproute,externalsecret,configmap,pods -l "app=${HELM_RELEASE}" -o wide 2>/dev/null \
-                        || kubectl -n "${HELM_NAMESPACE}" get deploy,svc,hpa,pdb,sa,httproute,configmap,pods -l "app=${HELM_RELEASE}" -o wide
+                      kubectl -n "${HELM_NAMESPACE}" get deploy,svc,hpa,pdb,sa,httproute,externalsecret,configmap,pvc,cronjob,pods -l "app=${HELM_RELEASE}" -o wide 2>/dev/null \
+                        || kubectl -n "${HELM_NAMESPACE}" get deploy,svc,hpa,pdb,sa,httproute,configmap,pvc,cronjob,pods -l "app=${HELM_RELEASE}" -o wide
+                      kubectl -n "${HELM_NAMESPACE}" get cronjob -l "app.kubernetes.io/name=${HELM_RELEASE}" -o wide 2>/dev/null || true

@@ -56,6 +56,9 @@ assert_not_contains "$OUT" "kind: PodDisruptionBudget" "PDB not rendered by defa
 
 echo "== probes contract =="
 assert_contains "$OUT" "path: /health-check" "probes use /health-check"
+assert_contains "$OUT" "startupProbe:" "startupProbe present"
+assert_contains "$OUT" "livenessProbe:" "livenessProbe present"
+assert_contains "$OUT" "readinessProbe:" "readinessProbe present"
 
 echo "== hostnames by environment =="
 OUT_DEV="$(render develop)"
@@ -237,12 +240,14 @@ assert_contains "$OUT_CRON" "kind: Deployment" "Deployment still present with Cr
 assert_contains "$OUT_CRON" "kind: Service" "Service still present with CronJob"
 assert_contains "$OUT_CRON" "kind: HorizontalPodAutoscaler" "HPA still present with CronJob"
 assert_contains "$OUT_CRON" "kind: HTTPRoute" "HTTPRoute still present with CronJob"
-# CronJob pod template must not inherit API HTTP probes
+# CronJob must not share Service selector label app=<release>
 CRON_SECTION="$(awk '/kind: CronJob/,/^---$/ {print}' <<<"$OUT_CRON")"
+assert_not_contains "$CRON_SECTION" "app: sample-api" "CronJob pods not selected by Service"
 assert_not_contains "$CRON_SECTION" "health-check" "CronJob has no HTTP probes"
 assert_not_contains "$CRON_SECTION" "persistentVolumeClaim:" "CronJob does not mount PVC"
 assert_not_contains "$CRON_SECTION" "startupProbe:" "CronJob has no startupProbe"
 assert_not_contains "$CRON_SECTION" "livenessProbe:" "CronJob has no livenessProbe"
+assert_not_contains "$CRON_SECTION" "readinessProbe:" "CronJob has no readinessProbe"
 
 echo "== cronJob reuses config + WIF =="
 WIF_AUD="//iam.googleapis.com/projects/123456789/locations/global/workloadIdentityPools/pool/providers/eks"

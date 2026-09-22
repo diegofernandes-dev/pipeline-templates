@@ -9,7 +9,7 @@ Templates YAML reutilizáveis para Azure DevOps (GitHub → `extends`).
 | [`templates/dotnet/ci.yml`](templates/dotnet/ci.yml) | CI → ECR → Helm (promução) |
 | [`templates/dotnet/helm-deploy.yml`](templates/dotnet/helm-deploy.yml) | Stage Helm por Environment |
 | [`docker/dotnet/Dockerfile`](docker/dotnet/Dockerfile) | Dockerfile plataforma (.NET web/API) |
-| [`charts/app`](charts/app) | Chart da plataforma (Deployment, Service, HPA, PDB, SA, HTTPRoute) |
+| [`charts/app`](charts/app) | Chart da plataforma (API + opt-ins: WIF, config/ESO, PVC, CronJob) |
 | [`tests/chart-invariants.sh`](tests/chart-invariants.sh) | Testes mínimos do chart |
 
 ## Consumo
@@ -66,12 +66,13 @@ Só CI (ex.: PR): `deployEnvironments: []` (default) — sem Container/Deploy.
 | Item | Valor |
 |------|--------|
 | Resources | request CPU `150m`, memory `256Mi`; limit memory `512Mi`; **sem** CPU limit |
-| Probes | contrato obrigatório `GET /health-check` (startup/liveness/readiness) |
+| Probes | contrato `GET /health-check` (startup + liveness + readiness) |
 | HPA | CPU 70%; `minReplicas`/`maxReplicas` = política de disponibilidade (default lab 1/3) |
-| PDB | **off** por default (inútil com 1 réplica + maxUnavailable 1) |
+| PDB | **off** por default (inútil com 1 réplica + maxUnavailable 1); toggle `pdb.enabled` |
 | Pull ECR | pipeline não cria `imagePullSecret`; cluster/node runtime deve ter acesso ao ECR |
-| HTTPRoute | hostnames + Gateway derivados do Environment |
+| HTTPRoute | hostnames + Gateway derivados do Environment (pipeline); `httpRoute.enabled` |
 | Security | non-root, seccomp, drop caps, read-only root + `/tmp` |
+| Opt-ins (manifesto) | IRSA, WIF, config, ExternalSecret, PVC, CronJob |
 
 Build `linux/amd64`. Helm `--reset-values --atomic --wait`.
 
@@ -121,9 +122,9 @@ O Deploy faz `helm upgrade -f deploy/config/<Environment>.yaml` quando o ficheir
 | `serviceAccount.annotations` | IRSA (`eks.amazonaws.com/role-arn`) |
 | `workloadIdentity.gcp.audience` (+ `serviceAccountEmail`) | WIF EKS→GCP; chart cria `{app}-wif-credentials` (`external_account`) |
 | `persistence.mountPath` (+ `size`) | PVC `{app}-data` (RWO, `resource-policy: keep`); exige `autoscaling: false` e `replicaCount: 1` |
-| `cronJob.schedule` | CronJob `{app}-cron` (adicional à API; reusa image/SA/config/WIF; sem probes HTTP nem PVC) |
+| `cronJob.schedule` | CronJob `{app}-cron` (adicional à API; reusa image/SA/config/WIF; sem probes/PVC; labels sem `app=` do Service) |
 | `autoscaling` (map) | HPA; para desligar no env: `autoscaling: false` |
-| `resources` / `pdb` | Overrides por env |
+| `resources` / `pdb` | Overrides por env (`pdb` ainda usa `enabled`) |
 
 Regra do manifesto: **preencheu o bloco ⇒ aplica**. Sem flags `enabled` / nesting `data` em `config`. Omitir o bloco mantém o default do chart.
 
@@ -164,3 +165,19 @@ Em lab sem esse acesso (ex. Rancher), provisione o secret fora da plataforma e d
 ```bash
 ./tests/chart-invariants.sh
 ```
+
+## Freeze (Helm)
+
+O chart/pipeline acima é o **escopo funcional fechado** para API .NET em EKS.
+
+**Não** entra sem consumidor real + decisão explícita:
+
+- StatefulSet / vários PVCs / RWX
+- cronjob-only / múltiplos CronJobs / workers genéricos
+- NetworkPolicy, ServiceMonitor/PodMonitor
+- SealedSecrets / secrets no Git ou VG→Secret de app
+- GKE / multicloud de deploy
+- Image signing, Sonar, cache de build como contrato do template
+- `workloadType` / framework genérico de workloads
+
+Novas capabilities: só com necessidade comprovada e incremento aprovado.

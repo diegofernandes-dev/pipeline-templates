@@ -6,7 +6,6 @@ kind: CronJob
 metadata:
   name: {{ include "chart.cronJobName" . }}
   labels:
-    app: {{ .Release.Name }}
     app.kubernetes.io/name: {{ .Release.Name }}
     app.kubernetes.io/instance: {{ .Release.Name }}
     app.kubernetes.io/component: cron
@@ -21,7 +20,6 @@ spec:
       template:
         metadata:
           labels:
-            app: {{ .Release.Name }}
             app.kubernetes.io/name: {{ .Release.Name }}
             app.kubernetes.io/instance: {{ .Release.Name }}
             app.kubernetes.io/component: cron
