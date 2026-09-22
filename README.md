@@ -24,7 +24,7 @@ resources:
       type: github
       name: diegofernandes-dev/pipeline-templates
       endpoint: github-diegofernandes-dev
-      ref: refs/heads/main
+      ref: refs/tags/v1.0.0
 
 extends:
   template: templates/dotnet/ci.yml@templates
@@ -174,6 +174,8 @@ Cobre baseline API, IRSA, WIF, ConfigMap, ExternalSecret, PVC, CronJob, PDB, HTT
 ## Freeze (Helm)
 
 **Status: FROZEN** at chart `app` **v1.0.0** (API .NET → EKS).
+
+Pin de consumo imutável: Git tag **`v1.0.0`** (`ref: refs/tags/v1.0.0`). Não use `refs/heads/main` em pipelines de produção.
 
 Escopo **dentro** do freeze:
 
