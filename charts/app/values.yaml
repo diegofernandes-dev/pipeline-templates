@@ -12,12 +12,12 @@ imagePullSecrets: []
 serviceAccount:
   create: true
   name: ""
-  # IRSA: pipeline sets eks.amazonaws.com/role-arn when SA_ROLE_ARN is configured.
+  # IRSA: set eks.amazonaws.com/role-arn via per-env manifesto (deploy/config/<env>.yaml).
   annotations: {}
   automountServiceAccountToken: false
 
-# EKS → GCP Workload Identity Federation (Pub/Sub etc.). Opt-in only.
-# Requires a pre-existing ConfigMap with external_account JSON (or pipeline creates it).
+# EKS → GCP Workload Identity Federation (Pub/Sub etc.). Opt-in via manifesto.
+# Point credentialsConfigMapName at a pre-existing ConfigMap (or one synced by ESO).
 workloadIdentity:
   enabled: false
   token:
@@ -30,6 +30,22 @@ workloadIdentity:
     credentialsConfigMapName: ""
     credentialsConfigMapKey: external-account.json
     projectId: ""
+
+# Non-sensitive app config → ConfigMap → envFrom (manifesto: config.enabled + config.data).
+config:
+  enabled: false
+  data: {}
+
+# Application secrets via External Secrets Operator (manifesto declares refs only — no secret values in Git).
+# Requires ESO + SecretStore/ClusterSecretStore on the cluster (platform infra).
+externalSecret:
+  enabled: false
+  refreshInterval: 1h
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: ""
+  data: []
+  # data item: { secretKey: ENV_NAME, remoteRef: { key: path/in/store, property: optional } }
 
 service:
   port: 8080

@@ -36,12 +36,13 @@ parameters:
     default: ''
 
   # Lista ordenada de ambientes para promover a mesma imagem.
-  # Ex.: [{ name: homolog, containerPool: PG-AWS-EKS-HML, variableGroups: [app-hml] }]
+  # Ex.: [{ name: homolog, containerPool: PG-AWS-EKS-HML, variableGroups: [] }]
   # name ∈ { develop, homolog, production }.
   # containerPool (opcional): pool do Deploy desse ambiente; default = parâmetro containerPool.
-  # variableGroups pode ser []. Lista vazia ⇒ só CI (sem Container/Deploy).
+  # App env overlay: deploy/config/<name>.yaml no repo da app (IRSA, WIF, HPA, config, externalSecret).
+  # variableGroups: legado/opcional (não alimenta IRSA/WIF/config de app). Lista vazia ⇒ só CI se deployEnvironments vazio.
   - name: deployEnvironments
-    displayName: Ambientes ADO (+ pool e variable groups por ambiente)
+    displayName: Ambientes ADO (+ pool por ambiente)
     type: object
     default: []
 
@@ -71,6 +72,12 @@ parameters:
     displayName: Expor hostname legado .d.asa.com.br (ExternalDNS)
     type: boolean
     default: false
+
+  # Pasta no repo da app com overlays <environment>.yaml (default: deploy/config).
+  - name: runtimeConfigPath
+    displayName: Caminho dos manifestos por ambiente
+    type: string
+    default: 'deploy/config'
 
 stages:
   - stage: CI
@@ -312,6 +319,7 @@ stages:
         awsRegion: ${{ parameters.awsRegion }}
         helmTimeout: ${{ parameters.helmTimeout }}
         exposeAsaComBr: ${{ parameters.exposeAsaComBr }}
+        runtimeConfigPath: ${{ parameters.runtimeConfigPath }}
 
   - ${{ if gt(length(parameters.deployEnvironments), 1) }}:
     - template: helm-deploy.yml
@@ -326,6 +334,7 @@ stages:
         awsRegion: ${{ parameters.awsRegion }}
         helmTimeout: ${{ parameters.helmTimeout }}
         exposeAsaComBr: ${{ parameters.exposeAsaComBr }}
+        runtimeConfigPath: ${{ parameters.runtimeConfigPath }}
 
   - ${{ if gt(length(parameters.deployEnvironments), 2) }}:
     - template: helm-deploy.yml
@@ -340,3 +349,4 @@ stages:
         awsRegion: ${{ parameters.awsRegion }}
         helmTimeout: ${{ parameters.helmTimeout }}
         exposeAsaComBr: ${{ parameters.exposeAsaComBr }}
+        runtimeConfigPath: ${{ parameters.runtimeConfigPath }}

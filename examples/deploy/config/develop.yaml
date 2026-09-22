@@ -1,0 +1,35 @@
+# Example per-environment manifesto (copy to the app repo as deploy/config/develop.yaml).
+# Pipeline applies: helm upgrade -f deploy/config/<ADO_ENVIRONMENT>.yaml
+# Do NOT put secret values here — use externalSecret refs (ESO) or a pre-provisioned ConfigMap for WIF JSON.
+
+autoscaling:
+  enabled: true
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 70
+
+# serviceAccount:
+#   annotations:
+#     eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT:role/sample-api-develop
+
+# workloadIdentity:
+#   enabled: true
+#   gcp:
+#     credentialsConfigMapName: wif-gcp-credentials
+#     projectId: my-gcp-project
+
+config:
+  enabled: true
+  data:
+    API_URL: https://api.dev.example
+    FEATURE_FLAG: "true"
+
+# externalSecret:
+#   enabled: true
+#   secretStoreRef:
+#     kind: ClusterSecretStore
+#     name: aws-secretsmanager
+#   data:
+#     - secretKey: ConnectionStrings__Default
+#       remoteRef:
+#         key: asa/sample-api/develop/connection-string

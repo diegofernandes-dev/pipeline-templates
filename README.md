@@ -100,27 +100,41 @@ O agent de cada pool já carrega o kubeconfig do cluster em que roda. Não há p
 
 ### Variable Groups
 
-`deployEnvironments[].variableGroups` anexa Variable Groups ao stage Deploy. Uso concreto: secrets/config **do ambiente** quando existirem. Lista vazia é válida. Não há sistema genérico de ConfigMap/Secret no chart.
+`deployEnvironments[].variableGroups` ainda pode anexar VGs ao stage Deploy (lab / legado). **Não** use VG para config de app, IRSA ou WIF — isso vai no manifesto por ambiente.
 
-### Identidade do workload (opt-in)
+### Manifesto por ambiente (overlay da app)
 
-Runtime é sempre **EKS**. Identidade externa é opt-in via Variable Groups — variáveis ausentes ⇒ baseline (SA sem IRSA, sem WIF GCP).
+No repo da aplicação:
 
-| Variável (VG) | Efeito |
-|---------------|--------|
-| `SA_ROLE_ARN` | Annotation `eks.amazonaws.com/role-arn` no ServiceAccount (IRSA nativo) |
-| `WORKLOAD_IDENTITY_GCP_CREDENTIALS_CM_NAME` | Habilita WIF GCP; monta ConfigMap pré-existente com `external_account` JSON |
-| `WORKLOAD_IDENTITY_GCP_CREDENTIALS_JSON` | Base64 do JSON; pipeline cria/atualiza o ConfigMap (default name: `wif-gcp-credentials`) |
-| `WORKLOAD_IDENTITY_GCP_PROJECT_ID` | Opcional → `GOOGLE_CLOUD_PROJECT` no pod |
-| `WORKLOAD_IDENTITY_AUDIENCE` | Opcional → audience do projected SA token (default chart: `sts.amazonaws.com`) |
+```text
+deploy/config/develop.yaml
+deploy/config/homolog.yaml
+deploy/config/production.yaml
+```
 
-**EKS → AWS (IRSA):** Role IAM já existe fora do chart; pipeline só anota o SA.
+O Deploy faz `helm upgrade -f deploy/config/<Environment>.yaml` quando o ficheiro existe. Path configurável: parâmetro `runtimeConfigPath` (default `deploy/config`).
 
-**EKS → GCP (Pub/Sub etc.):** projected ServiceAccount token + ConfigMap `external_account` + `GOOGLE_APPLICATION_CREDENTIALS`. Pool/Provider GCP e bindings permanecem infra externa.
+| No manifesto | Efeito |
+|--------------|--------|
+| `config.data` | ConfigMap `{app}-config` → `envFrom` |
+| `externalSecret` | CR ExternalSecret → Secret `{app}-secret` → `envFrom` (requer ESO no cluster) |
+| `serviceAccount.annotations` | IRSA (`eks.amazonaws.com/role-arn`) |
+| `workloadIdentity` | WIF EKS→GCP (CM pré-existente / ESO; sem JSON no Git) |
+| `autoscaling` / `resources` / `pdb` | Overrides por env |
 
-IRSA e GCP WIF podem coexistir no mesmo pod/ServiceAccount. `automountServiceAccountToken` permanece `false`; WIF usa projected token explícito.
+**Fica fora do manifesto:** `image.*` (CI), `httpRoute.environment` / Gateway (pipeline), probes/security (contrato do chart), valores secretos.
 
-Variáveis secret do Variable Group (ex.: `WORKLOAD_IDENTITY_GCP_CREDENTIALS_JSON`) são mapeadas no `env:` do task Deploy — requisito do Azure DevOps para secrets. Variável ausente vira literal `$(VAR)` e é ignorada pelo script; nunca logar o JSON de credenciais.
+Exemplo: [`examples/deploy/config/develop.yaml`](examples/deploy/config/develop.yaml).
+
+### Identidade do workload (opt-in via manifesto)
+
+Runtime é sempre **EKS**. Sem manifesto de identidade ⇒ SA sem IRSA, sem WIF.
+
+**EKS → AWS (IRSA):** annotation no manifesto; Role IAM fora do chart.
+
+**EKS → GCP:** `workloadIdentity` no manifesto + ConfigMap `external_account` (ou sync ESO). `automountServiceAccountToken` permanece `false`; WIF usa projected token.
+
+IRSA e GCP WIF podem coexistir no mesmo ServiceAccount/pod.
 
 ### Lab (Rancher) — ECR pull
 
@@ -135,7 +149,8 @@ Em lab sem esse acesso (ex. Rancher), provisione o secret fora da plataforma e d
 | `applicationName` | `''` | Identidade; obrigatório se houver deploy |
 | `dotnetProject` | `''` | `.csproj` a publicar; TFM → tag aspnet |
 | `dotnetVersion` | `10.x` | SDK do agent CI |
-| `deployEnvironments` | `[]` | Ambientes + `containerPool`/`variableGroups` por env; vazio = só CI |
+| `deployEnvironments` | `[]` | Ambientes + `containerPool` por env; vazio = só CI |
+| `runtimeConfigPath` | `deploy/config` | Pasta dos manifestos `<env>.yaml` no repo da app |
 | `exposeAsaComBr` | `false` | Hostname legado `.asa.com.br` em `spec.hostnames` |
 | `containerPool` | `PG-AWS-EKS` | Pool do Container (+ default dos Deploys sem override) |
 

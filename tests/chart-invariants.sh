@@ -124,6 +124,49 @@ else
   echo "OK: single ServiceAccount with IRSA + GCP WIF"
 fi
 
+echo "== runtime config baseline =="
+assert_not_contains "$OUT_DEV" "kind: ConfigMap" "no ConfigMap by default"
+assert_not_contains "$OUT_DEV" "kind: ExternalSecret" "no ExternalSecret by default"
+assert_not_contains "$OUT_DEV" "envFrom:" "no envFrom by default"
+
+echo "== config ConfigMap + envFrom =="
+OUT_CFG="$(render develop \
+  --set config.enabled=true \
+  --set-string config.data.API_URL=https://api.dev.example \
+  --set-string config.data.FEATURE_FLAG=true)"
+assert_contains "$OUT_CFG" "kind: ConfigMap" "ConfigMap rendered"
+assert_contains "$OUT_CFG" "name: sample-api-config" "ConfigMap name"
+assert_contains "$OUT_CFG" "API_URL:" "config key API_URL"
+assert_contains "$OUT_CFG" "configMapRef:" "envFrom configMapRef"
+assert_contains "$OUT_CFG" "checksum/config:" "config checksum annotation"
+
+echo "== externalSecret + secretRef =="
+OUT_ES="$(render develop \
+  --set externalSecret.enabled=true \
+  --set-string externalSecret.secretStoreRef.name=aws-secretsmanager \
+  --set-string 'externalSecret.data[0].secretKey=ConnectionStrings__Default' \
+  --set-string 'externalSecret.data[0].remoteRef.key=asa/sample-api/develop/cs')"
+assert_contains "$OUT_ES" "kind: ExternalSecret" "ExternalSecret rendered"
+assert_contains "$OUT_ES" "name: sample-api-secret" "target Secret name"
+assert_contains "$OUT_ES" "secretRef:" "envFrom secretRef"
+assert_not_contains "$OUT_ES" "kind: ConfigMap" "no ConfigMap when only externalSecret"
+
+echo "== config + externalSecret composition =="
+OUT_RT="$(render develop \
+  --set config.enabled=true \
+  --set-string config.data.API_URL=https://api.dev.example \
+  --set externalSecret.enabled=true \
+  --set-string externalSecret.secretStoreRef.name=aws-secretsmanager \
+  --set-string 'externalSecret.data[0].secretKey=DB_PASSWORD' \
+  --set-string 'externalSecret.data[0].remoteRef.key=asa/sample-api/develop/db')"
+assert_contains "$OUT_RT" "configMapRef:" "composed configMapRef"
+assert_contains "$OUT_RT" "secretRef:" "composed secretRef"
+
+echo "== manifesto-style HPA override =="
+OUT_HPA="$(render develop --set autoscaling.minReplicas=2 --set autoscaling.maxReplicas=5)"
+assert_contains "$OUT_HPA" "minReplicas: 2" "HPA minReplicas from overlay"
+assert_contains "$OUT_HPA" "maxReplicas: 5" "HPA maxReplicas from overlay"
+
 if [[ "$FAILED" -ne 0 ]]; then
   echo "Some invariants failed"
   exit 1
