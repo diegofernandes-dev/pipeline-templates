@@ -168,7 +168,17 @@ Em lab sem esse acesso (ex. Rancher), provisione o secret fora da plataforma e d
 
 ## Freeze (Helm)
 
-O chart/pipeline acima é o **escopo funcional fechado** para API .NET em EKS.
+**Status: FROZEN** at chart `app` **v1.0.0** (API .NET → EKS).
+
+Escopo **dentro** do freeze:
+
+```text
+CI → ECR → Helm
+Deployment + Service + SA + probes + security + resources
+HPA / PDB (opt)
+HTTPRoute + Gateway por Environment
+Manifesto: config, ExternalSecret, IRSA, WIF, PVC, CronJob
+```
 
 **Não** entra sem consumidor real + decisão explícita:
 
@@ -180,4 +190,4 @@ O chart/pipeline acima é o **escopo funcional fechado** para API .NET em EKS.
 - Image signing, Sonar, cache de build como contrato do template
 - `workloadType` / framework genérico de workloads
 
-Novas capabilities: só com necessidade comprovada e incremento aprovado.
+Novas capabilities: só com necessidade comprovada e incremento aprovado (bump de chart version).
