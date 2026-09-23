@@ -1,7 +1,0 @@
-apiVersion: v2
-name: app
-description: Platform Helm chart for .NET APIs on EKS (probes opt-in since 2.0.0 — see README)
-type: application
-# 2.0.0 = probes opt-in (breaking: default no probes; v1.0.0 tag remains /health-check).
-version: 2.0.0
-appVersion: "2.0.0"

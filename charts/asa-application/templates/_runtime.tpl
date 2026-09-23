@@ -1,5 +1,5 @@
 {{/*
-Presence-based toggles: non-empty map/list ⇒ on. No separate enabled flags for manifesto clarity.
+Presence-based toggles: non-empty map/list ⇒ on.
 */}}
 
 {{- define "chart.configEnabled" -}}
@@ -44,6 +44,16 @@ false
 {{- end -}}
 {{- end }}
 
+{{- define "chart.hpaCpuTarget" -}}
+{{- $a := .Values.autoscaling | default dict -}}
+{{- if kindIs "map" $a -}}
+{{- $cpu := $a.cpu | default dict -}}
+{{- $cpu.target | default 70 -}}
+{{- else -}}
+70
+{{- end -}}
+{{- end }}
+
 {{- define "chart.persistenceEnabled" -}}
 {{- $p := .Values.persistence -}}
 {{- if kindIs "bool" $p -}}
@@ -74,36 +84,6 @@ false
 {{- $replicas := .Values.replicaCount | int -}}
 {{- if gt $replicas 1 -}}
 {{- fail "persistence requires replicaCount: 1 (RWO PVC cannot be shared across pods)" -}}
-{{- end -}}
-{{- end -}}
-{{- end }}
-
-{{- define "chart.cronJobEnabled" -}}
-{{- $c := .Values.cronJob -}}
-{{- if kindIs "bool" $c -}}
-{{- if $c -}}true{{- else -}}false{{- end -}}
-{{- else if and (kindIs "map" $c) ($c.schedule | default "") -}}
-true
-{{- else -}}
-false
-{{- end -}}
-{{- end }}
-
-{{- define "chart.cronJobName" -}}
-{{- printf "%s-cron" .Release.Name -}}
-{{- end }}
-
-{{- define "chart.validateCronJob" -}}
-{{- if (include "chart.cronJobEnabled" .) | eq "true" -}}
-{{- $c := .Values.cronJob | default dict -}}
-{{- if kindIs "bool" $c -}}
-{{- fail "cronJob: true is invalid — set cronJob.schedule and command or args (or cronJob: false)" -}}
-{{- end -}}
-{{- $_ := required "cronJob.schedule is required when cronJob is set" ($c.schedule | default "") -}}
-{{- $cmd := $c.command | default list -}}
-{{- $args := $c.args | default list -}}
-{{- if and (eq (len $cmd) 0) (eq (len $args) 0) -}}
-{{- fail "cronJob requires command or args when schedule is set (API entrypoint must not run as a CronJob)" -}}
 {{- end -}}
 {{- end -}}
 {{- end }}

@@ -1,6 +1,8 @@
+{{- include "chart.validateApplication" . }}
 {{- include "chart.validateWorkloadIdentity" . }}
 {{- include "chart.validatePersistence" . }}
 {{- include "chart.validateProbes" . }}
+{{- include "chart.validateExternalSecret" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -9,13 +11,13 @@ metadata:
     app: {{ .Release.Name }}
     app.kubernetes.io/name: {{ .Release.Name }}
     app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: {{ include "chart.workloadType" . }}
 spec:
   {{- if not ((include "chart.autoscalingEnabled" .) | eq "true") }}
   replicas: {{ .Values.replicaCount }}
   {{- end }}
   {{- if (include "chart.persistenceEnabled" .) | eq "true" }}
   strategy:
-    # RWO PVC: RollingUpdate can Multi-Attach before the old pod releases the volume.
     type: Recreate
   {{- else }}
   strategy:
@@ -30,6 +32,7 @@ spec:
         app: {{ .Release.Name }}
         app.kubernetes.io/name: {{ .Release.Name }}
         app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: {{ include "chart.workloadType" . }}
       {{- $cfgOn := (include "chart.configEnabled" .) | eq "true" -}}
       {{- $wifOn := (include "chart.workloadIdentityEnabled" .) | eq "true" -}}
       {{- if or $cfgOn $wifOn }}
@@ -64,41 +67,65 @@ spec:
           {{- with include "app.envFrom" . }}
           {{- . | nindent 10 }}
           {{- end }}
+          {{- if (include "chart.hasEndpoint" .) | eq "true" }}
           ports:
-            - name: http
-              containerPort: {{ .Values.service.port }}
+            - name: {{ if eq (include "chart.workloadType" .) "grpc" }}grpc{{ else }}http{{ end }}
+              containerPort: {{ include "chart.containerPort" . }}
               protocol: TCP
-          {{- $startupPath := include "chart.probeStartupPath" . -}}
-          {{- $readinessPath := include "chart.probeReadinessPath" . -}}
-          {{- $livenessPath := include "chart.probeLivenessPath" . -}}
+          {{- end }}
           {{- $probeCfg := (.Values.probes | default dict) -}}
           {{- if not (kindIs "map" $probeCfg) -}}{{- $probeCfg = dict -}}{{- end -}}
           {{- $startupCfg := $probeCfg.startup | default dict -}}
           {{- $readinessCfg := $probeCfg.readiness | default dict -}}
           {{- $livenessCfg := $probeCfg.liveness | default dict -}}
-          {{- if $startupPath }}
+          {{- $startupMode := include "chart.probeTypeEnabled" (list . "startup") -}}
+          {{- $readinessMode := include "chart.probeTypeEnabled" (list . "readiness") -}}
+          {{- $livenessMode := include "chart.probeTypeEnabled" (list . "liveness") -}}
+          {{- if eq $startupMode "http" }}
           startupProbe:
             httpGet:
-              path: {{ $startupPath | quote }}
+              path: {{ include "chart.probeHttpPath" (list . "startup") | quote }}
               port: http
             failureThreshold: {{ $startupCfg.failureThreshold | default 30 }}
             periodSeconds: {{ $startupCfg.periodSeconds | default 5 }}
+          {{- else if eq $startupMode "grpc" }}
+          startupProbe:
+            grpc:
+              port: {{ include "chart.containerPort" . | int }}
+            failureThreshold: {{ $startupCfg.failureThreshold | default 30 }}
+            periodSeconds: {{ $startupCfg.periodSeconds | default 5 }}
           {{- end }}
-          {{- if $livenessPath }}
+          {{- if eq $livenessMode "http" }}
           livenessProbe:
             httpGet:
-              path: {{ $livenessPath | quote }}
+              path: {{ include "chart.probeHttpPath" (list . "liveness") | quote }}
               port: http
             initialDelaySeconds: {{ $livenessCfg.initialDelaySeconds | default 10 }}
             periodSeconds: {{ $livenessCfg.periodSeconds | default 10 }}
             timeoutSeconds: {{ $livenessCfg.timeoutSeconds | default 3 }}
             failureThreshold: {{ $livenessCfg.failureThreshold | default 3 }}
+          {{- else if eq $livenessMode "grpc" }}
+          livenessProbe:
+            grpc:
+              port: {{ include "chart.containerPort" . | int }}
+            initialDelaySeconds: {{ $livenessCfg.initialDelaySeconds | default 10 }}
+            periodSeconds: {{ $livenessCfg.periodSeconds | default 10 }}
+            timeoutSeconds: {{ $livenessCfg.timeoutSeconds | default 3 }}
+            failureThreshold: {{ $livenessCfg.failureThreshold | default 3 }}
           {{- end }}
-          {{- if $readinessPath }}
+          {{- if eq $readinessMode "http" }}
           readinessProbe:
             httpGet:
-              path: {{ $readinessPath | quote }}
+              path: {{ include "chart.probeHttpPath" (list . "readiness") | quote }}
               port: http
+            initialDelaySeconds: {{ $readinessCfg.initialDelaySeconds | default 10 }}
+            periodSeconds: {{ $readinessCfg.periodSeconds | default 10 }}
+            timeoutSeconds: {{ $readinessCfg.timeoutSeconds | default 3 }}
+            failureThreshold: {{ $readinessCfg.failureThreshold | default 3 }}
+          {{- else if eq $readinessMode "grpc" }}
+          readinessProbe:
+            grpc:
+              port: {{ include "chart.containerPort" . | int }}
             initialDelaySeconds: {{ $readinessCfg.initialDelaySeconds | default 10 }}
             periodSeconds: {{ $readinessCfg.periodSeconds | default 10 }}
             timeoutSeconds: {{ $readinessCfg.timeoutSeconds | default 3 }}

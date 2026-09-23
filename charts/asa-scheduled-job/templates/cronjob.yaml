@@ -1,28 +1,44 @@
-{{- include "chart.validateCronJob" . }}
-{{- if (include "chart.cronJobEnabled" .) | eq "true" }}
-{{- $cj := .Values.cronJob -}}
+{{- include "chart.validateScheduledJob" . }}
+{{- include "chart.validateWorkloadIdentity" . }}
+{{- include "chart.validateExternalSecret" . }}
+{{- $sched := .Values.schedule -}}
+{{- $ex := .Values.execution | default dict -}}
+{{- $hist := .Values.history | default dict -}}
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: {{ include "chart.cronJobName" . }}
+  name: {{ .Release.Name }}
   labels:
     app.kubernetes.io/name: {{ .Release.Name }}
     app.kubernetes.io/instance: {{ .Release.Name }}
-    app.kubernetes.io/component: cron
+    app.kubernetes.io/component: scheduled-job
 spec:
-  schedule: {{ $cj.schedule | quote }}
-  concurrencyPolicy: {{ $cj.concurrencyPolicy | default "Forbid" }}
-  successfulJobsHistoryLimit: {{ $cj.successfulJobsHistoryLimit | default 3 }}
-  failedJobsHistoryLimit: {{ $cj.failedJobsHistoryLimit | default 1 }}
+  schedule: {{ $sched.expression | quote }}
+  {{- with $sched.timeZone }}
+  timeZone: {{ . | quote }}
+  {{- end }}
+  concurrencyPolicy: {{ $sched.concurrencyPolicy | default "Forbid" }}
+  {{- if kindIs "float64" $sched.startingDeadlineSeconds }}
+  startingDeadlineSeconds: {{ $sched.startingDeadlineSeconds | int }}
+  {{- else if kindIs "int" $sched.startingDeadlineSeconds }}
+  startingDeadlineSeconds: {{ $sched.startingDeadlineSeconds }}
+  {{- else if and $sched.startingDeadlineSeconds (ne ($sched.startingDeadlineSeconds | toString) "") }}
+  startingDeadlineSeconds: {{ $sched.startingDeadlineSeconds }}
+  {{- end }}
+  successfulJobsHistoryLimit: {{ $hist.successful | default 3 }}
+  failedJobsHistoryLimit: {{ $hist.failed | default 1 }}
   jobTemplate:
     spec:
-      backoffLimit: {{ $cj.backoffLimit | default 2 }}
+      backoffLimit: {{ $ex.retries | default 2 }}
+      {{- with $ex.timeoutSeconds }}
+      activeDeadlineSeconds: {{ . }}
+      {{- end }}
       template:
         metadata:
           labels:
             app.kubernetes.io/name: {{ .Release.Name }}
             app.kubernetes.io/instance: {{ .Release.Name }}
-            app.kubernetes.io/component: cron
+            app.kubernetes.io/component: scheduled-job
           {{- $cfgOn := (include "chart.configEnabled" .) | eq "true" -}}
           {{- $wifOn := (include "chart.workloadIdentityEnabled" .) | eq "true" -}}
           {{- if or $cfgOn $wifOn }}
@@ -35,7 +51,7 @@ spec:
             {{- end }}
           {{- end }}
         spec:
-          restartPolicy: OnFailure
+          restartPolicy: Never
           {{- if .Values.serviceAccount.create }}
           serviceAccountName: {{ default .Release.Name .Values.serviceAccount.name }}
           automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
@@ -52,11 +68,11 @@ spec:
               imagePullPolicy: {{ .Values.image.pullPolicy }}
               securityContext:
                 {{- toYaml .Values.securityContext | nindent 16 }}
-              {{- with $cj.command }}
+              {{- with $ex.command }}
               command:
                 {{- toYaml . | nindent 16 }}
               {{- end }}
-              {{- with $cj.args }}
+              {{- with $ex.args }}
               args:
                 {{- toYaml . | nindent 16 }}
               {{- end }}
@@ -76,4 +92,3 @@ spec:
             - name: tmp
               emptyDir: {}
             {{- include "app.workloadIdentityVolumes" . | nindent 12 }}
-{{- end }}

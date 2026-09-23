@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "asa-application values",
+  "type": "object",
+  "required": ["kind", "workload"],
+  "additionalProperties": true,
+  "properties": {
+    "kind": {
+      "const": "Application"
+    },
+    "workload": {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["web", "grpc", "worker"]
+        }
+      }
+    },
+    "legacyDns": {
+      "type": "boolean"
+    },
+    "schedule": false,
+    "execution": false,
+    "history": false,
+    "cronJob": false
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "workload": {
+            "properties": { "type": { "const": "worker" } }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "legacyDns": { "const": false }
+        }
+      }
+    }
+  ]
+}

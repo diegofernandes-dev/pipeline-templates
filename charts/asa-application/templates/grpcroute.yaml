@@ -1,5 +1,5 @@
-{{- if .Values.httpRoute.enabled }}
-{{- $env := .Values.httpRoute.environment | default "develop" }}
+{{- if (include "chart.isGrpc" .) | eq "true" }}
+{{- $env := .Values.runtime.environment | default "develop" }}
 {{- $corpZone := dict "develop" "dev.asa.corp" "homolog" "hml.asa.corp" "production" "prd.asa.corp" }}
 {{- $comBrZone := dict "develop" "d.asa.com.br" "homolog" "h.asa.com.br" "production" "p.asa.com.br" }}
 {{- $gatewayByEnv := dict "develop" "d-asa-com-br-internal-gateway" "homolog" "h-asa-com-br-internal-gateway" "production" "p-asa-com-br-internal-gateway" }}
@@ -7,7 +7,7 @@
 {{- $comBrHost := printf "%s.%s" .Release.Name (index $comBrZone $env | default "d.asa.com.br") }}
 {{- $gatewayName := index $gatewayByEnv $env | default "d-asa-com-br-internal-gateway" }}
 apiVersion: gateway.networking.k8s.io/v1
-kind: HTTPRoute
+kind: GRPCRoute
 metadata:
   name: {{ .Release.Name }}
   labels:
@@ -21,20 +21,12 @@ spec:
       group: gateway.networking.k8s.io
       kind: Gateway
   hostnames:
-    {{- if .Values.httpRoute.hostnames }}
-    {{- toYaml .Values.httpRoute.hostnames | nindent 4 }}
-    {{- else }}
     - {{ $corpHost | quote }}
-    {{- if .Values.httpRoute.exposeAsaComBr }}
+    {{- if .Values.legacyDns }}
     - {{ $comBrHost | quote }}
     {{- end }}
-    {{- end }}
   rules:
-    - matches:
-        - path:
-            type: PathPrefix
-            value: /
-      backendRefs:
+    - backendRefs:
         - name: {{ .Release.Name }}
-          port: {{ .Values.service.port }}
+          port: {{ include "chart.containerPort" . | int }}
 {{- end }}

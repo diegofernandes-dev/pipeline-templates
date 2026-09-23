@@ -7,7 +7,7 @@ resources:
       type: github
       name: diegofernandes-dev/pipeline-templates
       endpoint: github-diegofernandes-dev
-      ref: refs/tags/v2.0.0
+      ref: refs/tags/v3.0.0
 
 extends:
   template: templates/dotnet/ci.yml@templates
@@ -16,7 +16,6 @@ extends:
     applicationName: sample-api
     dotnetProject: src/Sample.Api/Sample.Api.csproj
     containerPool: 'PG-AWS-EKS'
-    exposeAsaComBr: false
     deployEnvironments:
       - name: develop
         containerPool: PG-AWS-EKS

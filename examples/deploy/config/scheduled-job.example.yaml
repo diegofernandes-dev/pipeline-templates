@@ -1,0 +1,27 @@
+# Example ScheduledJob manifesto (separate deployable / applicationName / release).
+# Pipeline selects charts/asa-scheduled-job from kind.
+
+kind: ScheduledJob
+
+schedule:
+  expression: "0 2 * * *"
+  timeZone: America/Sao_Paulo
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
+
+execution:
+  timeoutSeconds: 1800
+  retries: 2
+  args:
+    - --mode=job
+
+history:
+  successful: 2
+  failed: 3
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    memory: 512Mi

@@ -1,0 +1,71 @@
+kind: ScheduledJob
+
+image:
+  repository: ""
+  tag: latest
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+schedule:
+  expression: ""
+  timeZone: ""
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: null
+
+execution:
+  timeoutSeconds: null
+  retries: 2
+  command: []
+  args: []
+
+history:
+  successful: 3
+  failed: 1
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+  automountServiceAccountToken: false
+
+workloadIdentity:
+  token:
+    audience: sts.amazonaws.com
+    expirationSeconds: 3600
+    fileName: token
+    mountPath: /var/run/secrets/eks.amazonaws.com/serviceaccount
+    defaultMode: 420
+  gcp:
+    audience: ""
+    serviceAccountEmail: ""
+    projectId: ""
+
+config: {}
+
+externalSecret:
+  refreshInterval: 1h
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: ""
+  data: []
+
+resources:
+  requests:
+    cpu: 150m
+    memory: 256Mi
+  limits:
+    memory: 512Mi
+
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  privileged: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL

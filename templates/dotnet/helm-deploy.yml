@@ -1,6 +1,7 @@
 # Stage reutilizável: Helm deploy em um Environment ADO.
 # Namespace: asa-<applicationName> (sem sufixo; mesmo nome em cada cluster).
-# App env overlay: deploy/config/<environment>.yaml (manifesto) quando existir.
+# Manifesto obrigatório: deploy/config/<environment>.yaml com kind: Application|ScheduledJob.
+# Chart path is resolved from kind (never exposed to the consumer).
 parameters:
   - name: environmentName
     type: string
@@ -29,12 +30,6 @@ parameters:
     type: string
     default: '5m'
 
-  - name: exposeAsaComBr
-    type: boolean
-    default: false
-
-  # Directory in the app repo containing <environment>.yaml overlays
-  # (IRSA, WIF, HPA, config, externalSecret, persistence, cronJob).
   - name: runtimeConfigPath
     type: string
     default: 'deploy/config'
@@ -61,7 +56,6 @@ stages:
           runOnce:
             deploy:
               steps:
-                # Deploy needs chart + image refs + optional app manifesto — not the CI publish artifact.
                 - download: none
 
                 - checkout: self
@@ -78,15 +72,11 @@ stages:
                     APPLICATION_NAME: ${{ parameters.applicationName }}
                     ADO_ENVIRONMENT: ${{ parameters.environmentName }}
                     HELM_TIMEOUT: ${{ parameters.helmTimeout }}
-                    EXPOSE_ASA_COM_BR: ${{ parameters.exposeAsaComBr }}
                     AWS_REGION: ${{ parameters.awsRegion }}
                     AWS_DEFAULT_REGION: ${{ parameters.awsRegion }}
                     IMAGE_REPOSITORY: $(imageRepository)
                     IMAGE_TAG: $(imageTag)
                     RUNTIME_CONFIG_PATH: ${{ parameters.runtimeConfigPath }}
-                    # ECR_PULL_SECRET: optional lab var only (do not map $(ECR_PULL_SECRET) —
-                    # an unset macro becomes the literal string and would force a bogus imagePullSecret).
-                    # IRSA / WIF / app config: per-env manifesto at deploy/config/<env>.yaml — not Variable Groups.
                   inputs:
                     targetType: inline
                     script: |
@@ -106,13 +96,31 @@ stages:
                       fi
 
                       HELM_RELEASE="${APPLICATION_NAME}"
-                      # Same namespace name in every cluster (no env suffix).
                       HELM_NAMESPACE="asa-${APPLICATION_NAME}"
 
                       WORKSPACE="${PIPELINE_WORKSPACE:-${AGENT_BUILDDIRECTORY}}"
-                      CHART_DIR="${WORKSPACE}/pipeline-templates/charts/app"
+                      TEMPLATES_DIR="${WORKSPACE}/pipeline-templates"
                       APP_DIR="${WORKSPACE}/app"
                       MANIFEST="${APP_DIR}/${RUNTIME_CONFIG_PATH}/${ADO_ENVIRONMENT}.yaml"
+
+                      if [[ ! -f "${MANIFEST}" ]]; then
+                        echo "##vso[task.logissue type=error]Manifesto required at ${MANIFEST} (must declare kind: Application or ScheduledJob)"
+                        exit 1
+                      fi
+
+                      KIND="$(grep -E '^[[:space:]]*kind:[[:space:]]*' "${MANIFEST}" | head -1 | sed -E 's/^[[:space:]]*kind:[[:space:]]*//;s/[[:space:]]*$//;s/^["'\'']//;s/["'\'']$//')"
+                      case "${KIND}" in
+                        Application)
+                          CHART_DIR="${TEMPLATES_DIR}/charts/asa-application"
+                          ;;
+                        ScheduledJob)
+                          CHART_DIR="${TEMPLATES_DIR}/charts/asa-scheduled-job"
+                          ;;
+                        *)
+                          echo "##vso[task.logissue type=error]Unsupported or missing kind '${KIND}' in ${MANIFEST} (allowed: Application, ScheduledJob)"
+                          exit 1
+                          ;;
+                      esac
 
                       if [[ ! -f "${CHART_DIR}/Chart.yaml" ]]; then
                         echo "##vso[task.logissue type=error]Chart not found: ${CHART_DIR}"
@@ -132,28 +140,17 @@ stages:
                       aws sts get-caller-identity
                       echo "##[endgroup]"
 
-                      EXPOSE_FLAG="false"
-                      if [[ "${EXPOSE_ASA_COM_BR}" == "True" || "${EXPOSE_ASA_COM_BR}" == "true" ]]; then
-                        EXPOSE_FLAG="true"
-                      fi
+                      echo "kind=${KIND} → chart=${CHART_DIR}"
+                      echo "Using env manifesto: ${MANIFEST}"
 
                       HELM_SET=(
                         --set-string "image.repository=${IMAGE_REPOSITORY}"
                         --set-string "image.tag=${IMAGE_TAG}"
-                        --set "httpRoute.exposeAsaComBr=${EXPOSE_FLAG}"
-                        --set-string "httpRoute.environment=${ADO_ENVIRONMENT}"
                       )
-
-                      HELM_FILE_ARGS=()
-                      if [[ -f "${MANIFEST}" ]]; then
-                        HELM_FILE_ARGS+=(-f "${MANIFEST}")
-                        echo "Using env manifesto: ${MANIFEST}"
-                      else
-                        echo "No env manifesto at ${MANIFEST} — chart defaults only (platform injects image + httpRoute)"
+                      if [[ "${KIND}" == "Application" ]]; then
+                        HELM_SET+=(--set-string "runtime.environment=${ADO_ENVIRONMENT}")
                       fi
 
-                      # Default: no imagePullSecrets (cluster/node runtime must reach ECR).
-                      # Optional lab: set pipeline variable ECR_PULL_SECRET to a pre-provisioned secret name.
                       if [[ -n "${ECR_PULL_SECRET:-}" ]]; then
                         HELM_SET+=(--set-string "imagePullSecrets[0].name=${ECR_PULL_SECRET}")
                         echo "Using pre-provisioned imagePullSecret: ${ECR_PULL_SECRET}"
@@ -165,13 +162,13 @@ stages:
                       helm upgrade --install "${HELM_RELEASE}" "${CHART_DIR}" \
                         --namespace "${HELM_NAMESPACE}" \
                         --reset-values \
-                        "${HELM_FILE_ARGS[@]}" \
+                        -f "${MANIFEST}" \
                         "${HELM_SET[@]}" \
                         --atomic \
                         --wait \
                         --timeout "${HELM_TIMEOUT}"
                       echo "##[endgroup]"
 
-                      kubectl -n "${HELM_NAMESPACE}" get deploy,svc,hpa,pdb,sa,httproute,externalsecret,configmap,pvc,cronjob,pods -l "app=${HELM_RELEASE}" -o wide 2>/dev/null \
-                        || kubectl -n "${HELM_NAMESPACE}" get deploy,svc,hpa,pdb,sa,httproute,configmap,pvc,cronjob,pods -l "app=${HELM_RELEASE}" -o wide
-                      kubectl -n "${HELM_NAMESPACE}" get cronjob -l "app.kubernetes.io/name=${HELM_RELEASE}" -o wide 2>/dev/null || true
+                      kubectl -n "${HELM_NAMESPACE}" get deploy,svc,hpa,pdb,sa,httproute,grpcroute,externalsecret,configmap,pvc,cronjob,pods \
+                        -l "app.kubernetes.io/name=${HELM_RELEASE}" -o wide 2>/dev/null \
+                        || kubectl -n "${HELM_NAMESPACE}" get deploy,svc,hpa,sa,httproute,cronjob,pods -o wide

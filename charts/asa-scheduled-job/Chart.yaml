@@ -1,0 +1,6 @@
+apiVersion: v2
+name: asa-scheduled-job
+description: Platform chart for ScheduledJob (.NET CronJob) on EKS
+type: application
+version: 3.0.0
+appVersion: "3.0.0"

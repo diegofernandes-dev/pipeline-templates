@@ -1,48 +1,39 @@
-# Example per-environment manifesto (copy to the app repo as deploy/config/develop.yaml).
-# Pipeline applies: helm upgrade -f deploy/config/<ADO_ENVIRONMENT>.yaml
-# Rule: if you set a block, it applies. Omit the block to keep chart defaults.
-# Do NOT put secret values here — use externalSecret refs (ESO).
+# Example Application manifesto (copy to deploy/config/develop.yaml).
+# Pipeline selects chart from kind (asa-application). Ports are platform-owned.
+
+kind: Application
+
+workload:
+  type: web
+
+legacyDns: false
 
 autoscaling:
   minReplicas: 1
   maxReplicas: 3
-  targetCPUUtilizationPercentage: 70
-# autoscaling: false   # opt-out of HPA for this env
+  cpu:
+    target: 70
+
+# probes:
+#   path: /health-check
+# probes:
+#   readiness:
+#     path: /health/ready
 
 # serviceAccount:
 #   annotations:
 #     eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT:role/sample-api-develop
 
-# Chart creates {release}-wif-credentials ConfigMap (external_account). No pre-provisioned CM.
-# gcp.audience = external_account aud; token.audience defaults to sts.amazonaws.com (projected JWT).
 # workloadIdentity:
 #   gcp:
 #     audience: //iam.googleapis.com/projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/POOL/providers/PROVIDER
 #     serviceAccountEmail: app-sa@my-gcp-project.iam.gserviceaccount.com
 #     projectId: my-gcp-project
-# workloadIdentity: false   # opt-out for this env
 
-# RWO PVC — requires autoscaling: false and replicaCount: 1. Survives helm uninstall (keep).
 # persistence:
 #   mountPath: /data
 #   size: 1Gi
-#   # storageClassName: gp3
-# persistence: false
-
-# Optional batch job (does not disable Deployment/Service/HPA/HTTPRoute). No PVC mount.
-# Requires schedule + command and/or args (otherwise helm template fails).
-# cronJob:
-#   schedule: "0 6 * * *"
-#   args: ["Sample.Api.dll", "--mode=job"]
-# cronJob: false
-
-# HTTP probes — opt-in (v2). Default off (no /health-check presumed).
-# probes: false
-# probes:
-#   path: /health-check
-# probes:
-#   readiness:
-#     path: /healthz
+# # requires autoscaling: false and replicaCount: 1
 
 config:
   API_URL: https://api.dev.example

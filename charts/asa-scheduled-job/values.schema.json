@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "asa-scheduled-job values",
+  "type": "object",
+  "required": ["kind", "schedule", "execution"],
+  "additionalProperties": true,
+  "properties": {
+    "kind": {
+      "const": "ScheduledJob"
+    },
+    "schedule": {
+      "type": "object",
+      "required": ["expression"],
+      "properties": {
+        "expression": { "type": "string" },
+        "timeZone": { "type": "string" },
+        "concurrencyPolicy": { "type": "string" },
+        "startingDeadlineSeconds": { "type": ["integer", "null"] }
+      }
+    },
+    "execution": {
+      "type": "object",
+      "properties": {
+        "timeoutSeconds": { "type": ["integer", "null"] },
+        "retries": { "type": "integer" },
+        "command": { "type": "array", "items": { "type": "string" } },
+        "args": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "history": {
+      "type": "object",
+      "properties": {
+        "successful": { "type": "integer" },
+        "failed": { "type": "integer" }
+      }
+    },
+    "workload": false,
+    "legacyDns": false,
+    "probes": false,
+    "autoscaling": false,
+    "persistence": false
+  }
+}

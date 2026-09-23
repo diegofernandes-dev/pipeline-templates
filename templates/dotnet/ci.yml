@@ -67,13 +67,8 @@ parameters:
     type: string
     default: '5m'
 
-  # Quando true: HTTPRoute também inclui <app>.d.asa.com.br + annotation ExternalDNS.
-  - name: exposeAsaComBr
-    displayName: Expor hostname legado .d.asa.com.br (ExternalDNS)
-    type: boolean
-    default: false
-
   # Pasta no repo da app com overlays <environment>.yaml (default: deploy/config).
+  # Cada manifesto deve declarar kind: Application | ScheduledJob.
   - name: runtimeConfigPath
     displayName: Caminho dos manifestos por ambiente
     type: string
@@ -323,7 +318,6 @@ stages:
         containerPool: ${{ coalesce(parameters.deployEnvironments[0].containerPool, parameters.containerPool) }}
         awsRegion: ${{ parameters.awsRegion }}
         helmTimeout: ${{ parameters.helmTimeout }}
-        exposeAsaComBr: ${{ parameters.exposeAsaComBr }}
         runtimeConfigPath: ${{ parameters.runtimeConfigPath }}
 
   - ${{ if gt(length(parameters.deployEnvironments), 1) }}:
@@ -338,7 +332,6 @@ stages:
         containerPool: ${{ coalesce(parameters.deployEnvironments[1].containerPool, parameters.containerPool) }}
         awsRegion: ${{ parameters.awsRegion }}
         helmTimeout: ${{ parameters.helmTimeout }}
-        exposeAsaComBr: ${{ parameters.exposeAsaComBr }}
         runtimeConfigPath: ${{ parameters.runtimeConfigPath }}
 
   - ${{ if gt(length(parameters.deployEnvironments), 2) }}:
@@ -353,5 +346,4 @@ stages:
         containerPool: ${{ coalesce(parameters.deployEnvironments[2].containerPool, parameters.containerPool) }}
         awsRegion: ${{ parameters.awsRegion }}
         helmTimeout: ${{ parameters.helmTimeout }}
-        exposeAsaComBr: ${{ parameters.exposeAsaComBr }}
         runtimeConfigPath: ${{ parameters.runtimeConfigPath }}

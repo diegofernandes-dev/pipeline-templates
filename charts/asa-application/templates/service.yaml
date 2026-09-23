@@ -1,0 +1,18 @@
+{{- if (include "chart.hasEndpoint" .) | eq "true" }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    app: {{ .Release.Name }}
+    app.kubernetes.io/name: {{ .Release.Name }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  selector:
+    app: {{ .Release.Name }}
+  ports:
+    - name: {{ if eq (include "chart.workloadType" .) "grpc" }}grpc{{ else }}http{{ end }}
+      port: {{ include "chart.containerPort" . }}
+      targetPort: {{ if eq (include "chart.workloadType" .) "grpc" }}grpc{{ else }}http{{ end }}
+      protocol: TCP
+{{- end }}
