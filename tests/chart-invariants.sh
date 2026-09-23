@@ -131,6 +131,47 @@ assert_contains "$OUT_JOB_FULL" "backoffLimit: 2" "job retries"
 assert_contains "$OUT_JOB_FULL" "successfulJobsHistoryLimit: 2" "job history success"
 assert_contains "$OUT_JOB_FULL" "failedJobsHistoryLimit: 3" "job history failed"
 
+echo "== Application / web readiness-only =="
+OUT_WEB_RO="$(render_app --set-json 'probes={"readiness":{"path":"/healthz"}}')"
+assert_contains "$OUT_WEB_RO" "readinessProbe:" "web readiness-only"
+assert_not_contains "$OUT_WEB_RO" "startupProbe:" "web readiness-only no startup"
+assert_not_contains "$OUT_WEB_RO" "livenessProbe:" "web readiness-only no liveness"
+
+echo "== Application / grpc + legacyDns =="
+OUT_GRPC_L="$(render_app --set-string workload.type=grpc --set legacyDns=true)"
+assert_contains "$OUT_GRPC_L" "kind: GRPCRoute" "grpc legacy has GRPCRoute"
+assert_contains "$OUT_GRPC_L" "sample-api.d.asa.com.br" "grpc legacy hostname"
+assert_kind_count "$OUT_GRPC_L" HTTPRoute 0 "grpc legacy no HTTPRoute"
+
+echo "== Application / HPA cpu.target + env hostnames =="
+OUT_HPA="$(render_app --set autoscaling.minReplicas=2 --set autoscaling.maxReplicas=5 --set autoscaling.cpu.target=55)"
+assert_contains "$OUT_HPA" "averageUtilization: 55" "HPA maps cpu.target"
+OUT_HML="$(render_app --set-string runtime.environment=homolog)"
+assert_contains "$OUT_HML" "sample-api.hml.asa.corp" "homolog hostname"
+assert_contains "$OUT_HML" "h-asa-com-br-internal-gateway" "homolog gateway"
+
+echo "== Application / opt-ins IRSA WIF PVC =="
+OUT_IRSA="$(render_app --set-string 'serviceAccount.annotations.eks\.amazonaws\.com/role-arn=arn:aws:iam::1:role/r')"
+assert_contains "$OUT_IRSA" "eks.amazonaws.com/role-arn" "IRSA"
+WIF_AUD="//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/eks"
+OUT_WIF="$(render_app \
+  --set-string "workloadIdentity.gcp.audience=${WIF_AUD}" \
+  --set-string workloadIdentity.gcp.serviceAccountEmail=a@b.iam.gserviceaccount.com)"
+assert_contains "$OUT_WIF" "GOOGLE_APPLICATION_CREDENTIALS" "WIF"
+assert_contains "$OUT_WIF" 'audience: "sts.amazonaws.com"' "WIF projected aud"
+OUT_PVC="$(render_app --set autoscaling=false --set replicaCount=1 \
+  --set-string persistence.mountPath=/data --set-string persistence.size=1Gi)"
+assert_contains "$OUT_PVC" "kind: PersistentVolumeClaim" "PVC"
+assert_contains "$OUT_PVC" "type: Recreate" "PVC Recreate"
+
+echo "== examples render =="
+OUT_EX_APP="$(render_app -f "${ROOT}/examples/deploy/config/develop.yaml")"
+assert_kind_count "$OUT_EX_APP" Deployment 1 "example Application Deployment"
+assert_kind_count "$OUT_EX_APP" HTTPRoute 1 "example Application HTTPRoute"
+OUT_EX_JOB="$(render_job -f "${ROOT}/examples/deploy/config/scheduled-job.example.yaml")"
+assert_kind_count "$OUT_EX_JOB" CronJob 1 "example ScheduledJob CronJob"
+assert_kind_count "$OUT_EX_JOB" Deployment 0 "example ScheduledJob no Deployment"
+
 echo "== negatives =="
 if render_app --set-string workload.type=worker --set legacyDns=true >/dev/null 2>&1; then
   echo "FAIL: worker + legacyDns should fail"; FAILED=1
@@ -184,6 +225,60 @@ if render_job --set-string kind=Application --set-string 'schedule.expression=0 
   echo "FAIL: ScheduledJob chart + kind Application should fail"; FAILED=1
 else
   echo "OK: wrong kind on ScheduledJob fails"
+fi
+
+if render_app --set-json 'probes={"path":"/health-check","readiness":{"path":"/ready"}}' >/dev/null 2>&1; then
+  echo "FAIL: probes global+specific should fail"; FAILED=1
+else
+  echo "OK: probes global+specific fails"
+fi
+
+if render_app --set-json 'probes={"path":"healthz"}' >/dev/null 2>&1; then
+  echo "FAIL: invalid probe path should fail"; FAILED=1
+else
+  echo "OK: invalid probe path fails"
+fi
+
+if render_app --set probes=true >/dev/null 2>&1; then
+  echo "FAIL: probes: true should fail"; FAILED=1
+else
+  echo "OK: probes: true fails"
+fi
+
+if render_app --set-string workload.type=worker --set-json 'probes={"path":"/x"}' >/dev/null 2>&1; then
+  echo "FAIL: worker + probes should fail"; FAILED=1
+else
+  echo "OK: worker + probes fails"
+fi
+
+if render_job --set-string 'schedule.expression=0 2 * * *' >/dev/null 2>&1; then
+  echo "FAIL: job without command/args should fail"; FAILED=1
+else
+  echo "OK: job without command/args fails"
+fi
+
+if render_job --set-string 'schedule.expression=0 * * * *' --set-string 'execution.args[0]=x' --set legacyDns=true >/dev/null 2>&1; then
+  echo "FAIL: job + legacyDns should fail"; FAILED=1
+else
+  echo "OK: job + legacyDns fails"
+fi
+
+if render_app --set-string persistence.mountPath=/data --set-string persistence.size=1Gi >/dev/null 2>&1; then
+  echo "FAIL: PVC + HPA should fail"; FAILED=1
+else
+  echo "OK: PVC + HPA fails"
+fi
+
+if [[ -d "${ROOT}/charts/app" ]]; then
+  echo "FAIL: charts/app should be removed"; FAILED=1
+else
+  echo "OK: charts/app removed"
+fi
+
+if grep -q exposeAsaComBr "${ROOT}/templates/dotnet/"*.yml 2>/dev/null; then
+  echo "FAIL: exposeAsaComBr still in pipeline templates"; FAILED=1
+else
+  echo "OK: exposeAsaComBr removed from pipeline"
 fi
 
 echo "== helm lint =="
