@@ -14,9 +14,7 @@ metadata:
     app.kubernetes.io/component: scheduled-job
 spec:
   schedule: {{ $sched.expression | quote }}
-  {{- with $sched.timeZone }}
-  timeZone: {{ . | quote }}
-  {{- end }}
+  timeZone: {{ $sched.timeZone | default "America/Sao_Paulo" | quote }}
   concurrencyPolicy: {{ $sched.concurrencyPolicy | default "Forbid" }}
   {{- if kindIs "float64" $sched.startingDeadlineSeconds }}
   startingDeadlineSeconds: {{ $sched.startingDeadlineSeconds | int }}
@@ -76,8 +74,10 @@ spec:
               args:
                 {{- toYaml . | nindent 16 }}
               {{- end }}
-              {{- with include "app.workloadIdentityEnv" . }}
-              {{- . | nindent 14 }}
+              {{- $wifEnv := include "app.workloadIdentityEnv" . | trim -}}
+              {{- if ne $wifEnv "" }}
+              env:
+                {{- $wifEnv | nindent 16 }}
               {{- end }}
               {{- with include "app.envFrom" . }}
               {{- . | nindent 14 }}

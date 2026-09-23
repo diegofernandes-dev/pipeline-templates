@@ -10,8 +10,8 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: {{ .Release.Name }}
-  minReplicas: {{ .Values.autoscaling.minReplicas }}
-  maxReplicas: {{ .Values.autoscaling.maxReplicas }}
+  minReplicas: {{ include "chart.hpaMinReplicas" . }}
+  maxReplicas: {{ include "chart.hpaMaxReplicas" . }}
   metrics:
     - type: Resource
       resource:

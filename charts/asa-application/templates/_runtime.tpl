@@ -33,14 +33,42 @@ Presence-based toggles: non-empty map/list ⇒ on.
 {{- end -}}
 {{- end }}
 
+{{/*
+Autoscaling:
+- web/grpc: ON by default (empty map / omitted → platform HPA defaults).
+- worker: OFF by default (workers are not assumed idempotent). Explicit non-empty
+  autoscaling map in the consumer manifesto opts in.
+- autoscaling: false disables for any workload type.
+*/}}
 {{- define "chart.autoscalingEnabled" -}}
+{{- $t := include "chart.workloadType" . -}}
 {{- $a := .Values.autoscaling -}}
 {{- if kindIs "bool" $a -}}
 {{- if $a -}}true{{- else -}}false{{- end -}}
 {{- else if and $a (kindIs "map" $a) (gt (len $a) 0) -}}
 true
+{{- else if or (eq $t "web") (eq $t "grpc") -}}
+true
 {{- else -}}
 false
+{{- end -}}
+{{- end }}
+
+{{- define "chart.hpaMinReplicas" -}}
+{{- $a := .Values.autoscaling | default dict -}}
+{{- if and (kindIs "map" $a) (hasKey $a "minReplicas") -}}
+{{- $a.minReplicas -}}
+{{- else -}}
+1
+{{- end -}}
+{{- end }}
+
+{{- define "chart.hpaMaxReplicas" -}}
+{{- $a := .Values.autoscaling | default dict -}}
+{{- if and (kindIs "map" $a) (hasKey $a "maxReplicas") -}}
+{{- $a.maxReplicas -}}
+{{- else -}}
+3
 {{- end -}}
 {{- end }}
 

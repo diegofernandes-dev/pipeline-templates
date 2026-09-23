@@ -9,7 +9,8 @@ imagePullSecrets: []
 
 schedule:
   expression: ""
-  timeZone: ""
+  # Required after merge — corporate default avoids control-plane timezone.
+  timeZone: America/Sao_Paulo
   concurrencyPolicy: Forbid
   startingDeadlineSeconds: null
 

@@ -74,6 +74,12 @@ parameters:
     type: string
     default: 'deploy/config'
 
+  # Optional substring that must appear in kubectl current-context (per-env override via deployEnvironments[].expectedKubeContext).
+  - name: expectedKubeContext
+    displayName: Substring esperada no kubectl context
+    type: string
+    default: ''
+
 stages:
   - stage: CI
     displayName: Build and Test
@@ -308,17 +314,66 @@ stages:
                   echo "##vso[task.setvariable variable=imageTag;isOutput=true]${IMAGE_TAG}"
                   echo "##vso[task.setvariable variable=imageRepository;isOutput=true]${IMAGE_REPOSITORY}"
 
+  - ${{ if gt(length(parameters.deployEnvironments), 0) }}:
+    - stage: DeployContract
+      displayName: Validate deploy manifests
+      dependsOn:
+        - Container
+      jobs:
+        - job: CrossEnvIdentity
+          displayName: Cross-env kind / workload.type
+          pool:
+            vmImage: ${{ parameters.vmImage }}
+          steps:
+            - checkout: self
+              path: app
+            - checkout: templates
+              path: pipeline-templates
+            - bash: |
+                set -Eeuo pipefail
+                WORKSPACE="${PIPELINE_WORKSPACE:-${AGENT_BUILDDIRECTORY}}"
+                APP_DIR="${WORKSPACE}/app"
+                TEMPLATES_DIR="${WORKSPACE}/pipeline-templates"
+                CONFIG="${APP_DIR}/${{ parameters.runtimeConfigPath }}"
+                ENVS=(
+                ${{ each env in parameters.deployEnvironments }}
+                  ${{ env.name }}
+                ${{ end }}
+                )
+                if ! command -v yq >/dev/null 2>&1; then
+                  sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64
+                  sudo chmod +x /usr/local/bin/yq
+                fi
+                bash "${TEMPLATES_DIR}/scripts/assert-deploy-identity.sh" "${CONFIG}" "${ENVS[@]}"
+                for env in "${ENVS[@]}"; do
+                  manifest="${CONFIG}/${env}.yaml"
+                  kind="$(yq -r '.kind // ""' "${manifest}")"
+                  case "${kind}" in
+                    Application) schema="${TEMPLATES_DIR}/schemas/application.manifest.schema.json" ;;
+                    ScheduledJob) schema="${TEMPLATES_DIR}/schemas/scheduled-job.manifest.schema.json" ;;
+                    *) echo "##vso[task.logissue type=error]Unsupported kind ${kind}"; exit 1 ;;
+                  esac
+                  if ! python3 -c 'import yaml' >/dev/null 2>&1; then
+                    pip3 install --user pyyaml >/dev/null
+                  fi
+                  python3 "${TEMPLATES_DIR}/scripts/validate-manifest.py" "${schema}" "${manifest}"
+                done
+              displayName: Assert identity + public schemas
+
     - template: helm-deploy.yml
       parameters:
         environmentName: ${{ parameters.deployEnvironments[0].name }}
         variableGroups: ${{ parameters.deployEnvironments[0].variableGroups }}
         dependsOn:
           - Container
+          - DeployContract
         applicationName: ${{ parameters.applicationName }}
         containerPool: ${{ coalesce(parameters.deployEnvironments[0].containerPool, parameters.containerPool) }}
         awsRegion: ${{ parameters.awsRegion }}
-        helmTimeout: ${{ parameters.helmTimeout }}
+        helmTimeout: ${{ coalesce(parameters.deployEnvironments[0].helmTimeout, parameters.helmTimeout) }}
         runtimeConfigPath: ${{ parameters.runtimeConfigPath }}
+        expectedKubeContext: ${{ coalesce(parameters.deployEnvironments[0].expectedKubeContext, parameters.expectedKubeContext) }}
+        smokeScheduledJob: false
 
   - ${{ if gt(length(parameters.deployEnvironments), 1) }}:
     - template: helm-deploy.yml
@@ -327,12 +382,15 @@ stages:
         variableGroups: ${{ parameters.deployEnvironments[1].variableGroups }}
         dependsOn:
           - Container
+          - DeployContract
           - Deploy_${{ parameters.deployEnvironments[0].name }}
         applicationName: ${{ parameters.applicationName }}
         containerPool: ${{ coalesce(parameters.deployEnvironments[1].containerPool, parameters.containerPool) }}
         awsRegion: ${{ parameters.awsRegion }}
-        helmTimeout: ${{ parameters.helmTimeout }}
+        helmTimeout: ${{ coalesce(parameters.deployEnvironments[1].helmTimeout, parameters.helmTimeout) }}
         runtimeConfigPath: ${{ parameters.runtimeConfigPath }}
+        expectedKubeContext: ${{ coalesce(parameters.deployEnvironments[1].expectedKubeContext, parameters.expectedKubeContext) }}
+        smokeScheduledJob: false
 
   - ${{ if gt(length(parameters.deployEnvironments), 2) }}:
     - template: helm-deploy.yml
@@ -341,9 +399,12 @@ stages:
         variableGroups: ${{ parameters.deployEnvironments[2].variableGroups }}
         dependsOn:
           - Container
+          - DeployContract
           - Deploy_${{ parameters.deployEnvironments[1].name }}
         applicationName: ${{ parameters.applicationName }}
         containerPool: ${{ coalesce(parameters.deployEnvironments[2].containerPool, parameters.containerPool) }}
         awsRegion: ${{ parameters.awsRegion }}
-        helmTimeout: ${{ parameters.helmTimeout }}
+        helmTimeout: ${{ coalesce(parameters.deployEnvironments[2].helmTimeout, parameters.helmTimeout) }}
         runtimeConfigPath: ${{ parameters.runtimeConfigPath }}
+        expectedKubeContext: ${{ coalesce(parameters.deployEnvironments[2].expectedKubeContext, parameters.expectedKubeContext) }}
+        smokeScheduledJob: false

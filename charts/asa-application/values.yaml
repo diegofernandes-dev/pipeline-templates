@@ -79,13 +79,11 @@ securityContext:
     drop:
       - ALL
 
-# Non-empty map ⇒ on. Opt-out: autoscaling: false
-# cpu.target → HPA averageUtilization (default 70)
-autoscaling:
-  minReplicas: 1
-  maxReplicas: 3
-  cpu:
-    target: 70
+# Autoscaling (CPU HPA):
+# - web/grpc: ON by default when omitted / empty map (platform min=1 max=3 target=70)
+# - worker: OFF by default (not assumed idempotent); set an explicit map to opt in
+# - autoscaling: false disables for any type
+autoscaling: {}
 
 pdb:
   enabled: false

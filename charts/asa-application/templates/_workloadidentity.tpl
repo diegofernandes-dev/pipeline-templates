@@ -102,13 +102,12 @@ aws-token
 {{- if (include "chart.workloadIdentityEnabled" .) | eq "true" }}
 {{- $wi := .Values.workloadIdentity | default dict -}}
 {{- $gcp := $wi.gcp | default dict -}}
-env:
-  - name: GOOGLE_APPLICATION_CREDENTIALS
-    value: {{ include "chart.workloadIdentityGCPCredentialsPath" . | quote }}
-  {{- with $gcp.projectId }}
-  - name: GOOGLE_CLOUD_PROJECT
-    value: {{ . | quote }}
-  {{- end }}
+- name: GOOGLE_APPLICATION_CREDENTIALS
+  value: {{ include "chart.workloadIdentityGCPCredentialsPath" . | quote }}
+{{- with $gcp.projectId }}
+- name: GOOGLE_CLOUD_PROJECT
+  value: {{ . | quote }}
+{{- end }}
 {{- end }}
 {{- end }}
 

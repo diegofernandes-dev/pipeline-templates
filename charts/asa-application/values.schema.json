@@ -1,26 +1,100 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema#",
-  "title": "asa-application values",
+  "title": "asa-application Helm values (public manifesto + platform inputs)",
   "type": "object",
   "required": ["kind", "workload"],
-  "additionalProperties": true,
+  "additionalProperties": false,
   "properties": {
-    "kind": {
-      "const": "Application"
-    },
+    "kind": { "const": "Application" },
     "workload": {
       "type": "object",
       "required": ["type"],
       "additionalProperties": false,
       "properties": {
-        "type": {
-          "type": "string",
-          "enum": ["web", "grpc", "worker"]
-        }
+        "type": { "type": "string", "enum": ["web", "grpc", "worker"] }
       }
     },
-    "legacyDns": {
-      "type": "boolean"
+    "legacyDns": { "type": "boolean" },
+    "probes": {
+      "oneOf": [
+        { "type": "boolean", "const": false },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "path": { "type": "string" },
+            "startup": { "type": "object" },
+            "readiness": { "type": "object" },
+            "liveness": { "type": "object" }
+          }
+        }
+      ]
+    },
+    "autoscaling": {
+      "oneOf": [
+        { "type": "boolean" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "minReplicas": { "type": "integer", "minimum": 1 },
+            "maxReplicas": { "type": "integer", "minimum": 1 },
+            "cpu": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "target": { "type": "integer", "minimum": 1, "maximum": 100 }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "pdb": { "type": "object" },
+    "resources": { "type": "object" },
+    "replicaCount": { "type": "integer", "minimum": 0 },
+    "serviceAccount": { "type": "object" },
+    "workloadIdentity": { "type": "object" },
+    "persistence": {
+      "oneOf": [
+        { "type": "boolean" },
+        { "type": "object" }
+      ]
+    },
+    "config": { "type": "object" },
+    "externalSecret": {
+      "oneOf": [
+        { "type": "boolean" },
+        { "type": "object" }
+      ]
+    },
+    "podSecurityContext": { "type": "object" },
+    "securityContext": { "type": "object" },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repository": { "type": "string" },
+        "tag": { "type": "string" },
+        "pullPolicy": { "type": "string" }
+      }
+    },
+    "imagePullSecrets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": { "name": { "type": "string" } }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "environment": {
+          "type": "string",
+          "enum": ["develop", "homolog", "production"]
+        }
+      }
     },
     "schedule": false,
     "execution": false,
@@ -31,15 +105,11 @@
     {
       "if": {
         "properties": {
-          "workload": {
-            "properties": { "type": { "const": "worker" } }
-          }
+          "workload": { "properties": { "type": { "const": "worker" } } }
         }
       },
       "then": {
-        "properties": {
-          "legacyDns": { "const": false }
-        }
+        "properties": { "legacyDns": { "const": false } }
       }
     }
   ]

@@ -2,5 +2,5 @@ apiVersion: v2
 name: asa-application
 description: Platform chart for continuous .NET workloads on EKS (web | grpc | worker)
 type: application
-version: 3.0.0
-appVersion: "3.0.0"
+version: 3.1.0
+appVersion: "3.1.0"

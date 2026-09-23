@@ -61,8 +61,22 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
-          {{- with include "app.workloadIdentityEnv" . }}
-          {{- . | nindent 10 }}
+          {{- $wifEnv := include "app.workloadIdentityEnv" . | trim -}}
+          {{- $isGrpc := eq (include "chart.workloadType" .) "grpc" -}}
+          {{- if or $isGrpc (ne $wifEnv "") }}
+          env:
+            {{- if $isGrpc }}
+            # Platform-owned gRPC listen (overrides Dockerfile ASPNETCORE_URLS=8080).
+            - name: ASPNETCORE_URLS
+              value: "http://+:{{ include "chart.containerPort" . }}"
+            - name: Kestrel__Endpoints__Grpc__Url
+              value: "http://0.0.0.0:{{ include "chart.containerPort" . }}"
+            - name: Kestrel__Endpoints__Grpc__Protocols
+              value: Http2
+            {{- end }}
+            {{- if ne $wifEnv "" }}
+            {{- $wifEnv | nindent 12 }}
+            {{- end }}
           {{- end }}
           {{- with include "app.envFrom" . }}
           {{- . | nindent 10 }}

@@ -1,11 +1,4 @@
 {{- if (include "chart.isGrpc" .) | eq "true" }}
-{{- $env := .Values.runtime.environment | default "develop" }}
-{{- $corpZone := dict "develop" "dev.asa.corp" "homolog" "hml.asa.corp" "production" "prd.asa.corp" }}
-{{- $comBrZone := dict "develop" "d.asa.com.br" "homolog" "h.asa.com.br" "production" "p.asa.com.br" }}
-{{- $gatewayByEnv := dict "develop" "d-asa-com-br-internal-gateway" "homolog" "h-asa-com-br-internal-gateway" "production" "p-asa-com-br-internal-gateway" }}
-{{- $corpHost := printf "%s.%s" .Release.Name (index $corpZone $env | default "dev.asa.corp") }}
-{{- $comBrHost := printf "%s.%s" .Release.Name (index $comBrZone $env | default "d.asa.com.br") }}
-{{- $gatewayName := index $gatewayByEnv $env | default "d-asa-com-br-internal-gateway" }}
 apiVersion: gateway.networking.k8s.io/v1
 kind: GRPCRoute
 metadata:
@@ -16,14 +9,14 @@ metadata:
     app.kubernetes.io/instance: {{ .Release.Name }}
 spec:
   parentRefs:
-    - name: {{ $gatewayName }}
+    - name: {{ include "chart.gatewayName" . }}
       namespace: asa-infra-nginx-gateway
       group: gateway.networking.k8s.io
       kind: Gateway
   hostnames:
-    - {{ $corpHost | quote }}
+    - {{ include "chart.corpHostname" . | quote }}
     {{- if .Values.legacyDns }}
-    - {{ $comBrHost | quote }}
+    - {{ include "chart.legacyHostname" . | quote }}
     {{- end }}
   rules:
     - backendRefs:

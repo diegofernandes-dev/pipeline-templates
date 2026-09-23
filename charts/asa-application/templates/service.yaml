@@ -15,4 +15,7 @@ spec:
       port: {{ include "chart.containerPort" . }}
       targetPort: {{ if eq (include "chart.workloadType" .) "grpc" }}grpc{{ else }}http{{ end }}
       protocol: TCP
+      {{- if eq (include "chart.workloadType" .) "grpc" }}
+      appProtocol: kubernetes.io/h2c
+      {{- end }}
 {{- end }}

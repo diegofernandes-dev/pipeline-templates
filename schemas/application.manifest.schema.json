@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Public Application manifesto (deploy/config/<env>.yaml)",
+  "type": "object",
+  "required": ["kind", "workload"],
+  "additionalProperties": false,
+  "properties": {
+    "kind": { "const": "Application" },
+    "workload": {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "type": "string", "enum": ["web", "grpc", "worker"] }
+      }
+    },
+    "legacyDns": { "type": "boolean" },
+    "probes": {
+      "oneOf": [
+        { "type": "boolean", "const": false },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "path": { "type": "string", "pattern": "^/" },
+            "startup": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "path": { "type": "string", "pattern": "^/" },
+                "enabled": { "type": "boolean" },
+                "failureThreshold": { "type": "integer", "minimum": 1 },
+                "periodSeconds": { "type": "integer", "minimum": 1 }
+              }
+            },
+            "readiness": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "path": { "type": "string", "pattern": "^/" },
+                "enabled": { "type": "boolean" },
+                "initialDelaySeconds": { "type": "integer", "minimum": 0 },
+                "periodSeconds": { "type": "integer", "minimum": 1 },
+                "timeoutSeconds": { "type": "integer", "minimum": 1 },
+                "failureThreshold": { "type": "integer", "minimum": 1 }
+              }
+            },
+            "liveness": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "path": { "type": "string", "pattern": "^/" },
+                "enabled": { "type": "boolean" },
+                "initialDelaySeconds": { "type": "integer", "minimum": 0 },
+                "periodSeconds": { "type": "integer", "minimum": 1 },
+                "timeoutSeconds": { "type": "integer", "minimum": 1 },
+                "failureThreshold": { "type": "integer", "minimum": 1 }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "autoscaling": {
+      "oneOf": [
+        { "type": "boolean" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "minReplicas": { "type": "integer", "minimum": 1 },
+            "maxReplicas": { "type": "integer", "minimum": 1 },
+            "cpu": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "target": { "type": "integer", "minimum": 1, "maximum": 100 }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "pdb": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "maxUnavailable": { "type": ["integer", "string"] }
+      }
+    },
+    "resources": { "type": "object" },
+    "replicaCount": { "type": "integer", "minimum": 0 },
+    "serviceAccount": { "type": "object" },
+    "workloadIdentity": { "type": "object" },
+    "persistence": {
+      "oneOf": [
+        { "type": "boolean" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "mountPath": { "type": "string" },
+            "size": { "type": "string" },
+            "storageClassName": { "type": "string" }
+          }
+        }
+      ]
+    },
+    "config": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "externalSecret": {
+      "oneOf": [
+        { "type": "boolean" },
+        { "type": "object" }
+      ]
+    }
+  }
+}

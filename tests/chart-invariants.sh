@@ -70,6 +70,8 @@ assert_contains "$OUT_WEB" "containerPort: 8080" "web port 8080"
 assert_contains "$OUT_WEB" "sample-api.dev.asa.corp" "web corp DNS"
 assert_not_contains "$OUT_WEB" "sample-api.d.asa.com.br" "web no legacy DNS by default"
 assert_not_contains "$OUT_WEB" "startupProbe:" "web no probes by default"
+assert_kind_count "$OUT_WEB" HorizontalPodAutoscaler 1 "web: default HPA"
+assert_not_contains "$OUT_WEB" "appProtocol: kubernetes.io/h2c" "web no h2c"
 
 echo "== Application / web + probes =="
 OUT_WEB_P="$(render_app --set-json 'probes={"path":"/health-check"}')"
@@ -88,6 +90,10 @@ assert_kind_count "$OUT_GRPC" HTTPRoute 0 "grpc: 0 HTTPRoute"
 assert_kind_count "$OUT_GRPC" GRPCRoute 1 "grpc: 1 GRPCRoute"
 assert_kind_count "$OUT_GRPC" CronJob 0 "grpc: 0 CronJob"
 assert_contains "$OUT_GRPC" "containerPort: 50051" "grpc port 50051"
+assert_contains "$OUT_GRPC" "appProtocol: kubernetes.io/h2c" "grpc Service h2c"
+assert_contains "$OUT_GRPC" "name: ASPNETCORE_URLS" "grpc ASPNETCORE_URLS override"
+assert_contains "$OUT_GRPC" "value: Http2" "grpc Kestrel Http2"
+assert_kind_count "$OUT_GRPC" HorizontalPodAutoscaler 1 "grpc: default HPA"
 
 echo "== Application / grpc + probes =="
 OUT_GRPC_P="$(render_app --set-string workload.type=grpc --set-json 'probes={"readiness":{"enabled":true}}')"
@@ -102,6 +108,13 @@ assert_kind_count "$OUT_WORKER" Service 0 "worker: 0 Service"
 assert_kind_count "$OUT_WORKER" HTTPRoute 0 "worker: 0 HTTPRoute"
 assert_kind_count "$OUT_WORKER" GRPCRoute 0 "worker: 0 GRPCRoute"
 assert_kind_count "$OUT_WORKER" CronJob 0 "worker: 0 CronJob"
+assert_kind_count "$OUT_WORKER" HorizontalPodAutoscaler 0 "worker: no HPA by default"
+assert_not_contains "$OUT_WORKER" "kind: HorizontalPodAutoscaler" "worker: no HPA resource"
+
+echo "== Application / worker + explicit autoscaling =="
+OUT_WORKER_HPA="$(render_app --set-string workload.type=worker \
+  --set autoscaling.minReplicas=1 --set autoscaling.maxReplicas=2 --set autoscaling.cpu.target=70)"
+assert_kind_count "$OUT_WORKER_HPA" HorizontalPodAutoscaler 1 "worker: HPA when autoscaling explicit"
 
 echo "== ScheduledJob minimal =="
 OUT_JOB="$(render_job \
@@ -113,6 +126,8 @@ assert_kind_count "$OUT_JOB" Service 0 "job: 0 Service"
 assert_kind_count "$OUT_JOB" HTTPRoute 0 "job: 0 HTTPRoute"
 assert_kind_count "$OUT_JOB" GRPCRoute 0 "job: 0 GRPCRoute"
 assert_contains "$OUT_JOB" "restartPolicy: Never" "job restartPolicy Never"
+assert_contains "$OUT_JOB" 'timeZone: "America/Sao_Paulo"' "job default timeZone"
+assert_contains "$OUT_JOB" "concurrencyPolicy: Forbid" "job default Forbid"
 
 echo "== ScheduledJob completo =="
 OUT_JOB_FULL="$(render_job \
@@ -280,6 +295,44 @@ if grep -q exposeAsaComBr "${ROOT}/templates/dotnet/"*.yml 2>/dev/null; then
 else
   echo "OK: exposeAsaComBr removed from pipeline"
 fi
+
+if render_job --set-string 'schedule.expression=0 * * * *' --set-string 'execution.args[0]=x' --set-string schedule.concurrencyPolicy=Nope >/dev/null 2>&1; then
+  echo "FAIL: bad concurrencyPolicy should fail"; FAILED=1
+else
+  echo "OK: bad concurrencyPolicy fails"
+fi
+
+if render_job --set-string 'schedule.expression=0 * * * *' --set-string 'execution.args[0]=x' --set-string schedule.timeZone= >/dev/null 2>&1; then
+  echo "FAIL: empty timeZone should fail"; FAILED=1
+else
+  echo "OK: empty timeZone fails"
+fi
+
+echo "== public manifesto schema =="
+VALIDATE="${ROOT}/scripts/validate-manifest.py"
+if python3 -c 'import yaml' >/dev/null 2>&1; then
+  python3 "${VALIDATE}" "${ROOT}/schemas/application.manifest.schema.json" \
+    "${ROOT}/examples/deploy/config/develop.yaml"
+  python3 "${VALIDATE}" "${ROOT}/schemas/scheduled-job.manifest.schema.json" \
+    "${ROOT}/examples/deploy/config/scheduled-job.example.yaml"
+  if echo '{"kind":"Application","workload":{"type":"web"},"legasyDns":true}' \
+    | python3 "${VALIDATE}" "${ROOT}/schemas/application.manifest.schema.json" --stdin >/dev/null 2>&1; then
+    echo "FAIL: legasyDns should be rejected"; FAILED=1
+  else
+    echo "OK: legasyDns rejected"
+  fi
+  if echo '{"kind":"Application","workload":{"type":"web"},"image":{"repository":"x"}}' \
+    | python3 "${VALIDATE}" "${ROOT}/schemas/application.manifest.schema.json" --stdin >/dev/null 2>&1; then
+    echo "FAIL: image in public manifesto should be rejected"; FAILED=1
+  else
+    echo "OK: image rejected on public manifesto"
+  fi
+else
+  echo "SKIP: public schema tests (PyYAML missing)"
+fi
+
+echo "== chart drift =="
+bash "${ROOT}/tests/chart-drift.sh"
 
 echo "== helm lint =="
 helm lint "${APP_CHART}"

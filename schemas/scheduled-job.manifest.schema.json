@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema#",
-  "title": "asa-scheduled-job Helm values (public manifesto + platform inputs)",
+  "title": "Public ScheduledJob manifesto (deploy/config/<env>.yaml)",
   "type": "object",
   "required": ["kind", "schedule", "execution"],
   "additionalProperties": false,
@@ -8,10 +8,10 @@
     "kind": { "const": "ScheduledJob" },
     "schedule": {
       "type": "object",
-      "required": ["expression", "timeZone"],
+      "required": ["expression"],
       "additionalProperties": false,
       "properties": {
-        "expression": { "type": "string" },
+        "expression": { "type": "string", "minLength": 1 },
         "timeZone": { "type": "string", "minLength": 1 },
         "concurrencyPolicy": {
           "type": "string",
@@ -41,25 +41,12 @@
         "failed": { "type": "integer", "minimum": 0 }
       }
     },
-    "image": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "repository": { "type": "string" },
-        "tag": { "type": "string" },
-        "pullPolicy": { "type": "string" }
-      }
-    },
-    "imagePullSecrets": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "properties": { "name": { "type": "string" } }
-      }
-    },
     "serviceAccount": { "type": "object" },
     "workloadIdentity": { "type": "object" },
-    "config": { "type": "object" },
+    "config": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
     "externalSecret": {
       "oneOf": [
         { "type": "boolean" },
@@ -68,11 +55,6 @@
     },
     "resources": { "type": "object" },
     "podSecurityContext": { "type": "object" },
-    "securityContext": { "type": "object" },
-    "workload": false,
-    "legacyDns": false,
-    "probes": false,
-    "autoscaling": false,
-    "persistence": false
+    "securityContext": { "type": "object" }
   }
 }
