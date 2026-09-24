@@ -3,21 +3,21 @@
     "containerPool": "PG-AWS-EKS",
     "expectedKubeContext": null,
     "gatewayName": "d-asa-com-br-internal-gateway",
-    "gatewayNamespace": "asa-infra",
-    "notes": "expectedKubeContext is EXTERNAL BLOCKER until exact EKS context name is recorded"
+    "gatewayNamespace": "asa-infra-nginx-gateway",
+    "notes": "expectedKubeContext discovered in proving ground as tenv3-local (lab); fill only after authoritative confirmation"
   },
   "homolog": {
     "containerPool": "PG-AWS-EKS-HML",
     "expectedKubeContext": null,
     "gatewayName": "h-asa-com-br-internal-gateway",
-    "gatewayNamespace": "asa-infra",
+    "gatewayNamespace": "asa-infra-nginx-gateway",
     "notes": "expectedKubeContext is EXTERNAL BLOCKER until exact EKS context name is recorded"
   },
   "production": {
     "containerPool": null,
     "expectedKubeContext": null,
     "gatewayName": "p-asa-com-br-internal-gateway",
-    "gatewayNamespace": "asa-infra",
+    "gatewayNamespace": "asa-infra-nginx-gateway",
     "notes": "EXTERNAL BLOCKER: no authoritative production agent pool name in this repository"
   }
 }

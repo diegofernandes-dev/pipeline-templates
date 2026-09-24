@@ -231,8 +231,10 @@ stages:
 
                       WT=""
                       GATEWAY_NAME=""
+                      GATEWAY_NAMESPACE=""
                       if [[ -f "${PLATFORM_ENVS}" ]]; then
                         GATEWAY_NAME="$(yq -r ".${ADO_ENVIRONMENT}.gatewayName // \"\"" "${PLATFORM_ENVS}")"
+                        GATEWAY_NAMESPACE="$(yq -r ".${ADO_ENVIRONMENT}.gatewayNamespace // \"\"" "${PLATFORM_ENVS}")"
                       fi
 
                       echo "##[group]preflight APIs / CRDs / Gateway / metrics"
@@ -250,12 +252,22 @@ stages:
                         esac
                         if [[ "${WT}" == "web" || "${WT}" == "grpc" ]]; then
                           if [[ -n "${GATEWAY_NAME}" ]]; then
-                            if ! kubectl get gateway.gateway.networking.k8s.io -A -o json 2>/dev/null \
-                              | yq -e --arg n "${GATEWAY_NAME}" '.items[] | select(.metadata.name == $n) | .metadata.name' >/dev/null; then
-                              echo "##vso[task.logissue type=error]Expected Gateway '${GATEWAY_NAME}' not found in cluster"
+                            # mikefarah/yq has no jq --arg; match name with string equality.
+                            # Prefer namespaced get (matches chart parentRef + avoids cluster-wide list RBAC).
+                            GW_FOUND=""
+                            if [[ -n "${GATEWAY_NAMESPACE}" ]]; then
+                              GW_FOUND="$(kubectl get gateway.gateway.networking.k8s.io "${GATEWAY_NAME}" -n "${GATEWAY_NAMESPACE}" -o jsonpath='{.metadata.name}' 2>/dev/null || true)"
+                            fi
+                            if [[ -z "${GW_FOUND}" ]]; then
+                              GW_FOUND="$(kubectl get gateway.gateway.networking.k8s.io -A -o json 2>/dev/null \
+                                | yq -r ".items[] | select(.metadata.name == \"${GATEWAY_NAME}\") | .metadata.name" 2>/dev/null \
+                                | head -n1 || true)"
+                            fi
+                            if [[ -z "${GW_FOUND}" ]]; then
+                              echo "##vso[task.logissue type=error]Expected Gateway '${GATEWAY_NAME}' not found in cluster${GATEWAY_NAMESPACE:+ (ns ${GATEWAY_NAMESPACE})}"
                               exit 1
                             fi
-                            echo "Gateway ${GATEWAY_NAME} present"
+                            echo "Gateway ${GATEWAY_NAME} present${GATEWAY_NAMESPACE:+ in ${GATEWAY_NAMESPACE}}"
                           else
                             echo "##[warning]gatewayName unset for ${ADO_ENVIRONMENT}"
                           fi
