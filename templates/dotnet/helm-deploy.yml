@@ -42,6 +42,11 @@ parameters:
     type: string
     default: ''
 
+  # Lab fallback: docker-registry secret name (empty = rely on node/kubelet ECR IAM).
+  - name: ecrPullSecret
+    type: string
+    default: ''
+
   # develop + ScheduledJob only: create a one-off Job from CronJob after deploy (opt-in).
   - name: smokeScheduledJob
     type: boolean
@@ -92,7 +97,8 @@ stages:
                     RUNTIME_CONFIG_PATH: ${{ parameters.runtimeConfigPath }}
                     EXPECTED_KUBE_CONTEXT: ${{ parameters.expectedKubeContext }}
                     SMOKE_SCHEDULED_JOB: ${{ parameters.smokeScheduledJob }}
-                    ECR_PULL_SECRET: $(ECR_PULL_SECRET)
+                    # Prefer compile-time parameter — deployment jobs often leave $(ECR_PULL_SECRET) unresolved.
+                    ECR_PULL_SECRET: ${{ parameters.ecrPullSecret }}
                   inputs:
                     targetType: inline
                     script: |
@@ -106,10 +112,8 @@ stages:
                       HELM_NAMESPACE="asa-${APPLICATION_NAME}"
                       PLATFORM_ENVS="${TEMPLATES_DIR}/config/platform-environments.json"
 
-                      # ADO leaves unset macros as the literal string $(NAME).
-                      if [[ "${ECR_PULL_SECRET:-}" == '$(ECR_PULL_SECRET)' ]]; then
-                        ECR_PULL_SECRET=""
-                      fi
+                      # Empty / whitespace-only → unset (no lab pull secret).
+                      ECR_PULL_SECRET="$(echo -n "${ECR_PULL_SECRET:-}" | tr -d "[:space:]")"
 
                       dump_diagnostics() {
                         echo "##[group]deploy diagnostics"

@@ -329,15 +329,16 @@ if grep -q 'helm uninstall' <<<"$RECOVERY_BLOCK"; then
 else
   echo "OK: pending-upgrade block has no helm uninstall"
 fi
-# $(ECR_PULL_SECRET) treated as unset via ${ECR_PULL_SECRET:-} and literal equality
-if ! grep -q 'ECR_PULL_SECRET:-' "${ROOT}/templates/dotnet/helm-deploy.yml"; then
-  echo "FAIL: ECR_PULL_SECRET unset-safe guard missing (\${ECR_PULL_SECRET:-})"
+# ECR_PULL_SECRET: compile-time parameter ecrPullSecret (deployment jobs drop runtime $(VAR))
+if ! grep -q 'ecrPullSecret' "${ROOT}/templates/dotnet/helm-deploy.yml"; then
+  echo "FAIL: ecrPullSecret parameter missing in helm-deploy.yml"
   FAILED=1
-elif ! grep -qF '$(ECR_PULL_SECRET)' "${ROOT}/templates/dotnet/helm-deploy.yml"; then
-  echo "FAIL: missing literal \$(ECR_PULL_SECRET) normalization"
+elif ! grep -q "ecrPullSecret: \${{ coalesce(variables\['ECR_PULL_SECRET'\], '') }}" "${ROOT}/templates/dotnet/ci.yml" \
+  && ! grep -qF "variables['ECR_PULL_SECRET']" "${ROOT}/templates/dotnet/ci.yml"; then
+  echo "FAIL: ci.yml must pass variables['ECR_PULL_SECRET'] into ecrPullSecret"
   FAILED=1
 else
-  echo "OK: ECR_PULL_SECRET unset-safe guard present"
+  echo "OK: ECR_PULL_SECRET wired via ecrPullSecret parameter"
 fi
 if grep -E -- '--atomic' "${ROOT}/templates/dotnet/helm-deploy.yml" | grep -q .; then
   echo "FAIL: --atomic still present in helm-deploy"

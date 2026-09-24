@@ -450,6 +450,7 @@ stages:
         helmTimeout: ${{ coalesce(parameters.deployEnvironments[0].helmTimeout, parameters.helmTimeout) }}
         runtimeConfigPath: ${{ parameters.runtimeConfigPath }}
         expectedKubeContext: ''
+        ecrPullSecret: ${{ coalesce(variables['ECR_PULL_SECRET'], '') }}
         smokeScheduledJob: ${{ coalesce(parameters.deployEnvironments[0].smokeScheduledJob, false) }}
 
   - ${{ if gt(length(parameters.deployEnvironments), 1) }}:
@@ -466,6 +467,7 @@ stages:
         helmTimeout: ${{ coalesce(parameters.deployEnvironments[1].helmTimeout, parameters.helmTimeout) }}
         runtimeConfigPath: ${{ parameters.runtimeConfigPath }}
         expectedKubeContext: ''
+        ecrPullSecret: ${{ coalesce(variables['ECR_PULL_SECRET'], '') }}
         smokeScheduledJob: ${{ coalesce(parameters.deployEnvironments[1].smokeScheduledJob, false) }}
 
   - ${{ if gt(length(parameters.deployEnvironments), 2) }}:
@@ -482,4 +484,5 @@ stages:
         helmTimeout: ${{ coalesce(parameters.deployEnvironments[2].helmTimeout, parameters.helmTimeout) }}
         runtimeConfigPath: ${{ parameters.runtimeConfigPath }}
         expectedKubeContext: ''
+        ecrPullSecret: ${{ coalesce(variables['ECR_PULL_SECRET'], '') }}
         smokeScheduledJob: ${{ coalesce(parameters.deployEnvironments[2].smokeScheduledJob, false) }}
