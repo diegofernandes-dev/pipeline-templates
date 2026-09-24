@@ -183,10 +183,121 @@ stages:
                 targetPath: $(Build.ArtifactStagingDirectory)/app
                 artifact: app
 
-  - ${{ if gt(length(parameters.deployEnvironments), 0) }}:
+  - ${{ if gt(length(parameters.deployEnvironments), 3) }}:
+    - stage: DeployEnvironmentsOverflow
+      displayName: Too many deployEnvironments
+      dependsOn: CI
+      jobs:
+        - job: Fail
+          pool:
+            vmImage: ${{ parameters.vmImage }}
+          steps:
+            - bash: |
+                echo "##vso[task.logissue type=error]At most 3 deployEnvironments are supported (develop→homolog→production). Extra entries would be silently ignored."
+                exit 1
+              displayName: Fail on overflow
+
+  - ${{ if and(gt(length(parameters.deployEnvironments), 0), le(length(parameters.deployEnvironments), 3)) }}:
+    - stage: DeployContract
+      displayName: Validate deploy manifests
+      dependsOn:
+        - CI
+      condition: succeeded()
+      jobs:
+        - job: CrossEnvIdentity
+          displayName: Cross-env kind / workload.type
+          pool:
+            vmImage: ${{ parameters.vmImage }}
+          steps:
+            - checkout: self
+              path: app
+            - checkout: templates
+              path: pipeline-templates
+            - bash: |
+                set -Eeuo pipefail
+                WORKSPACE="${PIPELINE_WORKSPACE:-${AGENT_BUILDDIRECTORY}}"
+                APP_DIR="${WORKSPACE}/app"
+                TEMPLATES_DIR="${WORKSPACE}/pipeline-templates"
+                CONFIG="${APP_DIR}/${{ parameters.runtimeConfigPath }}"
+                PLATFORM_ENVS="${TEMPLATES_DIR}/config/platform-environments.json"
+                YQ_VERSION="v4.44.3"
+                PYYAML_VERSION="6.0.2"
+                JSONSCHEMA_VERSION="4.23.0"
+
+                if ! command -v yq >/dev/null 2>&1; then
+                  echo "Installing pinned yq ${YQ_VERSION} (Microsoft-hosted)"
+                  sudo wget -qO /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+                  sudo chmod +x /usr/local/bin/yq
+                fi
+                yq --version
+
+                mapfile -t ENVS < <(printf '%s' "${DEPLOY_ENVIRONMENTS_JSON}" | yq -r '.[].name')
+                if [[ "${#ENVS[@]}" -eq 0 ]]; then
+                  echo "##vso[task.logissue type=error]deployEnvironments produced an empty name list"
+                  exit 1
+                fi
+                if [[ "${#ENVS[@]}" -gt 3 ]]; then
+                  echo "##vso[task.logissue type=error]At most 3 deployEnvironments supported (got ${#ENVS[@]}) — extra envs would be silently ignored"
+                  exit 1
+                fi
+
+                # Duplicates
+                uniq_count="$(printf '%s\n' "${ENVS[@]}" | sort -u | wc -l | tr -d ' ')"
+                if [[ "${uniq_count}" -ne "${#ENVS[@]}" ]]; then
+                  echo "##vso[task.logissue type=error]Duplicate environment names in deployEnvironments"
+                  exit 1
+                fi
+
+                # Canonical order: develop → homolog → production (subset OK, never inverted)
+                declare -A RANK=([develop]=1 [homolog]=2 [production]=3)
+                prev=0
+                for env in "${ENVS[@]}"; do
+                  case "${env}" in
+                    develop|homolog|production) ;;
+                    *) echo "##vso[task.logissue type=error]Unsupported environment '${env}'"; exit 1 ;;
+                  esac
+                  r="${RANK[$env]}"
+                  if (( r < prev )); then
+                    echo "##vso[task.logissue type=error]deployEnvironments order must follow develop→homolog→production (got inverted: ${ENVS[*]})"
+                    exit 1
+                  fi
+                  prev=$r
+
+                  pool="$(yq -r ".${env}.containerPool // \"null\"" "${PLATFORM_ENVS}")"
+                  if [[ "${pool}" == "null" || -z "${pool}" ]]; then
+                    echo "##vso[task.logissue type=error]EXTERNAL BLOCKER: no authoritative containerPool for '${env}' in config/platform-environments.json — fill mapping before deploying"
+                    exit 1
+                  fi
+                  ctx="$(yq -r ".${env}.expectedKubeContext // \"null\"" "${PLATFORM_ENVS}")"
+                  if [[ "${ctx}" == "null" || -z "${ctx}" ]]; then
+                    echo "##[warning]EXTERNAL BLOCKER: expectedKubeContext for '${env}' not mapped — deploy will skip exact context assert until filled"
+                  fi
+                done
+                echo "Environments OK: ${ENVS[*]}"
+
+                pip3 install --user "pyyaml==${PYYAML_VERSION}" "jsonschema==${JSONSCHEMA_VERSION}" >/dev/null
+                export PATH="${HOME}/.local/bin:${PATH}"
+
+                bash "${TEMPLATES_DIR}/scripts/assert-deploy-identity.sh" "${CONFIG}" "${ENVS[@]}"
+                for env in "${ENVS[@]}"; do
+                  manifest="${CONFIG}/${env}.yaml"
+                  kind="$(yq -r '.kind // ""' "${manifest}")"
+                  case "${kind}" in
+                    Application) schema="${TEMPLATES_DIR}/schemas/application.manifest.schema.json" ;;
+                    ScheduledJob) schema="${TEMPLATES_DIR}/schemas/scheduled-job.manifest.schema.json" ;;
+                    *) echo "##vso[task.logissue type=error]Unsupported kind ${kind}"; exit 1 ;;
+                  esac
+                  python3 "${TEMPLATES_DIR}/scripts/validate-manifest.py" "${schema}" "${manifest}"
+                done
+              displayName: Assert identity + public schemas + env guards
+              env:
+                DEPLOY_ENVIRONMENTS_JSON: ${{ convertToJson(parameters.deployEnvironments) }}
+
     - stage: Container
       displayName: Docker Build and Push
-      dependsOn: CI
+      dependsOn:
+        - CI
+        - DeployContract
       condition: succeeded()
       variables:
         aspnetTag: $[stageDependencies.CI.BuildAndTest.outputs['publishApp.aspnetTag']]
@@ -281,12 +392,25 @@ stages:
                     | crane auth login "${REGISTRY}" -u AWS --password-stdin
                   echo "##[endgroup]"
 
-                  echo "##[group]ensure ecr repository ${ECR_REPOSITORY}"
+                  echo "##[group]ensure ecr repository ${ECR_REPOSITORY} (IMMUTABLE)"
                   if ! aws ecr describe-repositories --repository-names "${ECR_REPOSITORY}" --region "${AWS_REGION}" >/dev/null 2>&1; then
-                    aws ecr create-repository --repository-name "${ECR_REPOSITORY}" --region "${AWS_REGION}" >/dev/null
-                    echo "Created repository ${ECR_REPOSITORY}"
+                    aws ecr create-repository \
+                      --repository-name "${ECR_REPOSITORY}" \
+                      --region "${AWS_REGION}" \
+                      --image-tag-mutability IMMUTABLE \
+                      >/dev/null
+                    echo "Created repository ${ECR_REPOSITORY} with IMMUTABLE tags"
                   else
-                    echo "Repository ${ECR_REPOSITORY} already exists"
+                    MUTABILITY="$(aws ecr describe-repositories --repository-names "${ECR_REPOSITORY}" --region "${AWS_REGION}" \
+                      --query 'repositories[0].imageTagMutability' --output text)"
+                    echo "Repository ${ECR_REPOSITORY} exists (imageTagMutability=${MUTABILITY})"
+                    if [[ "${MUTABILITY}" != "IMMUTABLE" ]]; then
+                      echo "Enforcing IMMUTABLE on existing repository"
+                      aws ecr put-image-tag-mutability \
+                        --repository-name "${ECR_REPOSITORY}" \
+                        --region "${AWS_REGION}" \
+                        --image-tag-mutability IMMUTABLE >/dev/null
+                    fi
                   fi
                   echo "##[endgroup]"
 
@@ -314,66 +438,19 @@ stages:
                   echo "##vso[task.setvariable variable=imageTag;isOutput=true]${IMAGE_TAG}"
                   echo "##vso[task.setvariable variable=imageRepository;isOutput=true]${IMAGE_REPOSITORY}"
 
-  - ${{ if gt(length(parameters.deployEnvironments), 0) }}:
-    - stage: DeployContract
-      displayName: Validate deploy manifests
-      dependsOn:
-        - Container
-      jobs:
-        - job: CrossEnvIdentity
-          displayName: Cross-env kind / workload.type
-          pool:
-            vmImage: ${{ parameters.vmImage }}
-          steps:
-            - checkout: self
-              path: app
-            - checkout: templates
-              path: pipeline-templates
-            - bash: |
-                set -Eeuo pipefail
-                WORKSPACE="${PIPELINE_WORKSPACE:-${AGENT_BUILDDIRECTORY}}"
-                APP_DIR="${WORKSPACE}/app"
-                TEMPLATES_DIR="${WORKSPACE}/pipeline-templates"
-                CONFIG="${APP_DIR}/${{ parameters.runtimeConfigPath }}"
-                ENVS=(
-                ${{ each env in parameters.deployEnvironments }}
-                  ${{ env.name }}
-                ${{ end }}
-                )
-                if ! command -v yq >/dev/null 2>&1; then
-                  sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64
-                  sudo chmod +x /usr/local/bin/yq
-                fi
-                bash "${TEMPLATES_DIR}/scripts/assert-deploy-identity.sh" "${CONFIG}" "${ENVS[@]}"
-                for env in "${ENVS[@]}"; do
-                  manifest="${CONFIG}/${env}.yaml"
-                  kind="$(yq -r '.kind // ""' "${manifest}")"
-                  case "${kind}" in
-                    Application) schema="${TEMPLATES_DIR}/schemas/application.manifest.schema.json" ;;
-                    ScheduledJob) schema="${TEMPLATES_DIR}/schemas/scheduled-job.manifest.schema.json" ;;
-                    *) echo "##vso[task.logissue type=error]Unsupported kind ${kind}"; exit 1 ;;
-                  esac
-                  if ! python3 -c 'import yaml' >/dev/null 2>&1; then
-                    pip3 install --user pyyaml >/dev/null
-                  fi
-                  python3 "${TEMPLATES_DIR}/scripts/validate-manifest.py" "${schema}" "${manifest}"
-                done
-              displayName: Assert identity + public schemas
-
     - template: helm-deploy.yml
       parameters:
         environmentName: ${{ parameters.deployEnvironments[0].name }}
         variableGroups: ${{ parameters.deployEnvironments[0].variableGroups }}
         dependsOn:
           - Container
-          - DeployContract
         applicationName: ${{ parameters.applicationName }}
-        containerPool: ${{ coalesce(parameters.deployEnvironments[0].containerPool, parameters.containerPool) }}
+        containerPool: ${{ iif(eq(parameters.deployEnvironments[0].name, 'develop'), 'PG-AWS-EKS', iif(eq(parameters.deployEnvironments[0].name, 'homolog'), 'PG-AWS-EKS-HML', coalesce(parameters.deployEnvironments[0].containerPool, parameters.containerPool))) }}
         awsRegion: ${{ parameters.awsRegion }}
         helmTimeout: ${{ coalesce(parameters.deployEnvironments[0].helmTimeout, parameters.helmTimeout) }}
         runtimeConfigPath: ${{ parameters.runtimeConfigPath }}
-        expectedKubeContext: ${{ coalesce(parameters.deployEnvironments[0].expectedKubeContext, parameters.expectedKubeContext) }}
-        smokeScheduledJob: false
+        expectedKubeContext: ''
+        smokeScheduledJob: ${{ coalesce(parameters.deployEnvironments[0].smokeScheduledJob, false) }}
 
   - ${{ if gt(length(parameters.deployEnvironments), 1) }}:
     - template: helm-deploy.yml
@@ -382,15 +459,14 @@ stages:
         variableGroups: ${{ parameters.deployEnvironments[1].variableGroups }}
         dependsOn:
           - Container
-          - DeployContract
           - Deploy_${{ parameters.deployEnvironments[0].name }}
         applicationName: ${{ parameters.applicationName }}
-        containerPool: ${{ coalesce(parameters.deployEnvironments[1].containerPool, parameters.containerPool) }}
+        containerPool: ${{ iif(eq(parameters.deployEnvironments[1].name, 'develop'), 'PG-AWS-EKS', iif(eq(parameters.deployEnvironments[1].name, 'homolog'), 'PG-AWS-EKS-HML', coalesce(parameters.deployEnvironments[1].containerPool, parameters.containerPool))) }}
         awsRegion: ${{ parameters.awsRegion }}
         helmTimeout: ${{ coalesce(parameters.deployEnvironments[1].helmTimeout, parameters.helmTimeout) }}
         runtimeConfigPath: ${{ parameters.runtimeConfigPath }}
-        expectedKubeContext: ${{ coalesce(parameters.deployEnvironments[1].expectedKubeContext, parameters.expectedKubeContext) }}
-        smokeScheduledJob: false
+        expectedKubeContext: ''
+        smokeScheduledJob: ${{ coalesce(parameters.deployEnvironments[1].smokeScheduledJob, false) }}
 
   - ${{ if gt(length(parameters.deployEnvironments), 2) }}:
     - template: helm-deploy.yml
@@ -399,12 +475,11 @@ stages:
         variableGroups: ${{ parameters.deployEnvironments[2].variableGroups }}
         dependsOn:
           - Container
-          - DeployContract
           - Deploy_${{ parameters.deployEnvironments[1].name }}
         applicationName: ${{ parameters.applicationName }}
-        containerPool: ${{ coalesce(parameters.deployEnvironments[2].containerPool, parameters.containerPool) }}
+        containerPool: ${{ iif(eq(parameters.deployEnvironments[2].name, 'develop'), 'PG-AWS-EKS', iif(eq(parameters.deployEnvironments[2].name, 'homolog'), 'PG-AWS-EKS-HML', coalesce(parameters.deployEnvironments[2].containerPool, parameters.containerPool))) }}
         awsRegion: ${{ parameters.awsRegion }}
         helmTimeout: ${{ coalesce(parameters.deployEnvironments[2].helmTimeout, parameters.helmTimeout) }}
         runtimeConfigPath: ${{ parameters.runtimeConfigPath }}
-        expectedKubeContext: ${{ coalesce(parameters.deployEnvironments[2].expectedKubeContext, parameters.expectedKubeContext) }}
-        smokeScheduledJob: false
+        expectedKubeContext: ''
+        smokeScheduledJob: ${{ coalesce(parameters.deployEnvironments[2].smokeScheduledJob, false) }}

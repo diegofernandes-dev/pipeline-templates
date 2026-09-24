@@ -59,7 +59,8 @@ false
 {{- if and (kindIs "map" $a) (hasKey $a "minReplicas") -}}
 {{- $a.minReplicas -}}
 {{- else -}}
-1
+{{- $env := (.Values.runtime | default dict).environment | default "develop" -}}
+{{- if eq $env "production" -}}2{{- else -}}1{{- end -}}
 {{- end -}}
 {{- end }}
 
@@ -130,4 +131,28 @@ envFrom:
       name: {{ .Release.Name }}-secret
   {{- end }}
 {{- end }}
+{{- end }}
+
+{{/*
+Reject consumer config keys that would override platform-owned runtime settings.
+config → ConfigMap → envFrom is overridden by explicit env, but reserved keys must still fail-fast.
+*/}}
+{{- define "chart.validateConfig" -}}
+{{- $c := .Values.config | default dict -}}
+{{- if and (kindIs "map" $c) (gt (len $c) 0) -}}
+{{- $reservedExact := list
+  "ASPNETCORE_URLS"
+  "ASPNETCORE_HTTP_PORTS"
+  "ASPNETCORE_HTTPS_PORTS"
+  "GOOGLE_APPLICATION_CREDENTIALS"
+-}}
+{{- range $k, $_ := $c -}}
+{{- if has $k $reservedExact -}}
+{{- fail (printf "config.%s is platform-owned and cannot be set in the manifesto" $k) -}}
+{{- end -}}
+{{- if hasPrefix "Kestrel__" $k -}}
+{{- fail (printf "config.%s is platform-owned (Kestrel__*) and cannot be set in the manifesto" $k) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- end }}

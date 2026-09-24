@@ -1,4 +1,4 @@
-# Public contract: kind + workload.type. Ports are platform-owned (web=8080, grpc=50051).
+# Public contract: kind + workload.type. Networked ports are platform-owned (web/grpc=8080).
 kind: Application
 
 workload:
@@ -22,18 +22,17 @@ runtime:
   # develop | homolog | production — set by pipeline
   environment: develop
 
+# Platform always creates SA named after the release. Public: annotations only (IRSA).
 serviceAccount:
-  create: true
-  name: ""
   annotations: {}
-  automountServiceAccountToken: false
 
 workloadIdentity:
   token:
     audience: sts.amazonaws.com
     expirationSeconds: 3600
     fileName: token
-    mountPath: /var/run/secrets/eks.amazonaws.com/serviceaccount
+    # Dedicated path — must NOT collide with IRSA (/var/run/secrets/eks.amazonaws.com/serviceaccount).
+    mountPath: /var/run/secrets/gcp/serviceaccount
     defaultMode: 420
   gcp:
     audience: ""
@@ -45,6 +44,8 @@ persistence:
   size: ""
   storageClassName: ""
 
+# Free-form string map → ConfigMap. Use __ for .NET hierarchy (ConnectionStrings__Default).
+# Reserved platform keys are rejected (ASPNETCORE_URLS, Kestrel__*, GOOGLE_APPLICATION_CREDENTIALS, …).
 config: {}
 
 externalSecret:
@@ -54,10 +55,9 @@ externalSecret:
     name: ""
   data: []
 
-# Opt-in probes. No presumed path.
-# web: path (global or per-type). grpc: enabled on probe type (uses platform port).
-# worker: probes not expected (fail if set with paths/enabled).
-probes: {}
+# Networked (web/grpc): manifesto MUST set probes: false OR explicit probes.<type>.
+# No default here — omission fails validation (fail-fast).
+# probes: false
 
 resources:
   requests:
@@ -80,8 +80,8 @@ securityContext:
       - ALL
 
 # Autoscaling (CPU HPA):
-# - web/grpc: ON by default when omitted / empty map (platform min=1 max=3 target=70)
-# - worker: OFF by default (not assumed idempotent); set an explicit map to opt in
+# - web/grpc: ON by default; minReplicas default 1 (develop/homolog) or 2 (production)
+# - worker: OFF by default; set an explicit map to opt in
 # - autoscaling: false disables for any type
 autoscaling: {}
 

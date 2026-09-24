@@ -9,12 +9,14 @@ imagePullSecrets: []
 
 schedule:
   expression: ""
-  # Required after merge — corporate default avoids control-plane timezone.
-  timeZone: America/Sao_Paulo
+  # Required in the public manifesto (application semantics). No silent platform default.
+  timeZone: ""
   concurrencyPolicy: Forbid
+  # Optional: how late an occurrence may still start. No platform default.
   startingDeadlineSeconds: null
 
 execution:
+  # Required: maps to Job activeDeadlineSeconds (Forbid + stuck job otherwise blocks forever).
   timeoutSeconds: null
   retries: 2
   command: []
@@ -24,18 +26,16 @@ history:
   successful: 3
   failed: 1
 
+# Platform always creates SA named after the release. Public: annotations only.
 serviceAccount:
-  create: true
-  name: ""
   annotations: {}
-  automountServiceAccountToken: false
 
 workloadIdentity:
   token:
     audience: sts.amazonaws.com
     expirationSeconds: 3600
     fileName: token
-    mountPath: /var/run/secrets/eks.amazonaws.com/serviceaccount
+    mountPath: /var/run/secrets/gcp/serviceaccount
     defaultMode: 420
   gcp:
     audience: ""
@@ -58,6 +58,7 @@ resources:
   limits:
     memory: 512Mi
 
+# Platform-owned security baseline (not in public manifesto schema).
 podSecurityContext:
   runAsNonRoot: true
   seccompProfile:

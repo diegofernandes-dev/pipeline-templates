@@ -3,6 +3,7 @@
 {{- include "chart.validatePersistence" . }}
 {{- include "chart.validateProbes" . }}
 {{- include "chart.validateExternalSecret" . }}
+{{- include "chart.validateConfig" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -45,10 +46,8 @@ spec:
         {{- end }}
       {{- end }}
     spec:
-      {{- if .Values.serviceAccount.create }}
-      serviceAccountName: {{ default .Release.Name .Values.serviceAccount.name }}
-      automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
-      {{- end }}
+      serviceAccountName: {{ .Release.Name }}
+      automountServiceAccountToken: false
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -62,16 +61,17 @@ spec:
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           {{- $wifEnv := include "app.workloadIdentityEnv" . | trim -}}
+          {{- $isNetworked := eq (include "chart.hasEndpoint" .) "true" -}}
           {{- $isGrpc := eq (include "chart.workloadType" .) "grpc" -}}
-          {{- if or $isGrpc (ne $wifEnv "") }}
+          {{- if or $isNetworked (ne $wifEnv "") }}
           env:
-            {{- if $isGrpc }}
-            # Platform-owned gRPC listen (overrides Dockerfile ASPNETCORE_URLS=8080).
+            {{- if $isNetworked }}
+            # Platform-owned listen (explicit env beats envFrom / ConfigMap).
             - name: ASPNETCORE_URLS
               value: "http://+:{{ include "chart.containerPort" . }}"
-            - name: Kestrel__Endpoints__Grpc__Url
-              value: "http://0.0.0.0:{{ include "chart.containerPort" . }}"
-            - name: Kestrel__Endpoints__Grpc__Protocols
+            {{- end }}
+            {{- if $isGrpc }}
+            - name: Kestrel__EndpointDefaults__Protocols
               value: Http2
             {{- end }}
             {{- if ne $wifEnv "" }}
@@ -81,9 +81,9 @@ spec:
           {{- with include "app.envFrom" . }}
           {{- . | nindent 10 }}
           {{- end }}
-          {{- if (include "chart.hasEndpoint" .) | eq "true" }}
+          {{- if $isNetworked }}
           ports:
-            - name: {{ if eq (include "chart.workloadType" .) "grpc" }}grpc{{ else }}http{{ end }}
+            - name: {{ if $isGrpc }}grpc{{ else }}http{{ end }}
               containerPort: {{ include "chart.containerPort" . }}
               protocol: TCP
           {{- end }}

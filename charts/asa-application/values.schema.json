@@ -22,10 +22,40 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "path": { "type": "string" },
-            "startup": { "type": "object" },
-            "readiness": { "type": "object" },
-            "liveness": { "type": "object" }
+            "startup": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "path": { "type": "string" },
+                "enabled": { "type": "boolean" },
+                "failureThreshold": { "type": "integer", "minimum": 1 },
+                "periodSeconds": { "type": "integer", "minimum": 1 }
+              }
+            },
+            "readiness": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "path": { "type": "string" },
+                "enabled": { "type": "boolean" },
+                "initialDelaySeconds": { "type": "integer", "minimum": 0 },
+                "periodSeconds": { "type": "integer", "minimum": 1 },
+                "timeoutSeconds": { "type": "integer", "minimum": 1 },
+                "failureThreshold": { "type": "integer", "minimum": 1 }
+              }
+            },
+            "liveness": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "path": { "type": "string" },
+                "enabled": { "type": "boolean" },
+                "initialDelaySeconds": { "type": "integer", "minimum": 0 },
+                "periodSeconds": { "type": "integer", "minimum": 1 },
+                "timeoutSeconds": { "type": "integer", "minimum": 1 },
+                "failureThreshold": { "type": "integer", "minimum": 1 }
+              }
+            }
           }
         }
       ]
@@ -50,22 +80,127 @@
         }
       ]
     },
-    "pdb": { "type": "object" },
-    "resources": { "type": "object" },
+    "pdb": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "maxUnavailable": { "type": ["integer", "string"] }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requests": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "cpu": { "type": "string" },
+            "memory": { "type": "string" }
+          }
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "cpu": { "type": "string" },
+            "memory": { "type": "string" }
+          }
+        }
+      }
+    },
     "replicaCount": { "type": "integer", "minimum": 0 },
-    "serviceAccount": { "type": "object" },
-    "workloadIdentity": { "type": "object" },
+    "serviceAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "annotations": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    },
+    "workloadIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "token": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "audience": { "type": "string" },
+            "expirationSeconds": { "type": "integer", "minimum": 1 },
+            "fileName": { "type": "string" },
+            "mountPath": { "type": "string" },
+            "defaultMode": { "type": "integer" }
+          }
+        },
+        "gcp": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "audience": { "type": "string" },
+            "serviceAccountEmail": { "type": "string" },
+            "projectId": { "type": "string" }
+          }
+        }
+      }
+    },
     "persistence": {
       "oneOf": [
         { "type": "boolean" },
-        { "type": "object" }
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "mountPath": { "type": "string" },
+            "size": { "type": "string" },
+            "storageClassName": { "type": "string" }
+          }
+        }
       ]
     },
-    "config": { "type": "object" },
+    "config": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
     "externalSecret": {
       "oneOf": [
         { "type": "boolean" },
-        { "type": "object" }
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "refreshInterval": { "type": "string" },
+            "secretStoreRef": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "kind": { "type": "string" },
+                "name": { "type": "string" }
+              }
+            },
+            "data": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "secretKey": { "type": "string" },
+                  "remoteRef": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "key": { "type": "string" },
+                      "property": { "type": "string" }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
       ]
     },
     "podSecurityContext": { "type": "object" },

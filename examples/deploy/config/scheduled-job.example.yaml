@@ -7,9 +7,11 @@ schedule:
   expression: "0 2 * * *"
   timeZone: America/Sao_Paulo
   concurrencyPolicy: Forbid
+  # Optional: how late an occurrence may still start (semantic app decision).
   startingDeadlineSeconds: 600
 
 execution:
+  # Required — maps to Job activeDeadlineSeconds.
   timeoutSeconds: 1800
   retries: 2
   args:

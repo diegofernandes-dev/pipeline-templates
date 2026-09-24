@@ -57,7 +57,7 @@ ScheduledJob — CronJob-only chart.
 {{- $_ := required "schedule.expression is required" ($sched.expression | default "") -}}
 {{- $tz := $sched.timeZone | default "" -}}
 {{- if eq $tz "" -}}
-{{- fail "schedule.timeZone is required (default America/Sao_Paulo — set explicitly to avoid control-plane TZ)" -}}
+{{- fail "schedule.timeZone is required in the manifesto (e.g. America/Sao_Paulo) — no platform default" -}}
 {{- end -}}
 {{- $policy := $sched.concurrencyPolicy | default "Forbid" -}}
 {{- if not (or (eq $policy "Allow") (eq $policy "Forbid") (eq $policy "Replace")) -}}
@@ -74,11 +74,18 @@ ScheduledJob — CronJob-only chart.
 {{- if and (eq (len $cmd) 0) (eq (len $args) 0) -}}
 {{- fail "execution.command or execution.args is required (API entrypoint must not run as a ScheduledJob)" -}}
 {{- end -}}
+{{- $timeout := $ex.timeoutSeconds | default "" -}}
+{{- if or (eq ($timeout | toString) "") (eq ($timeout | toString) "<nil>") (kindIs "invalid" $ex.timeoutSeconds) -}}
+{{- if not (hasKey $ex "timeoutSeconds") -}}
+{{- fail "execution.timeoutSeconds is required (activeDeadlineSeconds) — prevents stuck jobs from blocking Forbid concurrency" -}}
+{{- else if not $ex.timeoutSeconds -}}
+{{- fail "execution.timeoutSeconds is required and must be > 0" -}}
+{{- end -}}
+{{- else if le ($ex.timeoutSeconds | int) 0 -}}
+{{- fail "execution.timeoutSeconds must be > 0" -}}
+{{- end -}}
 {{- if and (hasKey $ex "retries") (lt ($ex.retries | int) 0) -}}
 {{- fail "execution.retries must be >= 0" -}}
-{{- end -}}
-{{- if and (hasKey $ex "timeoutSeconds") $ex.timeoutSeconds (le ($ex.timeoutSeconds | int) 0) -}}
-{{- fail "execution.timeoutSeconds must be > 0 when set" -}}
 {{- end -}}
 {{- $hist := .Values.history | default dict -}}
 {{- if and (hasKey $hist "successful") (lt ($hist.successful | int) 0) -}}
@@ -86,6 +93,26 @@ ScheduledJob — CronJob-only chart.
 {{- end -}}
 {{- if and (hasKey $hist "failed") (lt ($hist.failed | int) 0) -}}
 {{- fail "history.failed must be >= 0" -}}
+{{- end -}}
+{{- end }}
+
+{{- define "chart.validateConfig" -}}
+{{- $c := .Values.config | default dict -}}
+{{- if and (kindIs "map" $c) (gt (len $c) 0) -}}
+{{- $reservedExact := list
+  "ASPNETCORE_URLS"
+  "ASPNETCORE_HTTP_PORTS"
+  "ASPNETCORE_HTTPS_PORTS"
+  "GOOGLE_APPLICATION_CREDENTIALS"
+-}}
+{{- range $k, $_ := $c -}}
+{{- if has $k $reservedExact -}}
+{{- fail (printf "config.%s is platform-owned and cannot be set in the manifesto" $k) -}}
+{{- end -}}
+{{- if hasPrefix "Kestrel__" $k -}}
+{{- fail (printf "config.%s is platform-owned (Kestrel__*) and cannot be set in the manifesto" $k) -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 {{- end }}
 

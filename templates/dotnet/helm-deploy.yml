@@ -2,6 +2,9 @@
 # Namespace: asa-<applicationName> (sem sufixo; mesmo nome em cada cluster).
 # Manifesto obrigatório: deploy/config/<environment>.yaml com kind: Application|ScheduledJob.
 # Chart path is resolved from kind (never exposed to the consumer).
+#
+# Operational requirement: Azure DevOps Environments used for deploy MUST enable
+# exclusive lock / one deployment at a time per environment (no bash lock here).
 parameters:
   - name: environmentName
     type: string
@@ -34,12 +37,12 @@ parameters:
     type: string
     default: 'deploy/config'
 
-  # Optional: assert kubectl context contains this substring (env↔cluster guardrail).
+  # Exact kubectl context name (not substring). Empty = skip (external blocker until mapped).
   - name: expectedKubeContext
     type: string
     default: ''
 
-  # develop-only: create a one-off Job from CronJob after ScheduledJob deploy.
+  # develop + ScheduledJob only: create a one-off Job from CronJob after deploy (opt-in).
   - name: smokeScheduledJob
     type: boolean
     default: false
@@ -101,62 +104,90 @@ stages:
                       MANIFEST="${APP_DIR}/${RUNTIME_CONFIG_PATH}/${ADO_ENVIRONMENT}.yaml"
                       HELM_RELEASE="${APPLICATION_NAME}"
                       HELM_NAMESPACE="asa-${APPLICATION_NAME}"
+                      PLATFORM_ENVS="${TEMPLATES_DIR}/config/platform-environments.json"
+
+                      # ADO leaves unset macros as the literal string $(NAME).
+                      if [[ "${ECR_PULL_SECRET:-}" == '$(ECR_PULL_SECRET)' ]]; then
+                        ECR_PULL_SECRET=""
+                      fi
 
                       dump_diagnostics() {
-                        echo "##[group]deploy diagnostics (post-failure)"
-                        kubectl -n "${HELM_NAMESPACE}" get deploy,svc,hpa,cronjob,pods,httproute,grpcroute,externalsecret -o wide 2>/dev/null || true
-                        kubectl -n "${HELM_NAMESPACE}" get events --sort-by=.lastTimestamp 2>/dev/null | tail -40 || true
+                        echo "##[group]deploy diagnostics"
+                        kubectl -n "${HELM_NAMESPACE}" get deploy,svc,hpa,pdb,sa,cronjob,pods,httproute,grpcroute,externalsecret,configmap,pvc -o wide 2>/dev/null || true
+                        kubectl -n "${HELM_NAMESPACE}" get events --sort-by=.lastTimestamp 2>/dev/null | tail -60 || true
                         for p in $(kubectl -n "${HELM_NAMESPACE}" get pods -o name 2>/dev/null || true); do
                           echo "--- describe ${p} ---"
-                          kubectl -n "${HELM_NAMESPACE}" describe "${p}" 2>/dev/null | tail -80 || true
+                          kubectl -n "${HELM_NAMESPACE}" describe "${p}" 2>/dev/null | tail -100 || true
                           echo "--- logs ${p} ---"
-                          kubectl -n "${HELM_NAMESPACE}" logs "${p}" --all-containers=true --tail=80 2>/dev/null || true
+                          kubectl -n "${HELM_NAMESPACE}" logs "${p}" --all-containers=true --tail=100 2>/dev/null || true
                         done
+                        for r in httproute grpcroute; do
+                          for obj in $(kubectl -n "${HELM_NAMESPACE}" get "${r}" -o name 2>/dev/null || true); do
+                            echo "--- ${obj} status ---"
+                            kubectl -n "${HELM_NAMESPACE}" get "${obj}" -o yaml 2>/dev/null | yq -r '.status // {}' || true
+                          done
+                        done
+                        helm status "${HELM_RELEASE}" -n "${HELM_NAMESPACE}" 2>/dev/null || true
                         helm history "${HELM_RELEASE}" -n "${HELM_NAMESPACE}" 2>/dev/null || true
                         echo "##[endgroup]"
                       }
-                      trap dump_diagnostics ERR
 
-                      resolve_kind() {
-                        local file="$1"
-                        if command -v yq >/dev/null 2>&1; then
-                          yq -r '.kind // ""' "${file}"
-                        else
-                          # Fallback: top-level kind only (column 0).
-                          grep -E '^kind:[[:space:]]*' "${file}" | head -1 | sed -E 's/^kind:[[:space:]]*//;s/[[:space:]]*$//;s/^["'\'']//;s/["'\'']$//'
+                      require_cmd() {
+                        local c="$1"
+                        if ! command -v "${c}" >/dev/null 2>&1; then
+                          echo "##vso[task.logissue type=error]Required tool '${c}' not found on agent — install on the self-hosted pool (no ad-hoc download in deploy)"
+                          exit 1
                         fi
                       }
+
+                      require_cmd kubectl
+                      require_cmd helm
+                      require_cmd yq
+                      require_cmd aws
+                      require_cmd python3
+
+                      HELM_V="$(helm version --short 2>/dev/null || true)"
+                      echo "helm: ${HELM_V}"
+                      if [[ ! "${HELM_V}" =~ ^v?3\. ]]; then
+                        echo "##vso[task.logissue type=error]Unsupported Helm version '${HELM_V}' — platform requires Helm 3.x"
+                        exit 1
+                      fi
+
+                      if ! python3 -c 'import yaml, jsonschema' >/dev/null 2>&1; then
+                        echo "##vso[task.logissue type=error]Python packages PyYAML + jsonschema required on agent (pinned install on pool; no pip in deploy)"
+                        exit 1
+                      fi
 
                       case "${ADO_ENVIRONMENT}" in
                         develop|homolog|production) ;;
                         *)
-                          echo "##vso[task.logissue type=error]Unsupported environment '${ADO_ENVIRONMENT}' (allowed: develop, homolog, production)"
+                          echo "##vso[task.logissue type=error]Unsupported environment '${ADO_ENVIRONMENT}'"
                           exit 1
                           ;;
                       esac
 
                       if [[ -z "${APPLICATION_NAME:-}" ]]; then
-                        echo "##vso[task.logissue type=error]applicationName is required when deployEnvironments is set"
+                        echo "##vso[task.logissue type=error]applicationName is required"
                         exit 1
                       fi
 
                       if [[ ! -f "${MANIFEST}" ]]; then
-                        echo "##vso[task.logissue type=error]Manifesto required at ${MANIFEST} (must declare kind: Application or ScheduledJob)"
+                        echo "##vso[task.logissue type=error]Manifesto required at ${MANIFEST}"
                         exit 1
                       fi
 
+                      CTX="$(kubectl config current-context 2>/dev/null || true)"
+                      echo "kubectl context: ${CTX}"
                       if [[ -n "${EXPECTED_KUBE_CONTEXT:-}" ]]; then
-                        CTX="$(kubectl config current-context 2>/dev/null || true)"
-                        echo "kubectl context: ${CTX}"
-                        if [[ "${CTX}" != *"${EXPECTED_KUBE_CONTEXT}"* ]]; then
-                          echo "##vso[task.logissue type=error]kubectl context '${CTX}' does not match expectedKubeContext '${EXPECTED_KUBE_CONTEXT}'"
+                        if [[ "${CTX}" != "${EXPECTED_KUBE_CONTEXT}" ]]; then
+                          echo "##vso[task.logissue type=error]kubectl context must equal expectedKubeContext '${EXPECTED_KUBE_CONTEXT}' (got '${CTX}') — exact match, no substring"
                           exit 1
                         fi
                       else
-                        echo "kubectl context: $(kubectl config current-context 2>/dev/null || echo unknown)"
+                        echo "##[warning]expectedKubeContext empty for ${ADO_ENVIRONMENT} — EXTERNAL BLOCKER until platform mapping is filled in config/platform-environments.json"
                       fi
 
-                      KIND="$(resolve_kind "${MANIFEST}")"
+                      KIND="$(yq -r '.kind // ""' "${MANIFEST}")"
                       case "${KIND}" in
                         Application)
                           CHART_DIR="${TEMPLATES_DIR}/charts/asa-application"
@@ -167,7 +198,7 @@ stages:
                           PUBLIC_SCHEMA="${TEMPLATES_DIR}/schemas/scheduled-job.manifest.schema.json"
                           ;;
                         *)
-                          echo "##vso[task.logissue type=error]Unsupported or missing kind '${KIND}' in ${MANIFEST} (allowed: Application, ScheduledJob)"
+                          echo "##vso[task.logissue type=error]Unsupported or missing kind '${KIND}'"
                           exit 1
                           ;;
                       esac
@@ -183,59 +214,125 @@ stages:
                       fi
 
                       echo "##[group]validate public manifesto schema"
-                      VALIDATE_PY="${TEMPLATES_DIR}/scripts/validate-manifest.py"
-                      if command -v yq >/dev/null 2>&1 && python3 -c 'import yaml' >/dev/null 2>&1; then
-                        python3 "${VALIDATE_PY}" "${PUBLIC_SCHEMA}" "${MANIFEST}"
-                      elif command -v yq >/dev/null 2>&1; then
-                        yq -o=json '.' "${MANIFEST}" | python3 "${VALIDATE_PY}" "${PUBLIC_SCHEMA}" --stdin
-                      else
-                        echo "##vso[task.logissue type=warning]yq/PyYAML unavailable — skipping public schema validation"
-                      fi
+                      python3 "${TEMPLATES_DIR}/scripts/validate-manifest.py" "${PUBLIC_SCHEMA}" "${MANIFEST}"
                       echo "##[endgroup]"
 
                       echo "##[group]ensure namespace ${HELM_NAMESPACE}"
                       kubectl create namespace "${HELM_NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
+                      kubectl label namespace "${HELM_NAMESPACE}" \
+                        app.kubernetes.io/managed-by=pipeline-templates \
+                        app.kubernetes.io/name="${HELM_RELEASE}" \
+                        --overwrite >/dev/null
                       echo "##[endgroup]"
 
-                      echo "##[group]aws caller identity (ambient credentials on agent)"
+                      echo "##[group]aws caller identity"
                       aws sts get-caller-identity
                       echo "##[endgroup]"
 
-                      echo "##[group]preflight APIs / CRDs"
+                      WT=""
+                      GATEWAY_NAME=""
+                      if [[ -f "${PLATFORM_ENVS}" ]]; then
+                        GATEWAY_NAME="$(yq -r ".${ADO_ENVIRONMENT}.gatewayName // \"\"" "${PLATFORM_ENVS}")"
+                      fi
+
+                      echo "##[group]preflight APIs / CRDs / Gateway / metrics"
                       if [[ "${KIND}" == "Application" ]]; then
-                        WT=""
-                        if command -v yq >/dev/null 2>&1; then
-                          WT="$(yq -r '.workload.type // ""' "${MANIFEST}")"
-                        fi
+                        WT="$(yq -r '.workload.type // ""' "${MANIFEST}")"
+                        case "${WT}" in
+                          web)
+                            kubectl api-resources --api-group=gateway.networking.k8s.io -o name 2>/dev/null | grep -qx httproutes.gateway.networking.k8s.io \
+                              || { echo "##vso[task.logissue type=error]HTTPRoute API not available"; exit 1; }
+                            ;;
+                          grpc)
+                            kubectl api-resources --api-group=gateway.networking.k8s.io -o name 2>/dev/null | grep -qx grpcroutes.gateway.networking.k8s.io \
+                              || { echo "##vso[task.logissue type=error]GRPCRoute API not available"; exit 1; }
+                            ;;
+                        esac
                         if [[ "${WT}" == "web" || "${WT}" == "grpc" ]]; then
-                          kubectl api-resources --api-group=gateway.networking.k8s.io >/dev/null \
-                            || { echo "##vso[task.logissue type=error]gateway.networking.k8s.io APIs missing (HTTPRoute/GRPCRoute)"; exit 1; }
+                          if [[ -n "${GATEWAY_NAME}" ]]; then
+                            if ! kubectl get gateway.gateway.networking.k8s.io -A -o json 2>/dev/null \
+                              | yq -e --arg n "${GATEWAY_NAME}" '.items[] | select(.metadata.name == $n) | .metadata.name' >/dev/null; then
+                              echo "##vso[task.logissue type=error]Expected Gateway '${GATEWAY_NAME}' not found in cluster"
+                              exit 1
+                            fi
+                            echo "Gateway ${GATEWAY_NAME} present"
+                          else
+                            echo "##[warning]gatewayName unset for ${ADO_ENVIRONMENT}"
+                          fi
+                        fi
+
+                        # HPA active? (mirrors chart.autoscalingEnabled defaults)
+                        AS_JSON="$(yq -o=json '.autoscaling // null' "${MANIFEST}")"
+                        HPA_NEEDED=false
+                        if [[ "${WT}" == "web" || "${WT}" == "grpc" ]]; then
+                          if [[ "${AS_JSON}" == "false" ]]; then
+                            HPA_NEEDED=false
+                          else
+                            HPA_NEEDED=true
+                          fi
+                        elif [[ "${WT}" == "worker" ]]; then
+                          if [[ "${AS_JSON}" != "null" && "${AS_JSON}" != "false" && "${AS_JSON}" != "{}" ]]; then
+                            HPA_NEEDED=true
+                          fi
+                        fi
+                        if [[ "${HPA_NEEDED}" == "true" ]]; then
+                          kubectl get --raw /apis/metrics.k8s.io/v1beta1 >/dev/null 2>&1 \
+                            || { echo "##vso[task.logissue type=error]metrics.k8s.io unavailable but HPA will be rendered"; exit 1; }
+                          echo "metrics.k8s.io available"
                         fi
                       fi
-                      if command -v yq >/dev/null 2>&1; then
-                        ES_NAME="$(yq -r '.externalSecret.secretStoreRef.name // ""' "${MANIFEST}" 2>/dev/null || true)"
-                        ES_LEN="$(yq -r '.externalSecret.data | length' "${MANIFEST}" 2>/dev/null || echo 0)"
-                        if [[ -n "${ES_NAME}" && "${ES_LEN}" != "0" && "${ES_LEN}" != "null" ]]; then
-                          kubectl api-resources --api-group=external-secrets.io >/dev/null \
-                            || { echo "##vso[task.logissue type=error]external-secrets.io APIs missing"; exit 1; }
-                        fi
+                      ES_NAME="$(yq -r '.externalSecret.secretStoreRef.name // ""' "${MANIFEST}")"
+                      ES_LEN="$(yq -r '.externalSecret.data | length' "${MANIFEST}")"
+                      if [[ -n "${ES_NAME}" && "${ES_LEN}" != "0" && "${ES_LEN}" != "null" ]]; then
+                        kubectl api-resources --api-group=external-secrets.io >/dev/null \
+                          || { echo "##vso[task.logissue type=error]external-secrets.io APIs missing"; exit 1; }
                       fi
                       echo "##[endgroup]"
 
-                      echo "##[group]helm pending-release recovery"
+                      helm_has_deployed_revision() {
+                        helm history "${HELM_RELEASE}" -n "${HELM_NAMESPACE}" -o json 2>/dev/null \
+                          | yq -r '[.[] | select(.status == "deployed")] | length' 2>/dev/null \
+                          | grep -Eq '^[1-9]'
+                      }
+
+                      helm_rollback_to_last_deployed() {
+                        local rev
+                        rev="$(helm history "${HELM_RELEASE}" -n "${HELM_NAMESPACE}" -o json \
+                          | yq -r '[.[] | select(.status == "deployed")] | last | .revision // ""')"
+                        if [[ -z "${rev}" || "${rev}" == "null" ]]; then
+                          echo "##vso[task.logissue type=error]No deployed revision available for rollback"
+                          return 1
+                        fi
+                        echo "Rolling back to deployed revision ${rev}"
+                        helm rollback "${HELM_RELEASE}" "${rev}" -n "${HELM_NAMESPACE}" --wait --timeout "${HELM_TIMEOUT}"
+                      }
+
+                      echo "##[group]helm pre-upgrade recovery (stuck prior run)"
                       if helm status "${HELM_RELEASE}" -n "${HELM_NAMESPACE}" >/dev/null 2>&1; then
-                        STATUS="$(helm status "${HELM_RELEASE}" -n "${HELM_NAMESPACE}" -o json | yq -r '.info.status // ""' 2>/dev/null \
-                          || helm status "${HELM_RELEASE}" -n "${HELM_NAMESPACE}" | awk '/STATUS:/ {print $2; exit}')"
+                        STATUS="$(helm status "${HELM_RELEASE}" -n "${HELM_NAMESPACE}" -o json | yq -r '.info.status // ""')"
                         echo "current release status: ${STATUS}"
                         case "${STATUS}" in
                           pending-install)
-                            echo "Uninstalling failed first install (${STATUS})"
-                            helm uninstall "${HELM_RELEASE}" -n "${HELM_NAMESPACE}" --wait --timeout 2m || true
+                            dump_diagnostics
+                            if helm_has_deployed_revision; then
+                              echo "##vso[task.logissue type=error]pending-install but history has deployed revision — refusing uninstall; manual intervention required"
+                              exit 1
+                            fi
+                            echo "No deployed revision — uninstalling incomplete first install"
+                            helm uninstall "${HELM_RELEASE}" -n "${HELM_NAMESPACE}" --wait --timeout 2m
                             ;;
-                          pending-upgrade|pending-rollback)
-                            echo "Rolling back stuck release (${STATUS})"
-                            helm rollback "${HELM_RELEASE}" -n "${HELM_NAMESPACE}" --wait --timeout 2m \
-                              || helm uninstall "${HELM_RELEASE}" -n "${HELM_NAMESPACE}" --wait --timeout 2m || true
+                          pending-upgrade|pending-rollback|failed)
+                            dump_diagnostics
+                            if ! helm_rollback_to_last_deployed; then
+                              echo "##vso[task.logissue type=error]Recovery rollback failed for ${STATUS} — refusing uninstall"
+                              exit 1
+                            fi
+                            ;;
+                          deployed|superseded)
+                            echo "release healthy enough to proceed (${STATUS})"
+                            ;;
+                          *)
+                            echo "##[warning]Unhandled helm status '${STATUS}' — proceeding cautiously"
                             ;;
                         esac
                       else
@@ -244,8 +341,6 @@ stages:
                       echo "##[endgroup]"
 
                       echo "kind=${KIND} → chart=${CHART_DIR}"
-                      echo "Using env manifesto: ${MANIFEST}"
-
                       HELM_SET=(
                         --set-string "image.repository=${IMAGE_REPOSITORY}"
                         --set-string "image.tag=${IMAGE_TAG}"
@@ -254,24 +349,37 @@ stages:
                         HELM_SET+=(--set-string "runtime.environment=${ADO_ENVIRONMENT}")
                       fi
 
-                      # Prefer node/kubelet IAM for ECR. ECR_PULL_SECRET is a lab fallback
-                      # (docker-registry secret must exist in the namespace; tokens expire ~12h).
                       if [[ -n "${ECR_PULL_SECRET:-}" ]]; then
                         HELM_SET+=(--set-string "imagePullSecrets[0].name=${ECR_PULL_SECRET}")
-                        echo "Using pre-provisioned imagePullSecret: ${ECR_PULL_SECRET} (lab fallback; prefer node IAM in EKS)"
+                        echo "Using imagePullSecret: ${ECR_PULL_SECRET} (lab fallback; prefer node IAM)"
                       else
-                        echo "No imagePullSecret — cluster/node runtime must have ECR access (preferred)"
+                        echo "No imagePullSecret — node/kubelet ECR access required"
                       fi
 
-                      echo "##[group]helm upgrade ${HELM_RELEASE} → ${IMAGE_REPOSITORY}:${IMAGE_TAG} (${ADO_ENVIRONMENT})"
+                      echo "##[group]helm upgrade ${HELM_RELEASE} → ${IMAGE_REPOSITORY}:${IMAGE_TAG}"
+                      set +e
                       helm upgrade --install "${HELM_RELEASE}" "${CHART_DIR}" \
                         --namespace "${HELM_NAMESPACE}" \
                         --reset-values \
                         -f "${MANIFEST}" \
                         "${HELM_SET[@]}" \
-                        --atomic \
                         --wait \
                         --timeout "${HELM_TIMEOUT}"
+                      HELM_RC=$?
+                      set -e
+                      if [[ "${HELM_RC}" -ne 0 ]]; then
+                        echo "##vso[task.logissue type=error]helm upgrade failed (exit ${HELM_RC})"
+                        dump_diagnostics
+                        if helm_has_deployed_revision; then
+                          echo "Attempting rollback to last deployed revision after failed upgrade"
+                          if ! helm_rollback_to_last_deployed; then
+                            echo "##vso[task.logissue type=error]Rollback after failed upgrade also failed — refusing uninstall"
+                          fi
+                        else
+                          echo "First install failure — preserving failed release for diagnostics (no automatic uninstall)"
+                        fi
+                        exit 1
+                      fi
                       echo "##[endgroup]"
 
                       echo "##[group]helm history"
@@ -282,16 +390,75 @@ stages:
                         -l "app.kubernetes.io/name=${HELM_RELEASE}" -o wide 2>/dev/null \
                         || kubectl -n "${HELM_NAMESPACE}" get deploy,svc,hpa,sa,httproute,grpcroute,cronjob,pods -o wide
 
-                      if [[ "${KIND}" == "ScheduledJob" && "${SMOKE_SCHEDULED_JOB}" == "True" ]]; then
-                        echo "##[group]ScheduledJob smoke (create job --from=cronjob)"
-                        SMOKE="smoke-${HELM_RELEASE}-${BUILD_BUILDID:-manual}"
-                        kubectl -n "${HELM_NAMESPACE}" delete job "${SMOKE}" --ignore-not-found >/dev/null 2>&1 || true
-                        kubectl -n "${HELM_NAMESPACE}" create job "${SMOKE}" --from="cronjob/${HELM_RELEASE}"
-                        kubectl -n "${HELM_NAMESPACE}" wait --for=condition=complete "job/${SMOKE}" --timeout=120s \
-                          || kubectl -n "${HELM_NAMESPACE}" wait --for=condition=failed "job/${SMOKE}" --timeout=5s \
-                          || true
-                        kubectl -n "${HELM_NAMESPACE}" get job "${SMOKE}" -o wide
+                      wait_route_parents() {
+                        local kind="$1" name="$2" deadline=$((SECONDS + 120))
+                        echo "Waiting for ${kind}/${name} parents Accepted=True ResolvedRefs=True"
+                        while (( SECONDS < deadline )); do
+                          local json ok
+                          json="$(kubectl -n "${HELM_NAMESPACE}" get "${kind}" "${name}" -o json 2>/dev/null || true)"
+                          if [[ -n "${json}" ]]; then
+                            ok="$(printf '%s' "${json}" | yq -r '
+                              .status.parents // []
+                              | map(select(
+                                  (.conditions // [])
+                                  | map(select(.type=="Accepted" and .status=="True")) | length > 0
+                                )
+                                and
+                                (
+                                  (.conditions // [])
+                                  | map(select(.type=="ResolvedRefs" and .status=="True")) | length > 0
+                                ))
+                              | length > 0
+                            ')"
+                            if [[ "${ok}" == "true" ]]; then
+                              echo "${kind}/${name} Accepted+ResolvedRefs"
+                              return 0
+                            fi
+                          fi
+                          sleep 5
+                        done
+                        echo "##vso[task.logissue type=error]${kind}/${name} did not become Accepted+ResolvedRefs"
+                        kubectl -n "${HELM_NAMESPACE}" get "${kind}" "${name}" -o yaml || true
+                        return 1
+                      }
+
+                      if [[ "${KIND}" == "Application" && ( "${WT}" == "web" || "${WT}" == "grpc" ) ]]; then
+                        echo "##[group]route readiness"
+                        if [[ "${WT}" == "web" ]]; then
+                          wait_route_parents httproute "${HELM_RELEASE}"
+                        else
+                          wait_route_parents grpcroute "${HELM_RELEASE}"
+                        fi
                         echo "##[endgroup]"
                       fi
 
-                      trap - ERR
+                      SMOKE_ON=false
+                      case "${SMOKE_SCHEDULED_JOB}" in
+                        True|true|TRUE|1) SMOKE_ON=true ;;
+                      esac
+                      if [[ "${SMOKE_ON}" == "true" ]]; then
+                        if [[ "${KIND}" != "ScheduledJob" ]]; then
+                          echo "##vso[task.logissue type=error]smokeScheduledJob only valid for ScheduledJob"
+                          exit 1
+                        fi
+                        if [[ "${ADO_ENVIRONMENT}" != "develop" ]]; then
+                          echo "##vso[task.logissue type=error]smokeScheduledJob only allowed on develop"
+                          exit 1
+                        fi
+                        echo "##[group]ScheduledJob smoke"
+                        SMOKE="smoke-${HELM_RELEASE}-${BUILD_BUILDID:-manual}"
+                        kubectl -n "${HELM_NAMESPACE}" delete job "${SMOKE}" --ignore-not-found >/dev/null 2>&1 || true
+                        kubectl -n "${HELM_NAMESPACE}" create job "${SMOKE}" --from="cronjob/${HELM_RELEASE}"
+                        if kubectl -n "${HELM_NAMESPACE}" wait --for=condition=complete "job/${SMOKE}" --timeout=120s; then
+                          echo "ScheduledJob smoke Complete"
+                        elif kubectl -n "${HELM_NAMESPACE}" get job "${SMOKE}" -o jsonpath='{.status.conditions[?(@.type=="Failed")].status}' 2>/dev/null | grep -q True; then
+                          echo "##vso[task.logissue type=error]ScheduledJob smoke Failed"
+                          kubectl -n "${HELM_NAMESPACE}" describe job "${SMOKE}" || true
+                          exit 1
+                        else
+                          echo "##vso[task.logissue type=error]ScheduledJob smoke Timeout"
+                          kubectl -n "${HELM_NAMESPACE}" describe job "${SMOKE}" || true
+                          exit 1
+                        fi
+                        echo "##[endgroup]"
+                      fi

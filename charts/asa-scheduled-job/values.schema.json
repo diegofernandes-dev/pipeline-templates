@@ -12,7 +12,7 @@
       "additionalProperties": false,
       "properties": {
         "expression": { "type": "string" },
-        "timeZone": { "type": "string", "minLength": 1 },
+        "timeZone": { "type": "string" },
         "concurrencyPolicy": {
           "type": "string",
           "enum": ["Allow", "Forbid", "Replace"]
@@ -57,16 +57,106 @@
         "properties": { "name": { "type": "string" } }
       }
     },
-    "serviceAccount": { "type": "object" },
-    "workloadIdentity": { "type": "object" },
-    "config": { "type": "object" },
+    "serviceAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "annotations": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    },
+    "workloadIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "token": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "audience": { "type": "string" },
+            "expirationSeconds": { "type": "integer", "minimum": 1 },
+            "fileName": { "type": "string" },
+            "mountPath": { "type": "string" },
+            "defaultMode": { "type": "integer" }
+          }
+        },
+        "gcp": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "audience": { "type": "string" },
+            "serviceAccountEmail": { "type": "string" },
+            "projectId": { "type": "string" }
+          }
+        }
+      }
+    },
+    "config": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
     "externalSecret": {
       "oneOf": [
         { "type": "boolean" },
-        { "type": "object" }
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "refreshInterval": { "type": "string" },
+            "secretStoreRef": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "kind": { "type": "string" },
+                "name": { "type": "string" }
+              }
+            },
+            "data": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "secretKey": { "type": "string" },
+                  "remoteRef": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "key": { "type": "string" },
+                      "property": { "type": "string" }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
       ]
     },
-    "resources": { "type": "object" },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requests": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "cpu": { "type": "string" },
+            "memory": { "type": "string" }
+          }
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "cpu": { "type": "string" },
+            "memory": { "type": "string" }
+          }
+        }
+      }
+    },
     "podSecurityContext": { "type": "object" },
     "securityContext": { "type": "object" },
     "workload": false,

@@ -1,6 +1,7 @@
 {{- include "chart.validateScheduledJob" . }}
 {{- include "chart.validateWorkloadIdentity" . }}
 {{- include "chart.validateExternalSecret" . }}
+{{- include "chart.validateConfig" . }}
 {{- $sched := .Values.schedule -}}
 {{- $ex := .Values.execution | default dict -}}
 {{- $hist := .Values.history | default dict -}}
@@ -14,7 +15,7 @@ metadata:
     app.kubernetes.io/component: scheduled-job
 spec:
   schedule: {{ $sched.expression | quote }}
-  timeZone: {{ $sched.timeZone | default "America/Sao_Paulo" | quote }}
+  timeZone: {{ $sched.timeZone | quote }}
   concurrencyPolicy: {{ $sched.concurrencyPolicy | default "Forbid" }}
   {{- if kindIs "float64" $sched.startingDeadlineSeconds }}
   startingDeadlineSeconds: {{ $sched.startingDeadlineSeconds | int }}
@@ -28,9 +29,7 @@ spec:
   jobTemplate:
     spec:
       backoffLimit: {{ $ex.retries | default 2 }}
-      {{- with $ex.timeoutSeconds }}
-      activeDeadlineSeconds: {{ . }}
-      {{- end }}
+      activeDeadlineSeconds: {{ $ex.timeoutSeconds }}
       template:
         metadata:
           labels:
@@ -50,10 +49,8 @@ spec:
           {{- end }}
         spec:
           restartPolicy: Never
-          {{- if .Values.serviceAccount.create }}
-          serviceAccountName: {{ default .Release.Name .Values.serviceAccount.name }}
-          automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
-          {{- end }}
+          serviceAccountName: {{ .Release.Name }}
+          automountServiceAccountToken: false
           {{- with .Values.imagePullSecrets }}
           imagePullSecrets:
             {{- toYaml . | nindent 12 }}

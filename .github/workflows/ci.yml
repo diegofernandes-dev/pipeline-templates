@@ -1,0 +1,50 @@
+name: platform-ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: platform-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Helm 3
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.2
+
+      - name: Setup yq
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+          yq --version
+          helm version
+
+      - name: Python deps (pinned)
+        run: pip3 install --user "pyyaml==6.0.2" "jsonschema==4.23.0"
+
+      - name: helm lint asa-application
+        run: helm lint charts/asa-application
+
+      - name: helm lint asa-scheduled-job
+        run: |
+          helm lint charts/asa-scheduled-job \
+            --set-string schedule.expression='0 2 * * *' \
+            --set-string schedule.timeZone=America/Sao_Paulo \
+            --set execution.timeoutSeconds=1800 \
+            --set-string 'execution.args[0]=--mode=job'
+
+      - name: chart-drift
+        run: ./tests/chart-drift.sh
+
+      - name: chart-invariants (+ public schema)
+        run: |
+          export PATH="${HOME}/.local/bin:${PATH}"
+          ./tests/chart-invariants.sh

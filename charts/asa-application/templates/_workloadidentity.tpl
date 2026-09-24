@@ -44,7 +44,7 @@ external-account.json
 {{- define "chart.workloadIdentityTokenMountPath" -}}
 {{- $wi := .Values.workloadIdentity | default dict -}}
 {{- $token := $wi.token | default dict -}}
-{{- $token.mountPath | default "/var/run/secrets/eks.amazonaws.com/serviceaccount" -}}
+{{- $token.mountPath | default "/var/run/secrets/gcp/serviceaccount" -}}
 {{- end }}
 
 {{- define "chart.workloadIdentityTokenVolumeName" -}}
@@ -84,9 +84,6 @@ aws-token
 
 {{- define "chart.validateWorkloadIdentity" -}}
 {{- if (include "chart.workloadIdentityEnabled" .) | eq "true" -}}
-{{- if not .Values.serviceAccount.create -}}
-{{- fail "workloadIdentity requires serviceAccount.create=true" -}}
-{{- end -}}
 {{- $wi := .Values.workloadIdentity | default dict -}}
 {{- $gcp := $wi.gcp | default dict -}}
 {{- $_ := required "workloadIdentity.gcp.audience is required when workloadIdentity is set" ($gcp.audience | default "") -}}
@@ -94,6 +91,10 @@ aws-token
 {{- $expiration := include "chart.workloadIdentityTokenExpirationSeconds" . | int -}}
 {{- if lt $expiration 600 -}}
 {{- fail "workloadIdentity.token.expirationSeconds must be >= 600" -}}
+{{- end -}}
+{{- $mount := include "chart.workloadIdentityTokenMountPath" . -}}
+{{- if eq $mount "/var/run/secrets/eks.amazonaws.com/serviceaccount" -}}
+{{- fail "workloadIdentity.token.mountPath must not use the IRSA reserved path /var/run/secrets/eks.amazonaws.com/serviceaccount — use /var/run/secrets/gcp/serviceaccount (default)" -}}
 {{- end -}}
 {{- end -}}
 {{- end }}

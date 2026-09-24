@@ -1,5 +1,5 @@
 # Example Application manifesto (copy to deploy/config/develop.yaml).
-# Pipeline selects chart from kind (asa-application). Ports are platform-owned.
+# Pipeline selects chart from kind (asa-application). Ports are platform-owned (8080).
 
 kind: Application
 
@@ -8,6 +8,9 @@ workload:
 
 legacyDns: false
 
+# Required for web/grpc: probes: false OR explicit per-type probes (no global path).
+probes: false
+
 autoscaling:
   minReplicas: 1
   maxReplicas: 3
@@ -15,10 +18,10 @@ autoscaling:
     target: 70
 
 # probes:
-#   path: /health-check
-# probes:
 #   readiness:
 #     path: /health/ready
+#   startup:
+#     path: /health/startup
 
 # serviceAccount:
 #   annotations:
@@ -35,9 +38,11 @@ autoscaling:
 #   size: 1Gi
 # # requires autoscaling: false and replicaCount: 1
 
+# Use __ for .NET hierarchical config (not ':' as ConfigMap keys).
 config:
   API_URL: https://api.dev.example
   FEATURE_FLAG: "true"
+  # ConnectionStrings__Default: "..."
 
 # externalSecret:
 #   secretStoreRef:

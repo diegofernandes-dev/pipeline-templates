@@ -1,6 +1,7 @@
 {{/*
 Application workload helpers — web | grpc | worker.
-Platform ports: web=8080, grpc=50051 (not configurable in manifesto).
+Platform port for networked workloads: 8080 (web and grpc). Not configurable in manifesto.
+Difference web vs grpc is semantic (HTTPRoute/HTTP probes vs GRPCRoute/h2c/gRPC probes), not port.
 */}}
 
 {{- define "chart.workloadType" -}}
@@ -27,7 +28,7 @@ Platform ports: web=8080, grpc=50051 (not configurable in manifesto).
 
 {{- define "chart.containerPort" -}}
 {{- $t := include "chart.workloadType" . -}}
-{{- if eq $t "grpc" -}}50051{{- else if eq $t "web" -}}8080{{- else -}}0{{- end -}}
+{{- if or (eq $t "web") (eq $t "grpc") -}}8080{{- else -}}0{{- end -}}
 {{- end }}
 
 {{- define "chart.validateApplication" -}}
@@ -36,7 +37,7 @@ Platform ports: web=8080, grpc=50051 (not configurable in manifesto).
 {{- fail (printf "asa-application requires kind: Application (got %q)" $kind) -}}
 {{- end -}}
 {{- if hasKey (.Values.workload | default dict) "port" -}}
-{{- fail "workload.port is not supported — platform owns ports (web=8080, grpc=50051)" -}}
+{{- fail "workload.port is not supported — platform owns ports (web/grpc=8080)" -}}
 {{- end -}}
 {{- if or (hasKey .Values "schedule") (hasKey .Values "execution") (hasKey .Values "history") -}}
 {{- fail "schedule/execution/history belong to kind: ScheduledJob (asa-scheduled-job), not Application" -}}

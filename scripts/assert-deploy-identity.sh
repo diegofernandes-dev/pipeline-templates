@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Assert kind (+ workload.type for Application) is identical across env manifestos.
-# Usage: assert-deploy-identity.sh <runtimeConfigPath> <env1> [env2 ...]
+# Requires yq. Usage: assert-deploy-identity.sh <runtimeConfigPath> <env1> [env2 ...]
 set -Eeuo pipefail
 
 if [[ "$#" -lt 2 ]]; then
@@ -8,37 +8,16 @@ if [[ "$#" -lt 2 ]]; then
   exit 2
 fi
 
+if ! command -v yq >/dev/null 2>&1; then
+  echo "##vso[task.logissue type=error]yq is required for assert-deploy-identity.sh" >&2
+  exit 1
+fi
+
 CONFIG_PATH="$1"
 shift
 
 yaml_get() {
-  local file="$1" expr="$2"
-  if command -v yq >/dev/null 2>&1; then
-    yq -r "${expr} // \"\"" "${file}"
-    return 0
-  fi
-  case "${expr}" in
-    .kind)
-      grep -E '^kind:[[:space:]]*' "${file}" | head -1 \
-        | sed -E 's/^kind:[[:space:]]*//;s/[[:space:]]*$//;s/^["'\'']//;s/["'\'']$//'
-      ;;
-    .workload.type)
-      # crude but works for standard manifesto layout
-      awk '
-        /^workload:[[:space:]]*$/ { in_w=1; next }
-        in_w && /^[^[:space:]#]/ { in_w=0 }
-        in_w && /^[[:space:]]+type:[[:space:]]*/ {
-          sub(/^[[:space:]]+type:[[:space:]]*/, "", $0)
-          gsub(/["'\'']/, "", $0)
-          print $0
-          exit
-        }
-      ' "${file}"
-      ;;
-    *)
-      echo ""
-      ;;
-  esac
+  yq -r "${2} // \"\"" "$1"
 }
 
 FIRST_ENV="$1"
