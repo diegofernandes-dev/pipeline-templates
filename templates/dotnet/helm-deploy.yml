@@ -309,8 +309,9 @@ stages:
 
                       helm_rollback_to_last_deployed() {
                         local rev
+                        # mikefarah/yq: use .[-1], not jq's `last`
                         rev="$(helm history "${HELM_RELEASE}" -n "${HELM_NAMESPACE}" -o json \
-                          | yq -r '[.[] | select(.status == "deployed")] | last | .revision // ""')"
+                          | yq -r '[.[] | select(.status == "deployed")] | .[-1].revision // ""')"
                         if [[ -z "${rev}" || "${rev}" == "null" ]]; then
                           echo "##vso[task.logissue type=error]No deployed revision available for rollback"
                           return 1
@@ -362,8 +363,20 @@ stages:
                       fi
 
                       if [[ -n "${ECR_PULL_SECRET:-}" ]]; then
+                        echo "##[group]refresh imagePullSecret ${ECR_PULL_SECRET}"
+                        # ECR authorization tokens expire (~12h). Lab path depends on this secret;
+                        # recreate every deploy so ImagePullBackOff is not caused by a stale token.
+                        AWS_REGION_EFF="${AWS_REGION:-${AWS_DEFAULT_REGION:-us-east-1}}"
+                        ECR_HOST="$(aws sts get-caller-identity --query Account --output text).dkr.ecr.${AWS_REGION_EFF}.amazonaws.com"
+                        ECR_PASS="$(aws ecr get-login-password --region "${AWS_REGION_EFF}")"
+                        kubectl -n "${HELM_NAMESPACE}" create secret docker-registry "${ECR_PULL_SECRET}" \
+                          --docker-server="${ECR_HOST}" \
+                          --docker-username=AWS \
+                          --docker-password="${ECR_PASS}" \
+                          --dry-run=client -o yaml | kubectl apply -f -
                         HELM_SET+=(--set-string "imagePullSecrets[0].name=${ECR_PULL_SECRET}")
                         echo "Using imagePullSecret: ${ECR_PULL_SECRET} (lab fallback; prefer node IAM)"
+                        echo "##[endgroup]"
                       else
                         echo "No imagePullSecret — node/kubelet ECR access required"
                       fi

@@ -351,6 +351,22 @@ if ! grep -q 'helm_has_deployed_revision' "${ROOT}/templates/dotnet/helm-deploy.
 else
   echo "OK: deployed-revision guard present"
 fi
+if grep -qE '\| last \|' "${ROOT}/templates/dotnet/helm-deploy.yml"; then
+  echo "FAIL: jq-style yq 'last' still present (use .[-1] for mikefarah/yq)"
+  FAILED=1
+elif ! grep -q '\[\.\[-1\]\.revision' "${ROOT}/templates/dotnet/helm-deploy.yml" \
+  && ! grep -qF '.[-1].revision' "${ROOT}/templates/dotnet/helm-deploy.yml"; then
+  echo "FAIL: rollback revision selector .[-1].revision missing"
+  FAILED=1
+else
+  echo "OK: rollback uses mikefarah/yq .[-1].revision"
+fi
+if ! grep -q 'create secret docker-registry' "${ROOT}/templates/dotnet/helm-deploy.yml"; then
+  echo "FAIL: ECR_PULL_SECRET refresh (create secret docker-registry) missing"
+  FAILED=1
+else
+  echo "OK: ECR_PULL_SECRET refresh present"
+fi
 if ! grep -q 'Accepted' "${ROOT}/templates/dotnet/helm-deploy.yml"; then
   echo "FAIL: Route Accepted check missing"
   FAILED=1
