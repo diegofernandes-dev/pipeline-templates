@@ -6,8 +6,9 @@ Templates YAML reutilizáveis para Azure DevOps (GitHub → `extends`).
 
 | Caminho | Escopo |
 |---------|--------|
-| [`templates/dotnet/ci.yml`](templates/dotnet/ci.yml) | CI → DeployContract → ECR → Helm |
-| [`templates/dotnet/helm-deploy.yml`](templates/dotnet/helm-deploy.yml) | Stage Helm por Environment (`kind` → chart) |
+| [`templates/dotnet/ci.yml`](templates/dotnet/ci.yml) | CI → ECR → entrega (`deliveryMode: helm` \| `gitops`) |
+| [`templates/dotnet/container-build.yml`](templates/dotnet/container-build.yml) | Stage `Container` (build único + digest + provenance) |
+| [`templates/dotnet/helm-deploy.yml`](templates/dotnet/helm-deploy.yml) | Stage Helm por Environment (`kind` → chart) — caminho atual |
 | [`config/platform-environments.json`](config/platform-environments.json) | Mapping autoritativo env → pool / gateway |
 | [`docker/dotnet/Dockerfile`](docker/dotnet/Dockerfile) | Dockerfile plataforma (.NET; listen 8080) |
 | [`charts/asa-application`](charts/asa-application) | `kind: Application` — web \| grpc \| worker |
@@ -25,6 +26,7 @@ Exemplos prontos:
 |---------|-----|
 | [`examples/azure-pipelines.yml`](examples/azure-pipelines.yml) | `kind: Application` (web/grpc/worker) |
 | [`examples/azure-pipelines.scheduled-job.yml`](examples/azure-pipelines.scheduled-job.yml) | `kind: ScheduledJob` |
+| [`examples/azure-pipelines.gitops.yml`](examples/azure-pipelines.gitops.yml) | `deliveryMode: gitops` (Kargo + Argo CD) |
 | [`examples/deploy/config/`](examples/deploy/config/) | Manifestos mínimos |
 
 ```yaml
@@ -60,6 +62,8 @@ Pós-deploy (evidência cluster): [`scripts/proving-ground-evidence.sh`](scripts
 
 ### Fluxo
 
+`deliveryMode: helm` (default, caminho atual):
+
 ```text
 CI (build/test) ──┐
                   ├→ Container (ECR IMMUTABLE)
@@ -69,6 +73,32 @@ DeployContract ───┘
 ```
 
 Manifesto inválido falha **antes** do push de imagem.
+
+`deliveryMode: gitops` (pivot Kargo/Argo — proving ground):
+
+```text
+CI (build/test) ──┐
+                  ├→ Container (ECR IMMUTABLE + digest + provenance)
+GitOpsContract ───┘
+                  ↓
+        (fim do Azure DevOps)
+                  ↓
+Kargo Warehouse → Freight → develop → homolog → Argo CD → EKS
+```
+
+Em gitops mode o consumidor **não** escolhe infraestrutura: `deployEnvironments` e
+`expectedKubeContext` são rejeitados, não ignorados. Ver
+[`docs/gitops-kargo-argo.md`](docs/gitops-kargo-argo.md).
+
+### Imagem: tag ou digest
+
+| Caminho | Pin |
+|---------|-----|
+| `deliveryMode: helm` | `image.tag` = `Build.SourceVersion` (ECR IMMUTABLE) |
+| `deliveryMode: gitops` | `image.digest` = `sha256:…` escrito pelo Kargo (**vence** o tag) |
+
+Digest malformado ou imagem sem digest **e** sem tag falha o render — desired state
+não pinado nunca é aplicado.
 
 ### Contrato público
 
@@ -124,6 +154,17 @@ Ver [`config/platform-environments.json`](config/platform-environments.json).
 | production | **EXTERNAL BLOCKER** | **EXTERNAL BLOCKER** |
 
 Contexto kubectl: match **exato** quando mapeado (sem substring).
+
+### Proving ground Kargo/Argo
+
+Evidência (read-only, responde SHA ↔ digest ↔ Freight ↔ Stage ↔ Argo ↔ pod):
+
+```bash
+./scripts/kargo-argo-evidence.sh pt-kargo-web
+```
+
+Arquitetura, modelo de branches e estratégia de remoção da API pública:
+[`docs/gitops-kargo-argo.md`](docs/gitops-kargo-argo.md).
 
 ### Testes locais / CI do repo
 
