@@ -166,6 +166,9 @@ Evidência (read-only, responde SHA ↔ digest ↔ Freight ↔ Stage ↔ Argo �
 Arquitetura, modelo de branches e estratégia de remoção da API pública:
 [`docs/gitops-kargo-argo.md`](docs/gitops-kargo-argo.md).
 
+Resultado do proving ground (baseline, evidência, A–M, blockers, conclusão):
+[`docs/delivery/kargo-argo-first-slice.md`](docs/delivery/kargo-argo-first-slice.md).
+
 ### Testes locais / CI do repo
 
 ```bash
