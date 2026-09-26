@@ -156,3 +156,34 @@ config → ConfigMap → envFrom is overridden by explicit env, but reserved key
 {{- end -}}
 {{- end -}}
 {{- end }}
+
+{{/*
+Image reference. Digest wins over tag: GitOps/Kargo pins by immutable digest,
+the Azure DevOps Helm path still pins by the (IMMUTABLE) commit-SHA tag.
+Keep byte-identical with charts/asa-scheduled-job (tests/chart-invariants.sh asserts parity).
+*/}}
+{{- define "chart.validateImage" -}}
+{{- $img := .Values.image | default dict -}}
+{{- $digest := $img.digest | default "" -}}
+{{- $tag := $img.tag | default "" -}}
+{{- if not ($img.repository | default "") -}}
+{{- fail "image.repository is required (injected by the platform, never by the manifesto)" -}}
+{{- end -}}
+{{- if $digest -}}
+{{- if not (regexMatch "^sha256:[0-9a-f]{64}$" $digest) -}}
+{{- fail (printf "image.digest must match ^sha256:[0-9a-f]{64}$ (got %q)" $digest) -}}
+{{- end -}}
+{{- else if not $tag -}}
+{{- fail "image requires digest (preferred) or tag" -}}
+{{- end -}}
+{{- end }}
+
+{{- define "chart.imageRef" -}}
+{{- $img := .Values.image | default dict -}}
+{{- $digest := $img.digest | default "" -}}
+{{- if $digest -}}
+{{- printf "%s@%s" $img.repository $digest -}}
+{{- else -}}
+{{- printf "%s:%s" $img.repository ($img.tag | default "") -}}
+{{- end -}}
+{{- end }}

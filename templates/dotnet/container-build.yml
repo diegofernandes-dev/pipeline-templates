@@ -1,0 +1,209 @@
+# Reusable stage: publish the app image to ECR exactly once.
+#
+# Shared by both delivery modes of ci.yml:
+#   deliveryMode: helm   → Container → Deploy_<env> (helm upgrade, legacy path)
+#   deliveryMode: gitops → Container → ECR is the handoff; Kargo owns everything after it
+#
+# Stage/job/output names are part of the contract (helm-deploy.yml reads
+# stageDependencies.Container.DockerBuildPush.outputs['dockerBuildPush.*']).
+#
+# The image is built once, here. No stage downstream of this one may rebuild it.
+parameters:
+  - name: dependsOn
+    type: object
+    default:
+      - CI
+
+  - name: applicationName
+    type: string
+
+  - name: containerPool
+    type: string
+    default: 'PG-AWS-EKS'
+
+  - name: awsRegion
+    type: string
+    default: 'us-east-1'
+
+stages:
+  - stage: Container
+    displayName: Docker Build and Push
+    dependsOn: ${{ parameters.dependsOn }}
+    condition: succeeded()
+    variables:
+      aspnetTag: $[stageDependencies.CI.BuildAndTest.outputs['publishApp.aspnetTag']]
+      appDll: $[stageDependencies.CI.BuildAndTest.outputs['publishApp.appDll']]
+    jobs:
+      - job: DockerBuildPush
+        displayName: Build and push image to ECR
+        pool:
+          name: ${{ parameters.containerPool }}
+        steps:
+          - checkout: templates
+            displayName: Checkout platform Dockerfile
+            path: pipeline-templates
+
+          - task: DownloadPipelineArtifact@2
+            displayName: Download app artifact
+            inputs:
+              artifact: app
+              path: $(Pipeline.Workspace)/app
+
+          - task: Bash@3
+            name: dockerBuildPush
+            displayName: ECR login, buildctl build and push
+            env:
+              AWS_REGION: ${{ parameters.awsRegion }}
+              AWS_DEFAULT_REGION: ${{ parameters.awsRegion }}
+              APPLICATION_NAME: ${{ parameters.applicationName }}
+              ASPNET_TAG: $(aspnetTag)
+              APP_DLL: $(appDll)
+              IMAGE_TAG: $(Build.SourceVersion)
+              # PG-AWS-EKS (tenv3) usa BuildKit sidecar + crane — sem Docker Engine.
+              BUILDKIT_HOST: unix:///run/buildkit/buildkitd.sock
+            inputs:
+              targetType: inline
+              script: |
+                set -Eeuo pipefail
+
+                export PATH="/opt/tenv3/container-build-tools/bin:${PATH}"
+
+                if [[ -z "${APPLICATION_NAME:-}" ]]; then
+                  echo "##vso[task.logissue type=error]applicationName is required when deployEnvironments is set"
+                  exit 1
+                fi
+
+                if [[ -z "${ASPNET_TAG:-}" ]]; then
+                  echo "##vso[task.logissue type=error]aspnetTag missing from CI outputs"
+                  exit 1
+                fi
+
+                if [[ -z "${APP_DLL:-}" ]]; then
+                  echo "##vso[task.logissue type=error]appDll missing from CI outputs"
+                  exit 1
+                fi
+
+                WORKSPACE="${PIPELINE_WORKSPACE:-${AGENT_BUILDDIRECTORY}}"
+                APP_CONTEXT="${WORKSPACE}/app"
+                if [[ ! -f "${APP_CONTEXT}/${APP_DLL}" ]]; then
+                  echo "##vso[task.logissue type=error]Published DLL not found: ${APP_CONTEXT}/${APP_DLL}"
+                  ls -la "${APP_CONTEXT}" || true
+                  exit 1
+                fi
+
+                DOCKERFILE_DIR="${WORKSPACE}/pipeline-templates/docker/dotnet"
+                if [[ ! -f "${DOCKERFILE_DIR}/Dockerfile" ]]; then
+                  echo "##vso[task.logissue type=error]Platform Dockerfile not found: ${DOCKERFILE_DIR}/Dockerfile"
+                  exit 1
+                fi
+
+                RUNTIME_IMAGE="mcr.microsoft.com/dotnet/aspnet:${ASPNET_TAG}"
+                ECR_REPOSITORY="${APPLICATION_NAME}"
+
+                if ! command -v buildctl >/dev/null || ! command -v crane >/dev/null; then
+                  echo "##vso[task.logissue type=error]buildctl/crane not found — pool ${{ parameters.containerPool }} must expose BuildKit tools"
+                  exit 1
+                fi
+
+                echo "##[group]aws caller identity (ambient credentials on agent)"
+                aws sts get-caller-identity
+                AWS_ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+                echo "##[endgroup]"
+
+                if [[ -z "${AWS_ACCOUNT_ID}" || "${AWS_ACCOUNT_ID}" == "None" ]]; then
+                  echo "##vso[task.logissue type=error]Could not resolve AWS account id from sts (agent ambient credentials)"
+                  exit 1
+                fi
+
+                REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+                IMAGE_REF="${REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+
+                echo "##[group]ecr login ${REGISTRY}"
+                aws ecr get-login-password --region "${AWS_REGION}" \
+                  | crane auth login "${REGISTRY}" -u AWS --password-stdin
+                echo "##[endgroup]"
+
+                echo "##[group]ensure ecr repository ${ECR_REPOSITORY} (IMMUTABLE)"
+                if ! aws ecr describe-repositories --repository-names "${ECR_REPOSITORY}" --region "${AWS_REGION}" >/dev/null 2>&1; then
+                  aws ecr create-repository \
+                    --repository-name "${ECR_REPOSITORY}" \
+                    --region "${AWS_REGION}" \
+                    --image-tag-mutability IMMUTABLE \
+                    >/dev/null
+                  echo "Created repository ${ECR_REPOSITORY} with IMMUTABLE tags"
+                else
+                  MUTABILITY="$(aws ecr describe-repositories --repository-names "${ECR_REPOSITORY}" --region "${AWS_REGION}" \
+                    --query 'repositories[0].imageTagMutability' --output text)"
+                  echo "Repository ${ECR_REPOSITORY} exists (imageTagMutability=${MUTABILITY})"
+                  if [[ "${MUTABILITY}" != "IMMUTABLE" ]]; then
+                    echo "Enforcing IMMUTABLE on existing repository"
+                    aws ecr put-image-tag-mutability \
+                      --repository-name "${ECR_REPOSITORY}" \
+                      --region "${AWS_REGION}" \
+                      --image-tag-mutability IMMUTABLE >/dev/null
+                  fi
+                fi
+                echo "##[endgroup]"
+
+                IMAGE_REPOSITORY="${REGISTRY}/${ECR_REPOSITORY}"
+
+                # Commit SHA tags + ECR IMMUTABLE: re-runs of the same commit must reuse, not overwrite.
+                if EXISTING_DIGEST="$(crane digest "${IMAGE_REF}" 2>/dev/null)"; then
+                  echo "Image ${IMAGE_REF} already exists (${EXISTING_DIGEST}) — skipping build/push (immutable tag)"
+                else
+                  echo "##[group]buildctl build+push ${IMAGE_REF} (RUNTIME_IMAGE=${RUNTIME_IMAGE} APP_DLL=${APP_DLL})"
+                  buildctl build \
+                    --frontend dockerfile.v0 \
+                    --local context="${APP_CONTEXT}" \
+                    --local dockerfile="${DOCKERFILE_DIR}" \
+                    --opt filename=Dockerfile \
+                    --opt "build-arg:RUNTIME_IMAGE=${RUNTIME_IMAGE}" \
+                    --opt "build-arg:APP_DLL=${APP_DLL}" \
+                    --opt platform=linux/amd64 \
+                    --output "type=image,name=${IMAGE_REF},push=true"
+                  echo "##[endgroup]"
+                  echo "Pushed ${IMAGE_REF}"
+                fi
+
+                # Digest is the technical identity of the container from here on:
+                # Helm pins image.tag (ADO path), Kargo/Argo pin image.digest (GitOps path).
+                IMAGE_DIGEST="$(crane digest "${IMAGE_REF}")"
+                if [[ ! "${IMAGE_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+                  echo "##vso[task.logissue type=error]Could not resolve a sha256 digest for ${IMAGE_REF} (got '${IMAGE_DIGEST:-}')"
+                  exit 1
+                fi
+
+                echo "##vso[task.setvariable variable=imageRef;isOutput=true]${IMAGE_REF}"
+                echo "##vso[task.setvariable variable=imageTag;isOutput=true]${IMAGE_TAG}"
+                echo "##vso[task.setvariable variable=imageRepository;isOutput=true]${IMAGE_REPOSITORY}"
+                echo "##vso[task.setvariable variable=imageDigest;isOutput=true]${IMAGE_DIGEST}"
+
+                # Provenance for troubleshooting: Git SHA ↔ ADO run ↔ ECR digest.
+                # Kargo Freight identity stays the digest; this is only the correlation record.
+                PROVENANCE_DIR="${BUILD_ARTIFACTSTAGINGDIRECTORY}/provenance"
+                mkdir -p "${PROVENANCE_DIR}"
+                cat > "${PROVENANCE_DIR}/image-provenance.json" <<JSON
+                {
+                  "applicationName": "${APPLICATION_NAME}",
+                  "gitRepository": "${BUILD_REPOSITORY_NAME:-}",
+                  "gitBranch": "${BUILD_SOURCEBRANCH:-}",
+                  "gitSha": "${BUILD_SOURCEVERSION:-}",
+                  "adoProject": "${SYSTEM_TEAMPROJECT:-}",
+                  "adoPipeline": "${BUILD_DEFINITIONNAME:-}",
+                  "adoBuildId": "${BUILD_BUILDID:-}",
+                  "adoBuildNumber": "${BUILD_BUILDNUMBER:-}",
+                  "imageRepository": "${IMAGE_REPOSITORY}",
+                  "imageTag": "${IMAGE_TAG}",
+                  "imageDigest": "${IMAGE_DIGEST}",
+                  "imageRef": "${IMAGE_REPOSITORY}@${IMAGE_DIGEST}"
+                }
+                JSON
+                echo "##[group]image provenance"
+                cat "${PROVENANCE_DIR}/image-provenance.json"
+                echo "##[endgroup]"
+
+          - task: PublishPipelineArtifact@1
+            displayName: Publish image provenance
+            inputs:
+              targetPath: $(Build.ArtifactStagingDirectory)/provenance
+              artifact: image-provenance

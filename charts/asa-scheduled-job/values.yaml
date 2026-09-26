@@ -3,6 +3,8 @@ kind: ScheduledJob
 image:
   repository: ""
   tag: latest
+  # Immutable digest (sha256:...). Set by the GitOps/Kargo path; wins over tag.
+  digest: ""
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []

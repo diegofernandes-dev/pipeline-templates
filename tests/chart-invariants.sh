@@ -426,6 +426,42 @@ OUT_EX_JOB="$(render_job -f "${ROOT}/examples/deploy/config/scheduled-job.exampl
 assert_kind_count "$OUT_EX_JOB" CronJob 1 "example ScheduledJob CronJob"
 assert_kind_count "$OUT_EX_JOB" Deployment 0 "example ScheduledJob no Deployment"
 
+echo "== image pinning (digest wins over tag; GitOps path) =="
+DIGEST="sha256:3c4e97bdb4eb642403dd15c49aeff4bbe2c63703af9254f84f4da842cac2dc23"
+OUT_DIGEST="$(render_app -f "${ROOT}/examples/deploy/config/develop.yaml" --set-string "image.digest=${DIGEST}")"
+assert_contains "$OUT_DIGEST" "image: \"example.dkr.ecr.us-east-1.amazonaws.com/sample-api@${DIGEST}\"" \
+  "Application image pinned by digest"
+assert_not_contains "$OUT_DIGEST" "sample-api:deadbeef" "Application drops tag when digest is set"
+OUT_JOB_DIGEST="$(render_job -f "${ROOT}/examples/deploy/config/scheduled-job.example.yaml" --set-string "image.digest=${DIGEST}")"
+assert_contains "$OUT_JOB_DIGEST" "image: \"example.dkr.ecr.us-east-1.amazonaws.com/sample-job@${DIGEST}\"" \
+  "ScheduledJob image pinned by digest"
+assert_not_contains "$OUT_JOB_DIGEST" "sample-job:deadbeef" "ScheduledJob drops tag when digest is set"
+
+# Tag path (Azure DevOps helm fallback) must keep working unchanged.
+OUT_TAG="$(render_app -f "${ROOT}/examples/deploy/config/develop.yaml")"
+assert_contains "$OUT_TAG" "image: \"example.dkr.ecr.us-east-1.amazonaws.com/sample-api:deadbeef\"" \
+  "Application still pins by tag when no digest"
+
+# Both charts must reject a malformed digest identically (chart.validateImage parity).
+expect_fail "Application rejects malformed digest" \
+  render_app -f "${ROOT}/examples/deploy/config/develop.yaml" --set-string image.digest=sha256:not-a-digest
+expect_fail "ScheduledJob rejects malformed digest" \
+  render_job -f "${ROOT}/examples/deploy/config/scheduled-job.example.yaml" --set-string image.digest=sha256:not-a-digest
+expect_fail "Application rejects bare digest without sha256 prefix" \
+  render_app -f "${ROOT}/examples/deploy/config/develop.yaml" --set-string "image.digest=3c4e97bdb4eb642403dd15c49aeff4bbe2c63703af9254f84f4da842cac2dc23"
+
+# chart.validateImage / chart.imageRef must stay byte-identical across charts.
+for def in chart.validateImage chart.imageRef; do
+  A="$(awk -v d="${def}" '$0 ~ "define \""d"\"" {p=1} p {print} p && /^{{- end }}$/ {exit}' "${APP_CHART}/templates/_runtime.tpl")"
+  B="$(awk -v d="${def}" '$0 ~ "define \""d"\"" {p=1} p {print} p && /^{{- end }}$/ {exit}' "${JOB_CHART}/templates/_runtime.tpl")"
+  if [[ -z "$A" || "$A" != "$B" ]]; then
+    echo "FAIL: ${def} drifted between asa-application and asa-scheduled-job"
+    FAILED=1
+  else
+    echo "OK: ${def} identical across charts"
+  fi
+done
+
 if [[ "$FAILED" -ne 0 ]]; then
   echo "Some invariants failed"
   exit 1

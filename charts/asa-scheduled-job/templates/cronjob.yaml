@@ -2,6 +2,7 @@
 {{- include "chart.validateWorkloadIdentity" . }}
 {{- include "chart.validateExternalSecret" . }}
 {{- include "chart.validateConfig" . }}
+{{- include "chart.validateImage" . }}
 {{- $sched := .Values.schedule -}}
 {{- $ex := .Values.execution | default dict -}}
 {{- $hist := .Values.history | default dict -}}
@@ -59,7 +60,7 @@ spec:
             {{- toYaml .Values.podSecurityContext | nindent 12 }}
           containers:
             - name: job
-              image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+              image: {{ include "chart.imageRef" . | quote }}
               imagePullPolicy: {{ .Values.image.pullPolicy }}
               securityContext:
                 {{- toYaml .Values.securityContext | nindent 16 }}

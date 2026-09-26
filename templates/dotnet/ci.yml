@@ -1,5 +1,15 @@
-# Template de CI/.NET → ECR → Helm (promução por Environments ADO).
+# Template de CI/.NET → ECR (+ entrega).
 # Consumir via extends a partir de outro repositório.
+#
+# deliveryMode decide o que existe DEPOIS do push no ECR:
+#
+#   helm   (default, caminho atual) CI → DeployContract → Container → Deploy_<env> (helm upgrade)
+#   gitops (pivot Kargo/Argo)       CI → GitOpsContract → Container → fim.
+#                                   O lifecycle do artefato depois do ECR é do Kargo:
+#                                   Warehouse → Freight → Stage develop → Stage homolog → Argo CD.
+#
+# Em gitops mode o consumidor não escolhe infraestrutura: deployEnvironments,
+# expectedKubeContext e variableGroups são rejeitados (fail-fast), não ignorados.
 parameters:
   - name: solution
     displayName: Caminho do .sln ou .csproj
@@ -75,10 +85,21 @@ parameters:
     default: 'deploy/config'
 
   # Optional substring that must appear in kubectl current-context (per-env override via deployEnvironments[].expectedKubeContext).
+  # helm mode only — rejected in gitops mode (Argo CD owns the cluster target).
   - name: expectedKubeContext
     displayName: Substring esperada no kubectl context
     type: string
     default: ''
+
+  # helm   → build + helm upgrade per ADO Environment (current path, kept as fallback).
+  # gitops → build + push only; Kargo/Argo CD own promotion and deployment.
+  - name: deliveryMode
+    displayName: Entrega após o ECR (helm | gitops)
+    type: string
+    default: 'helm'
+    values:
+      - helm
+      - gitops
 
 stages:
   - stage: CI
@@ -123,7 +144,7 @@ stages:
               arguments: --configuration ${{ parameters.buildConfiguration }} --no-build --logger trx
               publishTestResults: true
 
-          - ${{ if gt(length(parameters.deployEnvironments), 0) }}:
+          - ${{ if or(gt(length(parameters.deployEnvironments), 0), eq(parameters.deliveryMode, 'gitops')) }}:
             - task: Bash@3
               name: publishApp
               displayName: Publish app and resolve aspnet tag
@@ -136,7 +157,7 @@ stages:
                   set -Eeuo pipefail
 
                   if [[ -z "${DOTNET_PROJECT:-}" ]]; then
-                    echo "##vso[task.logissue type=error]dotnetProject is required when deployEnvironments is set"
+                    echo "##vso[task.logissue type=error]dotnetProject is required when an image is built (deployEnvironments set or deliveryMode: gitops)"
                     exit 1
                   fi
 
@@ -183,7 +204,7 @@ stages:
                 targetPath: $(Build.ArtifactStagingDirectory)/app
                 artifact: app
 
-  - ${{ if gt(length(parameters.deployEnvironments), 3) }}:
+  - ${{ if and(eq(parameters.deliveryMode, 'helm'), gt(length(parameters.deployEnvironments), 3)) }}:
     - stage: DeployEnvironmentsOverflow
       displayName: Too many deployEnvironments
       dependsOn: CI
@@ -197,7 +218,7 @@ stages:
                 exit 1
               displayName: Fail on overflow
 
-  - ${{ if and(gt(length(parameters.deployEnvironments), 0), le(length(parameters.deployEnvironments), 3)) }}:
+  - ${{ if and(eq(parameters.deliveryMode, 'helm'), gt(length(parameters.deployEnvironments), 0), le(length(parameters.deployEnvironments), 3)) }}:
     - stage: DeployContract
       displayName: Validate deploy manifests
       dependsOn:
@@ -293,150 +314,14 @@ stages:
               env:
                 DEPLOY_ENVIRONMENTS_JSON: ${{ convertToJson(parameters.deployEnvironments) }}
 
-    - stage: Container
-      displayName: Docker Build and Push
-      dependsOn:
-        - CI
-        - DeployContract
-      condition: succeeded()
-      variables:
-        aspnetTag: $[stageDependencies.CI.BuildAndTest.outputs['publishApp.aspnetTag']]
-        appDll: $[stageDependencies.CI.BuildAndTest.outputs['publishApp.appDll']]
-      jobs:
-        - job: DockerBuildPush
-          displayName: Build and push image to ECR
-          pool:
-            name: ${{ parameters.containerPool }}
-          steps:
-            - checkout: templates
-              displayName: Checkout platform Dockerfile
-              path: pipeline-templates
-
-            - task: DownloadPipelineArtifact@2
-              displayName: Download app artifact
-              inputs:
-                artifact: app
-                path: $(Pipeline.Workspace)/app
-
-            - task: Bash@3
-              name: dockerBuildPush
-              displayName: ECR login, buildctl build and push
-              env:
-                AWS_REGION: ${{ parameters.awsRegion }}
-                AWS_DEFAULT_REGION: ${{ parameters.awsRegion }}
-                APPLICATION_NAME: ${{ parameters.applicationName }}
-                ASPNET_TAG: $(aspnetTag)
-                APP_DLL: $(appDll)
-                IMAGE_TAG: $(Build.SourceVersion)
-                # PG-AWS-EKS (tenv3) usa BuildKit sidecar + crane — sem Docker Engine.
-                BUILDKIT_HOST: unix:///run/buildkit/buildkitd.sock
-              inputs:
-                targetType: inline
-                script: |
-                  set -Eeuo pipefail
-
-                  export PATH="/opt/tenv3/container-build-tools/bin:${PATH}"
-
-                  if [[ -z "${APPLICATION_NAME:-}" ]]; then
-                    echo "##vso[task.logissue type=error]applicationName is required when deployEnvironments is set"
-                    exit 1
-                  fi
-
-                  if [[ -z "${ASPNET_TAG:-}" ]]; then
-                    echo "##vso[task.logissue type=error]aspnetTag missing from CI outputs"
-                    exit 1
-                  fi
-
-                  if [[ -z "${APP_DLL:-}" ]]; then
-                    echo "##vso[task.logissue type=error]appDll missing from CI outputs"
-                    exit 1
-                  fi
-
-                  WORKSPACE="${PIPELINE_WORKSPACE:-${AGENT_BUILDDIRECTORY}}"
-                  APP_CONTEXT="${WORKSPACE}/app"
-                  if [[ ! -f "${APP_CONTEXT}/${APP_DLL}" ]]; then
-                    echo "##vso[task.logissue type=error]Published DLL not found: ${APP_CONTEXT}/${APP_DLL}"
-                    ls -la "${APP_CONTEXT}" || true
-                    exit 1
-                  fi
-
-                  DOCKERFILE_DIR="${WORKSPACE}/pipeline-templates/docker/dotnet"
-                  if [[ ! -f "${DOCKERFILE_DIR}/Dockerfile" ]]; then
-                    echo "##vso[task.logissue type=error]Platform Dockerfile not found: ${DOCKERFILE_DIR}/Dockerfile"
-                    exit 1
-                  fi
-
-                  RUNTIME_IMAGE="mcr.microsoft.com/dotnet/aspnet:${ASPNET_TAG}"
-                  ECR_REPOSITORY="${APPLICATION_NAME}"
-
-                  if ! command -v buildctl >/dev/null || ! command -v crane >/dev/null; then
-                    echo "##vso[task.logissue type=error]buildctl/crane not found — pool ${{ parameters.containerPool }} must expose BuildKit tools"
-                    exit 1
-                  fi
-
-                  echo "##[group]aws caller identity (ambient credentials on agent)"
-                  aws sts get-caller-identity
-                  AWS_ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
-                  echo "##[endgroup]"
-
-                  if [[ -z "${AWS_ACCOUNT_ID}" || "${AWS_ACCOUNT_ID}" == "None" ]]; then
-                    echo "##vso[task.logissue type=error]Could not resolve AWS account id from sts (agent ambient credentials)"
-                    exit 1
-                  fi
-
-                  REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
-                  IMAGE_REF="${REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
-
-                  echo "##[group]ecr login ${REGISTRY}"
-                  aws ecr get-login-password --region "${AWS_REGION}" \
-                    | crane auth login "${REGISTRY}" -u AWS --password-stdin
-                  echo "##[endgroup]"
-
-                  echo "##[group]ensure ecr repository ${ECR_REPOSITORY} (IMMUTABLE)"
-                  if ! aws ecr describe-repositories --repository-names "${ECR_REPOSITORY}" --region "${AWS_REGION}" >/dev/null 2>&1; then
-                    aws ecr create-repository \
-                      --repository-name "${ECR_REPOSITORY}" \
-                      --region "${AWS_REGION}" \
-                      --image-tag-mutability IMMUTABLE \
-                      >/dev/null
-                    echo "Created repository ${ECR_REPOSITORY} with IMMUTABLE tags"
-                  else
-                    MUTABILITY="$(aws ecr describe-repositories --repository-names "${ECR_REPOSITORY}" --region "${AWS_REGION}" \
-                      --query 'repositories[0].imageTagMutability' --output text)"
-                    echo "Repository ${ECR_REPOSITORY} exists (imageTagMutability=${MUTABILITY})"
-                    if [[ "${MUTABILITY}" != "IMMUTABLE" ]]; then
-                      echo "Enforcing IMMUTABLE on existing repository"
-                      aws ecr put-image-tag-mutability \
-                        --repository-name "${ECR_REPOSITORY}" \
-                        --region "${AWS_REGION}" \
-                        --image-tag-mutability IMMUTABLE >/dev/null
-                    fi
-                  fi
-                  echo "##[endgroup]"
-
-                  IMAGE_REPOSITORY="${REGISTRY}/${ECR_REPOSITORY}"
-
-                  # Commit SHA tags + ECR IMMUTABLE: re-runs of the same commit must reuse, not overwrite.
-                  if EXISTING_DIGEST="$(crane digest "${IMAGE_REF}" 2>/dev/null)"; then
-                    echo "Image ${IMAGE_REF} already exists (${EXISTING_DIGEST}) — skipping build/push (immutable tag)"
-                  else
-                    echo "##[group]buildctl build+push ${IMAGE_REF} (RUNTIME_IMAGE=${RUNTIME_IMAGE} APP_DLL=${APP_DLL})"
-                    buildctl build \
-                      --frontend dockerfile.v0 \
-                      --local context="${APP_CONTEXT}" \
-                      --local dockerfile="${DOCKERFILE_DIR}" \
-                      --opt filename=Dockerfile \
-                      --opt "build-arg:RUNTIME_IMAGE=${RUNTIME_IMAGE}" \
-                      --opt "build-arg:APP_DLL=${APP_DLL}" \
-                      --opt platform=linux/amd64 \
-                      --output "type=image,name=${IMAGE_REF},push=true"
-                    echo "##[endgroup]"
-                    echo "Pushed ${IMAGE_REF}"
-                  fi
-
-                  echo "##vso[task.setvariable variable=imageRef;isOutput=true]${IMAGE_REF}"
-                  echo "##vso[task.setvariable variable=imageTag;isOutput=true]${IMAGE_TAG}"
-                  echo "##vso[task.setvariable variable=imageRepository;isOutput=true]${IMAGE_REPOSITORY}"
+    - template: container-build.yml
+      parameters:
+        dependsOn:
+          - CI
+          - DeployContract
+        applicationName: ${{ parameters.applicationName }}
+        containerPool: ${{ parameters.containerPool }}
+        awsRegion: ${{ parameters.awsRegion }}
 
     - template: helm-deploy.yml
       parameters:
@@ -453,7 +338,7 @@ stages:
         ecrPullSecret: ${{ coalesce(variables['ECR_PULL_SECRET'], '') }}
         smokeScheduledJob: ${{ coalesce(parameters.deployEnvironments[0].smokeScheduledJob, false) }}
 
-  - ${{ if gt(length(parameters.deployEnvironments), 1) }}:
+  - ${{ if and(eq(parameters.deliveryMode, 'helm'), gt(length(parameters.deployEnvironments), 1)) }}:
     - template: helm-deploy.yml
       parameters:
         environmentName: ${{ parameters.deployEnvironments[1].name }}
@@ -470,7 +355,7 @@ stages:
         ecrPullSecret: ${{ coalesce(variables['ECR_PULL_SECRET'], '') }}
         smokeScheduledJob: ${{ coalesce(parameters.deployEnvironments[1].smokeScheduledJob, false) }}
 
-  - ${{ if gt(length(parameters.deployEnvironments), 2) }}:
+  - ${{ if and(eq(parameters.deliveryMode, 'helm'), gt(length(parameters.deployEnvironments), 2)) }}:
     - template: helm-deploy.yml
       parameters:
         environmentName: ${{ parameters.deployEnvironments[2].name }}
@@ -486,3 +371,69 @@ stages:
         expectedKubeContext: ''
         ecrPullSecret: ${{ coalesce(variables['ECR_PULL_SECRET'], '') }}
         smokeScheduledJob: ${{ coalesce(parameters.deployEnvironments[2].smokeScheduledJob, false) }}
+
+  # ── deliveryMode: gitops ────────────────────────────────────────────────────
+  # CI → GitOpsContract → Container. Nada depois disso no Azure DevOps.
+  # O desired state (values com image.digest) vive no repositório GitOps e é
+  # escrito pelo Kargo; o Argo CD reconcilia. Nenhum stage aqui faz rebuild.
+  - ${{ if eq(parameters.deliveryMode, 'gitops') }}:
+    - stage: GitOpsContract
+      displayName: Validate GitOps delivery contract
+      dependsOn:
+        - CI
+      condition: succeeded()
+      jobs:
+        - job: AssertGitOpsContract
+          displayName: Assert consumer chooses no infrastructure
+          pool:
+            vmImage: ${{ parameters.vmImage }}
+          steps:
+            - checkout: none
+            - bash: |
+                set -Eeuo pipefail
+                FAILED=0
+
+                fail() { echo "##vso[task.logissue type=error]$1"; FAILED=1; }
+
+                [[ -n "${APPLICATION_NAME:-}" ]] || fail "applicationName is required (ECR repository = applicationName)"
+                [[ -n "${DOTNET_PROJECT:-}" ]] || fail "dotnetProject is required (image content)"
+
+                # In gitops mode the artifact lifecycle after ECR belongs to Kargo.
+                # These are not ignored — they are rejected, so no one ships a pipeline
+                # that silently keeps the old promotion semantics.
+                if [[ "${DEPLOY_ENVIRONMENTS_JSON}" != "[]" ]]; then
+                  fail "deployEnvironments must be empty with deliveryMode: gitops — environments are Kargo Stages, not ADO Environments"
+                fi
+                if [[ -n "${EXPECTED_KUBE_CONTEXT:-}" ]]; then
+                  fail "expectedKubeContext must be empty with deliveryMode: gitops — Argo CD owns the cluster target"
+                fi
+
+                if [[ "${FAILED}" -ne 0 ]]; then
+                  exit 1
+                fi
+
+                echo "##[group]gitops delivery contract"
+                cat <<EOF
+                applicationName : ${APPLICATION_NAME}
+                ECR repository  : ${APPLICATION_NAME}
+                image tag       : ${BUILD_SOURCEVERSION} (git SHA, ECR IMMUTABLE)
+                handoff         : ECR digest → Kargo Warehouse → Freight → Stage develop → Stage homolog
+                deployment      : Kargo writes image.digest to the GitOps repo; Argo CD reconciles charts/asa-application
+                this pipeline   : does NOT deploy, does NOT promote, does NOT rebuild
+                EOF
+                echo "##[endgroup]"
+              displayName: Assert gitops contract
+              env:
+                APPLICATION_NAME: ${{ parameters.applicationName }}
+                DOTNET_PROJECT: ${{ parameters.dotnetProject }}
+                EXPECTED_KUBE_CONTEXT: ${{ parameters.expectedKubeContext }}
+                DEPLOY_ENVIRONMENTS_JSON: ${{ convertToJson(parameters.deployEnvironments) }}
+
+    - template: container-build.yml
+      parameters:
+        dependsOn:
+          - CI
+          - GitOpsContract
+        applicationName: ${{ parameters.applicationName }}
+        containerPool: ${{ parameters.containerPool }}
+        awsRegion: ${{ parameters.awsRegion }}
