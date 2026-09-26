@@ -1,5 +1,18 @@
+# Example consumer pipeline — Application (web | grpc | worker).
+# Copy to the app repo root (or adjust paths) and set applicationName / projects.
+#
+# Pin a release tag in real consumers after publish.
+# Until the next tag includes post-v3.1.1 proving-ground fixes, prefer main or a commit SHA:
+#   ref: refs/heads/main
+#   ref: refs/tags/v3.1.1
+
 trigger:
   - main
+
+# Lab clusters without node IAM for ECR: platform refreshes this docker-registry
+# secret on every deploy when set. Leave unset to rely on kubelet/node IAM.
+variables:
+  ECR_PULL_SECRET: ecr-pull
 
 resources:
   repositories:
@@ -7,7 +20,7 @@ resources:
       type: github
       name: diegofernandes-dev/pipeline-templates
       endpoint: github-diegofernandes-dev
-      ref: refs/tags/v3.1.1
+      ref: refs/heads/main
 
 extends:
   template: templates/dotnet/ci.yml@templates
@@ -15,8 +28,10 @@ extends:
     solution: '**/*.sln'
     applicationName: sample-api
     dotnetProject: src/Sample.Api/Sample.Api.csproj
-    # containerPool for Container stage (build/push). Deploy pools are platform-derived.
+    # Container stage pool. Deploy pools come from config/platform-environments.json.
     containerPool: 'PG-AWS-EKS'
+    # Manifestos: <runtimeConfigPath>/<environment>.yaml (kind: Application).
+    runtimeConfigPath: deploy/config
     deployEnvironments:
       - name: develop
         variableGroups: []

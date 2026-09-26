@@ -19,14 +19,27 @@ Templates YAML reutilizáveis para Azure DevOps (GitHub → `extends`).
 
 ## Consumo
 
+Exemplos prontos:
+
+| Arquivo | Uso |
+|---------|-----|
+| [`examples/azure-pipelines.yml`](examples/azure-pipelines.yml) | `kind: Application` (web/grpc/worker) |
+| [`examples/azure-pipelines.scheduled-job.yml`](examples/azure-pipelines.scheduled-job.yml) | `kind: ScheduledJob` |
+| [`examples/deploy/config/`](examples/deploy/config/) | Manifestos mínimos |
+
 ```yaml
+variables:
+  # Lab sem IAM no node: secret docker-registry renovado no deploy. Omitir com node IAM.
+  ECR_PULL_SECRET: ecr-pull
+
 resources:
   repositories:
     - repository: templates
       type: github
       name: diegofernandes-dev/pipeline-templates
       endpoint: github-diegofernandes-dev
-      ref: refs/tags/v3.1.1   # após release; até lá use commit SHA
+      # Após release, pin em refs/tags/vX.Y.Z. Até lá: main ou commit SHA.
+      ref: refs/heads/main
 
 extends:
   template: templates/dotnet/ci.yml@templates
@@ -40,6 +53,8 @@ extends:
       - name: homolog
         variableGroups: []
 ```
+
+Pós-deploy (evidência cluster): [`scripts/proving-ground-evidence.sh`](scripts/proving-ground-evidence.sh).
 
 `applicationName` = **um deployable** = **uma imagem ECR** = **uma Helm release** = namespace `asa-<name>` = hostname. A implementação atual **não** compartilha imagem entre API e worker/job — use `applicationName` distintos.
 
@@ -131,4 +146,5 @@ helm lint charts/asa-scheduled-job --set-string schedule.expression='0 2 * * *' 
 | Tag | Notas |
 |-----|-------|
 | `v3.1.0` | imutável |
-| `v3.1.1` | hardening (porta 8080, probes explícitos, SA, recovery, contract-first, …) — após checks verdes + instrução de release |
+| `v3.1.1` | hardening (porta 8080, probes explícitos, SA, recovery, contract-first, …) |
+| `main` (pós-v3.1.1) | fixes do proving ground (Gateway preflight yq, ECR pull secret, …) — pin SHA/`main` até a próxima tag |

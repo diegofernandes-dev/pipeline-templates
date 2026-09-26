@@ -1,0 +1,33 @@
+# Example consumer pipeline — ScheduledJob (separate deployable).
+# Use a distinct applicationName / ECR image / Helm release from the API.
+#
+# Manifesto: copy examples/deploy/config/scheduled-job.example.yaml →
+#   deploy/config/develop.yaml (kind: ScheduledJob).
+
+trigger:
+  - main
+
+variables:
+  ECR_PULL_SECRET: ecr-pull
+
+resources:
+  repositories:
+    - repository: templates
+      type: github
+      name: diegofernandes-dev/pipeline-templates
+      endpoint: github-diegofernandes-dev
+      ref: refs/heads/main
+
+extends:
+  template: templates/dotnet/ci.yml@templates
+  parameters:
+    solution: '**/*.sln'
+    applicationName: sample-api-job
+    dotnetProject: src/Sample.Api/Sample.Api.csproj
+    containerPool: 'PG-AWS-EKS'
+    runtimeConfigPath: deploy/config
+    deployEnvironments:
+      - name: develop
+        variableGroups: []
+        # Optional: create a one-off Job from the CronJob after deploy (develop only).
+        # smokeScheduledJob: true
