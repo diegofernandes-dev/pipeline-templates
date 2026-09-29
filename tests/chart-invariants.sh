@@ -381,6 +381,129 @@ else
   echo "OK: metrics.k8s.io preflight present"
 fi
 
+# jq-isms are invalid in mikefarah/yq and shipped broken in v3.1.1: `--arg` made every
+# web/grpc Gateway preflight exit 1, and `| last |` broke the rollback path. Static-check the
+# whole pipeline surface so neither can come back.
+# Comment lines are excluded so the notes explaining these very bugs do not trip the check.
+yq_code_lines() {
+  grep -hn -- "yq" "${ROOT}/templates/dotnet/ci.yml" "${ROOT}/templates/dotnet/helm-deploy.yml" \
+    | grep -vE '^[0-9]+:[[:space:]]*#'
+}
+for jqism in "--arg" "| last |" "| first |"; do
+  if yq_code_lines | grep -qF -- "${jqism}"; then
+    echo "FAIL: jq-only syntax '${jqism}' used with yq (mikefarah/yq does not support it)"
+    yq_code_lines | grep -F -- "${jqism}" || true
+    FAILED=1
+  else
+    echo "OK: no jq-only syntax '${jqism}' in yq calls"
+  fi
+done
+
+# expectedKubeContext must come from config/platform-environments.json, never a dead parameter.
+if grep -q "expectedKubeContext: ''" "${ROOT}/templates/dotnet/ci.yml"; then
+  echo "FAIL: ci.yml pins expectedKubeContext to '' — the cluster-identity guard can never fire"
+  FAILED=1
+else
+  echo "OK: ci.yml does not pin expectedKubeContext to ''"
+fi
+if ! grep -q 'EXPECTED_KUBE_CONTEXT="$(yq -r ".${ADO_ENVIRONMENT}.expectedKubeContext' "${ROOT}/templates/dotnet/helm-deploy.yml"; then
+  echo "FAIL: helm-deploy.yml must read expectedKubeContext from config/platform-environments.json"
+  FAILED=1
+else
+  echo "OK: expectedKubeContext read from the authoritative platform mapping"
+fi
+
+# Chart invariants must run BEFORE the image push, not only at deploy time.
+if ! grep -q 'helm template' "${ROOT}/templates/dotnet/ci.yml"; then
+  echo "FAIL: DeployContract must run helm template per environment (chart invariants before the image push)"
+  FAILED=1
+else
+  echo "OK: DeployContract renders each manifest with helm template"
+fi
+
+# Preflight must assert the exact group/version the charts apply.
+if ! grep -q 'require_api gateway.networking.k8s.io/v1' "${ROOT}/templates/dotnet/helm-deploy.yml"; then
+  echo "FAIL: route preflight must assert gateway.networking.k8s.io/v1 exactly"
+  FAILED=1
+else
+  echo "OK: route preflight asserts exact Gateway API version"
+fi
+if ! grep -q 'require_api external-secrets.io/v1 ' "${ROOT}/templates/dotnet/helm-deploy.yml"; then
+  echo "FAIL: ExternalSecret preflight must assert external-secrets.io/v1 exactly"
+  FAILED=1
+else
+  echo "OK: ExternalSecret preflight asserts exact ESO version"
+fi
+
+echo "== hardening baseline renders =="
+OUT_HARD="$(render_app --set probes=false --set-string runtime.environment=production)"
+assert_contains "$OUT_HARD" "revisionHistoryLimit: 3" "app revisionHistoryLimit pinned"
+assert_contains "$OUT_HARD" "progressDeadlineSeconds: 240" "app progressDeadlineSeconds pinned"
+assert_contains "$OUT_HARD" "enableServiceLinks: false" "app enableServiceLinks disabled"
+assert_contains "$OUT_HARD" "terminationMessagePolicy: FallbackToLogsOnError" "app terminationMessagePolicy"
+assert_contains "$OUT_HARD" "maxUnavailable: 0" "app rollingUpdate maxUnavailable 0"
+assert_contains "$OUT_HARD" "runAsUser: 1654" "app runAsUser pinned to image APP_UID"
+assert_contains "$OUT_HARD" "fsGroup: 1654" "app fsGroup pinned to image APP_UID"
+
+# Recreate (RWO PVC) must not carry a rollingUpdate block.
+OUT_RECREATE="$(render_app --set probes=false --set autoscaling=false \
+  --set-string persistence.mountPath=/data --set-string persistence.size=1Gi)"
+assert_contains "$OUT_RECREATE" "type: Recreate" "persistence uses Recreate"
+assert_not_contains "$OUT_RECREATE" "rollingUpdate:" "Recreate has no rollingUpdate block"
+
+OUT_JOB_HARD="$(render_job)"
+assert_contains "$OUT_JOB_HARD" "enableServiceLinks: false" "job enableServiceLinks disabled"
+assert_contains "$OUT_JOB_HARD" "terminationMessagePolicy: FallbackToLogsOnError" "job terminationMessagePolicy"
+assert_contains "$OUT_JOB_HARD" "runAsUser: 1654" "job runAsUser pinned to image APP_UID"
+
+# The chart pins runAsUser; the platform Dockerfile must assert the same UID at build time.
+if ! grep -q 'EXPECTED_APP_UID' "${ROOT}/docker/dotnet/Dockerfile"; then
+  echo "FAIL: docker/dotnet/Dockerfile must assert APP_UID matches the chart runAsUser"
+  FAILED=1
+else
+  echo "OK: Dockerfile asserts APP_UID against the chart runAsUser"
+fi
+
+echo "== kubeVersion floor (derived from chart content) =="
+for ch in "${APP_CHART}" "${JOB_CHART}"; do
+  if ! grep -q 'kubeVersion: ">=1.27.0-0"' "${ch}/Chart.yaml"; then
+    echo "FAIL: $(basename "${ch}") missing derived kubeVersion >=1.27.0-0 (CronJob .spec.timeZone is stable from v1.27)"
+    FAILED=1
+  else
+    echo "OK: $(basename "${ch}") declares kubeVersion >=1.27.0-0"
+  fi
+done
+expect_fail "app chart rejects Kubernetes 1.26" \
+  render_app --set probes=false --kube-version 1.26.0
+if render_app --set probes=false --kube-version 1.27.0 >/dev/null 2>&1; then
+  echo "OK: app chart accepts Kubernetes 1.27"
+else
+  echo "FAIL: app chart rejects Kubernetes 1.27"
+  FAILED=1
+fi
+
+echo "== PDB only where it can protect something =="
+OUT_PDB_DEV="$(render_app --set probes=false --set-string runtime.environment=develop)"
+assert_kind_count "$OUT_PDB_DEV" PodDisruptionBudget 0 "develop (1 replica): no PDB"
+assert_not_contains "$OUT_PDB_DEV" "topologySpreadConstraints:" "develop (1 replica): no topology spread"
+
+OUT_PDB_PRD="$(render_app --set probes=false --set-string runtime.environment=production)"
+assert_kind_count "$OUT_PDB_PRD" PodDisruptionBudget 1 "production (2 replicas): PDB rendered"
+assert_contains "$OUT_PDB_PRD" "unhealthyPodEvictionPolicy: AlwaysAllow" "PDB AlwaysAllow (upstream recommendation)"
+assert_contains "$OUT_PDB_PRD" "maxUnavailable: 1" "PDB maxUnavailable 1"
+# minAvailable percentages round UP: 90% of 2 replicas = 2, which would block every drain.
+assert_not_contains "$OUT_PDB_PRD" "minAvailable:" "PDB does not use minAvailable percentages"
+
+echo "== topology spread is soft (cluster-agnostic) =="
+assert_contains "$OUT_PDB_PRD" "topologySpreadConstraints:" "production: topology spread rendered"
+assert_contains "$OUT_PDB_PRD" "whenUnsatisfiable: ScheduleAnyway" "topology spread is ScheduleAnyway"
+assert_contains "$OUT_PDB_PRD" "topologyKey: topology.kubernetes.io/zone" "topology spread on well-known zone label"
+assert_not_contains "$OUT_PDB_PRD" "whenUnsatisfiable: DoNotSchedule" "no hard DoNotSchedule (breaks single-zone clusters)"
+
+# Explicit opt-out still honoured.
+OUT_PDB_OFF="$(render_app --set probes=false --set-string runtime.environment=production --set pdb.enabled=false)"
+assert_kind_count "$OUT_PDB_OFF" PodDisruptionBudget 0 "pdb.enabled=false honoured"
+
 echo "== no magic port 50051 outside this file =="
 if grep -RIn --exclude-dir=.git --exclude='*.plan.md' --exclude='chart-invariants.sh' '50051' \
   "${ROOT}/charts" "${ROOT}/templates" "${ROOT}/schemas" "${ROOT}/scripts" "${ROOT}/tests" \
@@ -397,6 +520,12 @@ fi
 echo "== chart drift =="
 if ! bash "${ROOT}/tests/chart-drift.sh"; then
   echo "FAIL: chart-drift.sh"
+  FAILED=1
+fi
+
+echo "== gateway consistency =="
+if ! bash "${ROOT}/tests/gateway-consistency.sh"; then
+  echo "FAIL: gateway-consistency.sh"
   FAILED=1
 fi
 

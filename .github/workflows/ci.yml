@@ -41,8 +41,11 @@ jobs:
             --set execution.timeoutSeconds=1800 \
             --set-string 'execution.args[0]=--mode=job'
 
-      - name: chart-drift
+      - name: chart-drift (+ schema parity)
         run: ./tests/chart-drift.sh
+
+      - name: gateway-consistency
+        run: ./tests/gateway-consistency.sh
 
       - name: chart-invariants (+ public schema)
         run: |

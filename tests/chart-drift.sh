@@ -26,6 +26,12 @@ for f in "${SHARED[@]}"; do
   fi
 done
 
+# The public manifesto schema and the chart values schema describe the same consumer
+# surface and must not drift apart (see scripts/assert-schema-parity.py).
+if ! python3 "${ROOT}/scripts/assert-schema-parity.py"; then
+  FAILED=1
+fi
+
 if [[ "$FAILED" -ne 0 ]]; then
   echo "Chart drift detected — sync both charts or extract asa-runtime-common (third chart / repeated fix trigger)."
   exit 1
