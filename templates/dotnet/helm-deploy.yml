@@ -37,11 +37,6 @@ parameters:
     type: string
     default: 'deploy/config'
 
-  # Exact kubectl context name (not substring). Empty = skip (external blocker until mapped).
-  - name: expectedKubeContext
-    type: string
-    default: ''
-
   # Lab fallback: docker-registry secret name (empty = rely on node/kubelet ECR IAM).
   - name: ecrPullSecret
     type: string
@@ -95,7 +90,6 @@ stages:
                     IMAGE_REPOSITORY: $(imageRepository)
                     IMAGE_TAG: $(imageTag)
                     RUNTIME_CONFIG_PATH: ${{ parameters.runtimeConfigPath }}
-                    EXPECTED_KUBE_CONTEXT: ${{ parameters.expectedKubeContext }}
                     SMOKE_SCHEDULED_JOB: ${{ parameters.smokeScheduledJob }}
                     # Prefer compile-time parameter — deployment jobs often leave $(ECR_PULL_SECRET) unresolved.
                     ECR_PULL_SECRET: ${{ parameters.ecrPullSecret }}
@@ -180,15 +174,28 @@ stages:
                         exit 1
                       fi
 
+                      # Single source of truth for the env → platform mapping. The file ships with the
+                      # templates repo, so a missing file is a packaging error, not a soft skip.
+                      if [[ ! -f "${PLATFORM_ENVS}" ]]; then
+                        echo "##vso[task.logissue type=error]Platform mapping not found: ${PLATFORM_ENVS}"
+                        exit 1
+                      fi
+                      EXPECTED_KUBE_CONTEXT="$(yq -r ".${ADO_ENVIRONMENT}.expectedKubeContext // \"\"" "${PLATFORM_ENVS}")"
+                      PSA_ENFORCE="$(yq -r ".${ADO_ENVIRONMENT}.podSecurity.enforce // \"\"" "${PLATFORM_ENVS}")"
+                      PSA_ENFORCE_VERSION="$(yq -r ".${ADO_ENVIRONMENT}.podSecurity.enforceVersion // \"\"" "${PLATFORM_ENVS}")"
+                      GATEWAY_NAME="$(yq -r ".${ADO_ENVIRONMENT}.gatewayName // \"\"" "${PLATFORM_ENVS}")"
+                      GATEWAY_NAMESPACE="$(yq -r ".${ADO_ENVIRONMENT}.gatewayNamespace // \"\"" "${PLATFORM_ENVS}")"
+
                       CTX="$(kubectl config current-context 2>/dev/null || true)"
                       echo "kubectl context: ${CTX}"
-                      if [[ -n "${EXPECTED_KUBE_CONTEXT:-}" ]]; then
+                      if [[ -n "${EXPECTED_KUBE_CONTEXT}" ]]; then
                         if [[ "${CTX}" != "${EXPECTED_KUBE_CONTEXT}" ]]; then
-                          echo "##vso[task.logissue type=error]kubectl context must equal expectedKubeContext '${EXPECTED_KUBE_CONTEXT}' (got '${CTX}') — exact match, no substring"
+                          echo "##vso[task.logissue type=error]kubectl context must equal expectedKubeContext '${EXPECTED_KUBE_CONTEXT}' for ${ADO_ENVIRONMENT} (got '${CTX}') — exact match, no substring"
                           exit 1
                         fi
+                        echo "kubectl context matches expectedKubeContext for ${ADO_ENVIRONMENT}"
                       else
-                        echo "##[warning]expectedKubeContext empty for ${ADO_ENVIRONMENT} — EXTERNAL BLOCKER until platform mapping is filled in config/platform-environments.json"
+                        echo "##[warning]EXTERNAL BLOCKER: expectedKubeContext for ${ADO_ENVIRONMENT} is null in config/platform-environments.json — cluster identity is NOT asserted for this deploy"
                       fi
 
                       KIND="$(yq -r '.kind // ""' "${MANIFEST}")"
@@ -227,6 +234,28 @@ stages:
                         app.kubernetes.io/managed-by=pipeline-templates \
                         app.kubernetes.io/name="${HELM_RELEASE}" \
                         --overwrite >/dev/null
+                      # Pod Security Admission. Per-environment because clusters may enforce
+                      # differently; null in the mapping means "do not label" (no guessed policy).
+                      if [[ -n "${PSA_ENFORCE}" ]]; then
+                        case "${PSA_ENFORCE}" in
+                          privileged|baseline|restricted) ;;
+                          *)
+                            echo "##vso[task.logissue type=error]podSecurity.enforce for ${ADO_ENVIRONMENT} must be privileged, baseline or restricted (got '${PSA_ENFORCE}')"
+                            exit 1
+                            ;;
+                        esac
+                        if [[ -z "${PSA_ENFORCE_VERSION}" ]]; then
+                          echo "##vso[task.logissue type=error]podSecurity.enforce is set for ${ADO_ENVIRONMENT} but podSecurity.enforceVersion is null — pin the version so an upgraded cluster cannot silently change what is enforced"
+                          exit 1
+                        fi
+                        echo "Labelling ${HELM_NAMESPACE} with PSA enforce=${PSA_ENFORCE} (${PSA_ENFORCE_VERSION})"
+                        kubectl label namespace "${HELM_NAMESPACE}" \
+                          "pod-security.kubernetes.io/enforce=${PSA_ENFORCE}" \
+                          "pod-security.kubernetes.io/enforce-version=${PSA_ENFORCE_VERSION}" \
+                          --overwrite >/dev/null
+                      else
+                        echo "##[warning]podSecurity.enforce for ${ADO_ENVIRONMENT} is null in config/platform-environments.json — namespace is NOT Pod-Security labelled"
+                      fi
                       echo "##[endgroup]"
 
                       echo "##[group]aws caller identity"
@@ -234,24 +263,33 @@ stages:
                       echo "##[endgroup]"
 
                       WT=""
-                      GATEWAY_NAME=""
-                      GATEWAY_NAMESPACE=""
-                      if [[ -f "${PLATFORM_ENVS}" ]]; then
-                        GATEWAY_NAME="$(yq -r ".${ADO_ENVIRONMENT}.gatewayName // \"\"" "${PLATFORM_ENVS}")"
-                        GATEWAY_NAMESPACE="$(yq -r ".${ADO_ENVIRONMENT}.gatewayNamespace // \"\"" "${PLATFORM_ENVS}")"
-                      fi
+
+                      # Assert the EXACT group/version the charts apply, not merely that the
+                      # resource exists under some served version. A cluster offering only
+                      # external-secrets.io/v1beta1 or Gateway API v1alpha2 passes a bare
+                      # api-group check and then fails at apply time.
+                      require_api() {
+                        local group_version="$1" resource="$2" used_by="$3"
+                        if ! kubectl get --raw "/apis/${group_version}" 2>/dev/null \
+                          | yq -r '.resources[].name' 2>/dev/null | grep -qx "${resource}"; then
+                          echo "##vso[task.logissue type=error]Cluster does not serve ${group_version} with resource '${resource}' (required by ${used_by})"
+                          exit 1
+                        fi
+                        echo "${group_version} serves ${resource} (${used_by})"
+                      }
 
                       echo "##[group]preflight APIs / CRDs / Gateway / metrics"
                       if [[ "${KIND}" == "Application" ]]; then
                         WT="$(yq -r '.workload.type // ""' "${MANIFEST}")"
                         case "${WT}" in
                           web)
-                            kubectl api-resources --api-group=gateway.networking.k8s.io -o name 2>/dev/null | grep -qx httproutes.gateway.networking.k8s.io \
-                              || { echo "##vso[task.logissue type=error]HTTPRoute API not available"; exit 1; }
+                            # charts/asa-application/templates/httproute.yaml
+                            require_api gateway.networking.k8s.io/v1 httproutes "HTTPRoute"
                             ;;
                           grpc)
-                            kubectl api-resources --api-group=gateway.networking.k8s.io -o name 2>/dev/null | grep -qx grpcroutes.gateway.networking.k8s.io \
-                              || { echo "##vso[task.logissue type=error]GRPCRoute API not available"; exit 1; }
+                            # charts/asa-application/templates/grpcroute.yaml — GRPCRoute is only
+                            # v1 from Gateway API 1.1 onwards.
+                            require_api gateway.networking.k8s.io/v1 grpcroutes "GRPCRoute"
                             ;;
                         esac
                         if [[ "${WT}" == "web" || "${WT}" == "grpc" ]]; then
@@ -300,8 +338,8 @@ stages:
                       ES_NAME="$(yq -r '.externalSecret.secretStoreRef.name // ""' "${MANIFEST}")"
                       ES_LEN="$(yq -r '.externalSecret.data | length' "${MANIFEST}")"
                       if [[ -n "${ES_NAME}" && "${ES_LEN}" != "0" && "${ES_LEN}" != "null" ]]; then
-                        kubectl api-resources --api-group=external-secrets.io >/dev/null \
-                          || { echo "##vso[task.logissue type=error]external-secrets.io APIs missing"; exit 1; }
+                        # charts/*/templates/externalsecret.yaml applies external-secrets.io/v1
+                        require_api external-secrets.io/v1 externalsecrets "ExternalSecret"
                       fi
                       echo "##[endgroup]"
 

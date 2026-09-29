@@ -74,11 +74,8 @@ parameters:
     type: string
     default: 'deploy/config'
 
-  # Optional substring that must appear in kubectl current-context (per-env override via deployEnvironments[].expectedKubeContext).
-  - name: expectedKubeContext
-    displayName: Substring esperada no kubectl context
-    type: string
-    default: ''
+  # expectedKubeContext is NOT a parameter: the deploy stage reads it from
+  # config/platform-environments.json (single source of truth, exact match).
 
 stages:
   - stage: CI
@@ -231,6 +228,26 @@ stages:
                 fi
                 yq --version
 
+                # helm ships with the Microsoft-hosted image; fail loudly rather than skipping
+                # the chart-invariant layer if that ever changes.
+                if ! command -v helm >/dev/null 2>&1; then
+                  echo "##vso[task.logissue type=error]helm not found on ${{ parameters.vmImage }} — required to validate chart invariants before the image push"
+                  exit 1
+                fi
+                HELM_V="$(helm version --short 2>/dev/null || true)"
+                echo "helm: ${HELM_V}"
+                if [[ ! "${HELM_V}" =~ ^v?3\. ]]; then
+                  echo "##vso[task.logissue type=error]Unsupported Helm version '${HELM_V}' — platform requires Helm 3.x (must match the deploy agents)"
+                  exit 1
+                fi
+
+                # Fails here rather than as an opaque helm error below, and earlier than the
+                # Container stage's own check.
+                if [[ -z "${{ parameters.applicationName }}" ]]; then
+                  echo "##vso[task.logissue type=error]applicationName is required when deployEnvironments is set"
+                  exit 1
+                fi
+
                 mapfile -t ENVS < <(printf '%s' "${DEPLOY_ENVIRONMENTS_JSON}" | yq -r '.[].name')
                 if [[ "${#ENVS[@]}" -eq 0 ]]; then
                   echo "##vso[task.logissue type=error]deployEnvironments produced an empty name list"
@@ -279,15 +296,52 @@ stages:
                 export PATH="${HOME}/.local/bin:${PATH}"
 
                 bash "${TEMPLATES_DIR}/scripts/assert-deploy-identity.sh" "${CONFIG}" "${ENVS[@]}"
+
+                # Two validation layers, both BEFORE the image push:
+                #   1. public JSON Schema  — rejects unknown/typo keys (additionalProperties: false)
+                #   2. helm template       — runs the chart's own fail-fast rules (reserved config keys,
+                #                            probe shape per workload.type, persistence vs autoscaling,
+                #                            partial WIF/ExternalSecret, ScheduledJob command/args, …)
+                # Without layer 2 here, those rules would only fire during Deploy — after the image is
+                # pushed, and for production only after develop/homolog were already rolled out.
                 for env in "${ENVS[@]}"; do
                   manifest="${CONFIG}/${env}.yaml"
                   kind="$(yq -r '.kind // ""' "${manifest}")"
                   case "${kind}" in
-                    Application) schema="${TEMPLATES_DIR}/schemas/application.manifest.schema.json" ;;
-                    ScheduledJob) schema="${TEMPLATES_DIR}/schemas/scheduled-job.manifest.schema.json" ;;
+                    Application)
+                      schema="${TEMPLATES_DIR}/schemas/application.manifest.schema.json"
+                      chart="${TEMPLATES_DIR}/charts/asa-application"
+                      ;;
+                    ScheduledJob)
+                      schema="${TEMPLATES_DIR}/schemas/scheduled-job.manifest.schema.json"
+                      chart="${TEMPLATES_DIR}/charts/asa-scheduled-job"
+                      ;;
                     *) echo "##vso[task.logissue type=error]Unsupported kind ${kind}"; exit 1 ;;
                   esac
+
+                  echo "##[group]${env}: public schema (${kind})"
                   python3 "${TEMPLATES_DIR}/scripts/validate-manifest.py" "${schema}" "${manifest}"
+                  echo "##[endgroup]"
+
+                  # Same platform-injected values the Deploy stage uses, with placeholder image
+                  # coordinates — the real digest is irrelevant to the chart's validation rules.
+                  HELM_RENDER_SET=(
+                    --set-string "image.repository=validation.invalid/${{ parameters.applicationName }}"
+                    --set-string "image.tag=deploycontract"
+                  )
+                  if [[ "${kind}" == "Application" ]]; then
+                    HELM_RENDER_SET+=(--set-string "runtime.environment=${env}")
+                  fi
+
+                  echo "##[group]${env}: helm template (chart invariants)"
+                  if ! helm template "${{ parameters.applicationName }}" "${chart}" \
+                    -f "${manifest}" \
+                    "${HELM_RENDER_SET[@]}" >/dev/null; then
+                    echo "##vso[task.logissue type=error]${env}: manifest violates a chart invariant — see the helm error above. Fix ${{ parameters.runtimeConfigPath }}/${env}.yaml before deploying."
+                    exit 1
+                  fi
+                  echo "##[endgroup]"
+                  echo "OK ${env}: schema + chart invariants"
                 done
               displayName: Assert identity + public schemas + env guards
               env:
@@ -449,7 +503,6 @@ stages:
         awsRegion: ${{ parameters.awsRegion }}
         helmTimeout: ${{ coalesce(parameters.deployEnvironments[0].helmTimeout, parameters.helmTimeout) }}
         runtimeConfigPath: ${{ parameters.runtimeConfigPath }}
-        expectedKubeContext: ''
         ecrPullSecret: ${{ coalesce(variables['ECR_PULL_SECRET'], '') }}
         smokeScheduledJob: ${{ coalesce(parameters.deployEnvironments[0].smokeScheduledJob, false) }}
 
@@ -466,7 +519,6 @@ stages:
         awsRegion: ${{ parameters.awsRegion }}
         helmTimeout: ${{ coalesce(parameters.deployEnvironments[1].helmTimeout, parameters.helmTimeout) }}
         runtimeConfigPath: ${{ parameters.runtimeConfigPath }}
-        expectedKubeContext: ''
         ecrPullSecret: ${{ coalesce(variables['ECR_PULL_SECRET'], '') }}
         smokeScheduledJob: ${{ coalesce(parameters.deployEnvironments[1].smokeScheduledJob, false) }}
 
@@ -483,6 +535,5 @@ stages:
         awsRegion: ${{ parameters.awsRegion }}
         helmTimeout: ${{ coalesce(parameters.deployEnvironments[2].helmTimeout, parameters.helmTimeout) }}
         runtimeConfigPath: ${{ parameters.runtimeConfigPath }}
-        expectedKubeContext: ''
         ecrPullSecret: ${{ coalesce(variables['ECR_PULL_SECRET'], '') }}
         smokeScheduledJob: ${{ coalesce(parameters.deployEnvironments[2].smokeScheduledJob, false) }}
