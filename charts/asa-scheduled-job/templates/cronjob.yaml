@@ -51,6 +51,8 @@ spec:
           restartPolicy: Never
           serviceAccountName: {{ .Release.Name }}
           automountServiceAccountToken: false
+          # No implicit SVC_* env vars from every Service in the namespace.
+          enableServiceLinks: false
           {{- with .Values.imagePullSecrets }}
           imagePullSecrets:
             {{- toYaml . | nindent 12 }}
@@ -61,6 +63,8 @@ spec:
             - name: job
               image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
               imagePullPolicy: {{ .Values.image.pullPolicy }}
+              # Surface the failure reason in the Job status when the run dies without a message file.
+              terminationMessagePolicy: FallbackToLogsOnError
               securityContext:
                 {{- toYaml .Values.securityContext | nindent 16 }}
               {{- with $ex.command }}

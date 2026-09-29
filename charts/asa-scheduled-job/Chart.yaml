@@ -2,5 +2,14 @@ apiVersion: v2
 name: asa-scheduled-job
 description: Platform chart for ScheduledJob (.NET CronJob) on EKS
 type: application
-version: 3.1.1
-appVersion: "3.1.1"
+version: 3.1.2
+appVersion: "3.1.2"
+
+# Floor DERIVED from what these charts actually apply, not from what any cluster happens to run:
+#   CronJob .spec.timeZone     stable v1.27   <- binding constraint
+#   autoscaling/v2 HPA         stable v1.23
+#   policy/v1 PDB, batch/v1    stable v1.21
+#   PDB .unhealthyPodEvictionPolicy  beta v1.26 (on by default), stable v1.31
+# Gateway API v1 and external-secrets.io/v1 are CRDs, NOT Kubernetes versions, so they cannot be
+# expressed here — the deploy preflight asserts those group/versions per cluster instead.
+kubeVersion: ">=1.27.0-0"

@@ -61,6 +61,11 @@ resources:
 # Platform-owned security baseline (not in public manifesto schema).
 podSecurityContext:
   runAsNonRoot: true
+  # 1654 = APP_UID in mcr.microsoft.com/dotnet/aspnet (verified for 8.0, 9.0, 10.0).
+  # docker/dotnet/Dockerfile asserts this at build time — see asa-application/values.yaml.
+  runAsUser: 1654
+  runAsGroup: 1654
+  fsGroup: 1654
   seccompProfile:
     type: RuntimeDefault
 

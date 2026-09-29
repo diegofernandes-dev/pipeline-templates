@@ -18,6 +18,18 @@ imagePullSecrets: []
 
 replicaCount: 1
 
+# Rollout / GC knobs. Platform-owned: absent from the public manifesto schema.
+deployment:
+  revisionHistoryLimit: 3
+  # Must stay BELOW the pipeline helmTimeout (default 5m) so a stalled rollout is
+  # reported as ProgressDeadlineExceeded instead of an opaque helm --wait timeout.
+  progressDeadlineSeconds: 240
+  rollingUpdate:
+    maxSurge: 1
+    # 0 keeps capacity during rollout; with replicaCount 1 the new pod must be
+    # Ready before the old one goes away.
+    maxUnavailable: 0
+
 runtime:
   # develop | homolog | production — set by pipeline
   environment: develop
@@ -68,6 +80,13 @@ resources:
 
 podSecurityContext:
   runAsNonRoot: true
+  # 1654 = APP_UID in mcr.microsoft.com/dotnet/aspnet (verified for 8.0, 9.0, 10.0).
+  # docker/dotnet/Dockerfile chowns /app to the same UID and asserts it at build time,
+  # so image and chart cannot drift apart silently.
+  runAsUser: 1654
+  runAsGroup: 1654
+  # Makes mounted PVCs group-writable for the same identity.
+  fsGroup: 1654
   seccompProfile:
     type: RuntimeDefault
 
@@ -85,6 +104,24 @@ securityContext:
 # - autoscaling: false disables for any type
 autoscaling: {}
 
+# Spread replicas across zones. whenUnsatisfiable: ScheduleAnyway is deliberate and makes this
+# cluster-agnostic: upstream warns that in clusters with few topology domains a hard
+# DoNotSchedule constraint delays or blocks scheduling. A soft constraint is a no-op in a
+# single-zone cluster and still biases the scheduler in a multi-zone one, so the same chart is
+# correct for develop, homolog and production without per-cluster discovery.
+# topology.kubernetes.io/zone is a well-known label EKS always sets.
+topologySpread:
+  enabled: true
+  topologyKey: topology.kubernetes.io/zone
+  maxSkew: 1
+
+# PDB is rendered only from 2 effective replicas up (below that it protects nothing).
+# maxUnavailable: 1 rather than the upstream "minAvailable: 90%" suggestion for stateless
+# frontends: minAvailable percentages round UP, so 90% of 2 replicas resolves to 2 and would
+# block ALL voluntary disruption — including node drains. maxUnavailable: 1 keeps one replica
+# serving while still allowing maintenance at the replica counts this platform actually runs.
 pdb:
-  enabled: false
+  enabled: true
   maxUnavailable: 1
+  # AlwaysAllow | IfHealthyBudget — see templates/pdb.yaml
+  unhealthyPodEvictionPolicy: AlwaysAllow

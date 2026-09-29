@@ -1,4 +1,4 @@
-{{- if .Values.pdb.enabled }}
+{{- if (include "chart.pdbEnabled" .) | eq "true" }}
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
@@ -9,6 +9,10 @@ metadata:
     app.kubernetes.io/instance: {{ .Release.Name }}
 spec:
   maxUnavailable: {{ .Values.pdb.maxUnavailable }}
+  # Upstream recommends AlwaysAllow so a misbehaving app cannot block a node drain:
+  # https://kubernetes.io/docs/tasks/run-application/configure-pdb/
+  # Default (IfHealthyBudget) makes drain wait for pods to become healthy first.
+  unhealthyPodEvictionPolicy: {{ .Values.pdb.unhealthyPodEvictionPolicy }}
   selector:
     matchLabels:
       app: {{ .Release.Name }}

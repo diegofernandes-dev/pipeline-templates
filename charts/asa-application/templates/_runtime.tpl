@@ -83,6 +83,30 @@ false
 {{- end -}}
 {{- end }}
 
+{{/*
+Effective floor on running replicas: the HPA minimum when autoscaling is on, otherwise
+replicaCount. Used to decide whether a PDB is meaningful at all.
+*/}}
+{{- define "chart.effectiveMinReplicas" -}}
+{{- if (include "chart.autoscalingEnabled" .) | eq "true" -}}
+{{- include "chart.hpaMinReplicas" . -}}
+{{- else -}}
+{{- .Values.replicaCount | default 1 -}}
+{{- end -}}
+{{- end }}
+
+{{- define "chart.pdbEnabled" -}}
+{{- /* A PDB over a single replica cannot protect anything: the lone pod is still evictable,
+       so the object is pure noise. Render only from 2 effective replicas up. */ -}}
+{{- if not (.Values.pdb | default dict).enabled -}}
+false
+{{- else if ge ((include "chart.effectiveMinReplicas" .) | int) 2 -}}
+true
+{{- else -}}
+false
+{{- end -}}
+{{- end }}
+
 {{- define "chart.persistenceEnabled" -}}
 {{- $p := .Values.persistence -}}
 {{- if kindIs "bool" $p -}}

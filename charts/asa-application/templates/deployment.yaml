@@ -17,12 +17,20 @@ spec:
   {{- if not ((include "chart.autoscalingEnabled" .) | eq "true") }}
   replicas: {{ .Values.replicaCount }}
   {{- end }}
+  revisionHistoryLimit: {{ .Values.deployment.revisionHistoryLimit }}
+  # Kept below the pipeline helmTimeout so a stalled rollout surfaces as a
+  # ProgressDeadlineExceeded condition instead of a bare `helm --wait` timeout.
+  progressDeadlineSeconds: {{ .Values.deployment.progressDeadlineSeconds }}
   {{- if (include "chart.persistenceEnabled" .) | eq "true" }}
+  # RWO PVC: the old pod must release the volume before the new one starts.
   strategy:
     type: Recreate
   {{- else }}
   strategy:
     type: RollingUpdate
+    rollingUpdate:
+      maxSurge: {{ .Values.deployment.rollingUpdate.maxSurge }}
+      maxUnavailable: {{ .Values.deployment.rollingUpdate.maxUnavailable }}
   {{- end }}
   selector:
     matchLabels:
@@ -48,6 +56,8 @@ spec:
     spec:
       serviceAccountName: {{ .Release.Name }}
       automountServiceAccountToken: false
+      # No implicit SVC_* env vars from every Service in the namespace.
+      enableServiceLinks: false
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -58,6 +68,8 @@ spec:
         - name: app
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # Surface the crash reason in the pod status when the app dies without a message file.
+          terminationMessagePolicy: FallbackToLogsOnError
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           {{- $wifEnv := include "app.workloadIdentityEnv" . | trim -}}
@@ -155,6 +167,16 @@ spec:
               mountPath: {{ .Values.persistence.mountPath | quote }}
             {{- end }}
             {{- include "app.workloadIdentityVolumeMounts" . | nindent 12 }}
+      {{- if and .Values.topologySpread.enabled (ge ((include "chart.effectiveMinReplicas" .) | int) 2) }}
+      topologySpreadConstraints:
+        - maxSkew: {{ .Values.topologySpread.maxSkew }}
+          topologyKey: {{ .Values.topologySpread.topologyKey }}
+          # Soft on purpose — see values.yaml topologySpread.
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: {{ .Release.Name }}
+      {{- end }}
       volumes:
         - name: tmp
           emptyDir: {}
