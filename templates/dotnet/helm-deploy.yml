@@ -91,8 +91,14 @@ stages:
                     IMAGE_TAG: $(imageTag)
                     RUNTIME_CONFIG_PATH: ${{ parameters.runtimeConfigPath }}
                     SMOKE_SCHEDULED_JOB: ${{ parameters.smokeScheduledJob }}
-                    # Prefer compile-time parameter — deployment jobs often leave $(ECR_PULL_SECRET) unresolved.
-                    ECR_PULL_SECRET: ${{ parameters.ecrPullSecret }}
+                    # Two sources, because neither alone covers both ways a consumer can define it:
+                    #   PARAM   — compile-time. Only resolves for pipeline-level or queue-time variables,
+                    #             NOT for a Variable Group linked to this stage (those are runtime-only).
+                    #   RUNTIME — the macro. Covers the Variable Group case, but ADO leaves it as the
+                    #             literal string $(ECR_PULL_SECRET) when undefined.
+                    # The script below picks whichever actually carries a value.
+                    ECR_PULL_SECRET_PARAM: ${{ parameters.ecrPullSecret }}
+                    ECR_PULL_SECRET_RUNTIME: $(ECR_PULL_SECRET)
                   inputs:
                     targetType: inline
                     script: |
@@ -106,8 +112,22 @@ stages:
                       HELM_NAMESPACE="asa-${APPLICATION_NAME}"
                       PLATFORM_ENVS="${TEMPLATES_DIR}/config/platform-environments.json"
 
-                      # Empty / whitespace-only → unset (no lab pull secret).
-                      ECR_PULL_SECRET="$(echo -n "${ECR_PULL_SECRET:-}" | tr -d "[:space:]")"
+                      # Resolve the pull secret from whichever source carried a value. An unset ADO
+                      # macro arrives as the literal "$(NAME)", which must be treated as absent.
+                      ECR_PULL_SECRET=""
+                      ECR_PULL_SECRET_SOURCE="none"
+                      for candidate_name in ECR_PULL_SECRET_PARAM ECR_PULL_SECRET_RUNTIME; do
+                        candidate="$(echo -n "${!candidate_name:-}" | tr -d "[:space:]")"
+                        if [[ -z "${candidate}" || "${candidate}" == '$('* ]]; then
+                          continue
+                        fi
+                        ECR_PULL_SECRET="${candidate}"
+                        ECR_PULL_SECRET_SOURCE="${candidate_name}"
+                        break
+                      done
+                      if [[ -n "${ECR_PULL_SECRET}" ]]; then
+                        echo "imagePullSecret name resolved from ${ECR_PULL_SECRET_SOURCE}"
+                      fi
 
                       dump_diagnostics() {
                         echo "##[group]deploy diagnostics"

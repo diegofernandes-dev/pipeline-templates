@@ -38,7 +38,9 @@ parameters:
   # Lista ordenada de ambientes para promover a mesma imagem.
   # Ex.: [{ name: homolog, containerPool: PG-AWS-EKS-HML, variableGroups: [] }]
   # name ∈ { develop, homolog, production }.
-  # containerPool (opcional): pool do Deploy desse ambiente; default = parâmetro containerPool.
+  # containerPool (opcional): pool do Deploy desse ambiente. Tem precedência sobre o default da
+  #   plataforma. develop/homolog têm default; production NÃO tem — passe explicitamente ou o
+  #   DeployContract aborta (containerPool null em config/platform-environments.json).
   # App env overlay: deploy/config/<name>.yaml no repo da app (IRSA, WIF, HPA, config, externalSecret).
   # variableGroups: legado/opcional (não alimenta IRSA/WIF/config de app). Lista vazia ⇒ só CI se deployEnvironments vazio.
   - name: deployEnvironments
@@ -218,13 +220,19 @@ stages:
                 CONFIG="${APP_DIR}/${{ parameters.runtimeConfigPath }}"
                 PLATFORM_ENVS="${TEMPLATES_DIR}/config/platform-environments.json"
                 YQ_VERSION="v4.44.3"
+                YQ_SHA256="a2c097180dd884a8d50c956ee16a9cec070f30a7947cf4ebf87d5f36213e9ed7"
                 PYYAML_VERSION="6.0.2"
                 JSONSCHEMA_VERSION="4.23.0"
 
                 if ! command -v yq >/dev/null 2>&1; then
                   echo "Installing pinned yq ${YQ_VERSION} (Microsoft-hosted)"
-                  sudo wget -qO /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
-                  sudo chmod +x /usr/local/bin/yq
+                  # Version pinning alone does not protect the download: verify the published
+                  # SHA-256 before putting the binary on PATH.
+                  wget -qO /tmp/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+                  echo "${YQ_SHA256}  /tmp/yq" | sha256sum -c - \
+                    || { echo "##vso[task.logissue type=error]yq checksum mismatch — refusing to install"; exit 1; }
+                  sudo install -m 0755 /tmp/yq /usr/local/bin/yq
+                  rm -f /tmp/yq
                 fi
                 yq --version
 
@@ -499,7 +507,10 @@ stages:
         dependsOn:
           - Container
         applicationName: ${{ parameters.applicationName }}
-        containerPool: ${{ iif(eq(parameters.deployEnvironments[0].name, 'develop'), 'PG-AWS-EKS', iif(eq(parameters.deployEnvironments[0].name, 'homolog'), 'PG-AWS-EKS-HML', coalesce(parameters.deployEnvironments[0].containerPool, parameters.containerPool))) }}
+        # Explicit per-env override wins; otherwise the platform default for that env.
+        # Must stay in sync with config/platform-environments[].containerPool — ADO cannot read
+        # a file at template-expansion time, so tests/chart-invariants.sh asserts they agree.
+        containerPool: ${{ coalesce(parameters.deployEnvironments[0].containerPool, iif(eq(parameters.deployEnvironments[0].name, 'develop'), 'PG-AWS-EKS', iif(eq(parameters.deployEnvironments[0].name, 'homolog'), 'PG-AWS-EKS-HML', parameters.containerPool))) }}
         awsRegion: ${{ parameters.awsRegion }}
         helmTimeout: ${{ coalesce(parameters.deployEnvironments[0].helmTimeout, parameters.helmTimeout) }}
         runtimeConfigPath: ${{ parameters.runtimeConfigPath }}
@@ -515,7 +526,10 @@ stages:
           - Container
           - Deploy_${{ parameters.deployEnvironments[0].name }}
         applicationName: ${{ parameters.applicationName }}
-        containerPool: ${{ iif(eq(parameters.deployEnvironments[1].name, 'develop'), 'PG-AWS-EKS', iif(eq(parameters.deployEnvironments[1].name, 'homolog'), 'PG-AWS-EKS-HML', coalesce(parameters.deployEnvironments[1].containerPool, parameters.containerPool))) }}
+        # Explicit per-env override wins; otherwise the platform default for that env.
+        # Must stay in sync with config/platform-environments[].containerPool — ADO cannot read
+        # a file at template-expansion time, so tests/chart-invariants.sh asserts they agree.
+        containerPool: ${{ coalesce(parameters.deployEnvironments[1].containerPool, iif(eq(parameters.deployEnvironments[1].name, 'develop'), 'PG-AWS-EKS', iif(eq(parameters.deployEnvironments[1].name, 'homolog'), 'PG-AWS-EKS-HML', parameters.containerPool))) }}
         awsRegion: ${{ parameters.awsRegion }}
         helmTimeout: ${{ coalesce(parameters.deployEnvironments[1].helmTimeout, parameters.helmTimeout) }}
         runtimeConfigPath: ${{ parameters.runtimeConfigPath }}
@@ -531,7 +545,10 @@ stages:
           - Container
           - Deploy_${{ parameters.deployEnvironments[1].name }}
         applicationName: ${{ parameters.applicationName }}
-        containerPool: ${{ iif(eq(parameters.deployEnvironments[2].name, 'develop'), 'PG-AWS-EKS', iif(eq(parameters.deployEnvironments[2].name, 'homolog'), 'PG-AWS-EKS-HML', coalesce(parameters.deployEnvironments[2].containerPool, parameters.containerPool))) }}
+        # Explicit per-env override wins; otherwise the platform default for that env.
+        # Must stay in sync with config/platform-environments[].containerPool — ADO cannot read
+        # a file at template-expansion time, so tests/chart-invariants.sh asserts they agree.
+        containerPool: ${{ coalesce(parameters.deployEnvironments[2].containerPool, iif(eq(parameters.deployEnvironments[2].name, 'develop'), 'PG-AWS-EKS', iif(eq(parameters.deployEnvironments[2].name, 'homolog'), 'PG-AWS-EKS-HML', parameters.containerPool))) }}
         awsRegion: ${{ parameters.awsRegion }}
         helmTimeout: ${{ coalesce(parameters.deployEnvironments[2].helmTimeout, parameters.helmTimeout) }}
         runtimeConfigPath: ${{ parameters.runtimeConfigPath }}
