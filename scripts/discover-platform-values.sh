@@ -120,6 +120,36 @@ say_or "$($K -n "${GW_NS}" get deploy,daemonset --no-headers \
 echo "  -> preStop sleep must cover 'pod Terminating' until 'gateway stops sending traffic'."
 echo "     With endpoint-based routing that is readiness periodSeconds x failureThreshold."
 
+h "7) Scheduling / placement conventions  ->  nodeSelector, tolerations, priorityClassName"
+echo "  -- node pools (are there distinct pools to select between?)"
+say_or "$($K get nodes --no-headers -o custom-columns=\
+'NODE:.metadata.name,ZONE:.metadata.labels.topology\.kubernetes\.io/zone,TYPE:.metadata.labels.node\.kubernetes\.io/instance-type,CAPACITY:.metadata.labels.eks\.amazonaws\.com/capacityType,POOL:.metadata.labels.eks\.amazonaws\.com/nodegroup' 2>/dev/null)" \
+  "UNREACHABLE"
+echo "  -- node taints (a taint means workloads MUST tolerate it to land there)"
+say_or "$($K get nodes --no-headers -o custom-columns='NODE:.metadata.name,TAINTS:.spec.taints' 2>/dev/null \
+  | grep -v '<none>')" "no taints on any node"
+echo "  -- nodes per zone (>1 per zone means a hostname spread constraint adds something)"
+say_or "$($K get nodes -o jsonpath='{.items[*].metadata.labels.topology\.kubernetes\.io/zone}' 2>/dev/null \
+  | tr ' ' '\n' | grep -v '^$' | sort | uniq -c)" "UNREACHABLE"
+echo "  -- PriorityClasses defined on the cluster"
+say_or "$($K get priorityclass --no-headers -o custom-columns='NAME:.metadata.name,VALUE:.value,DEFAULT:.globalDefault' 2>/dev/null)" \
+  "none beyond the built-ins"
+echo "  -- does anything scale the node pool? (Pending pods just stay Pending if not)"
+say_or "$($K get deploy,daemonset -A --no-headers 2>/dev/null \
+  | grep -iE 'cluster-autoscaler|karpenter' | awk '{print $1, $2}')" "no cluster-autoscaler or Karpenter found"
+echo "  -- what OTHER teams' workloads already do (the platform's real convention)"
+say_or "$($K get deploy -A -o jsonpath='{range .items[*]}{.metadata.namespace}{\"/\"}{.metadata.name}{\" nodeSelector=\"}{.spec.template.spec.nodeSelector}{\" tolerations=\"}{.spec.template.spec.tolerations}{\" priorityClass=\"}{.spec.template.spec.priorityClassName}{\"\n\"}{end}' 2>/dev/null \
+  | grep -vE 'nodeSelector= tolerations= priorityClass=$' | head -25)" \
+  "no Deployment uses nodeSelector/tolerations/priorityClassName"
+echo "  -> If there is one homogeneous pool, no taints and nobody uses these fields, the charts"
+echo "     should NOT expose them. If pools differ or other teams use them, they must."
+
+h "8) Secret rotation  ->  does anything already reload pods on Secret change?"
+say_or "$($K get deploy,daemonset -A --no-headers 2>/dev/null \
+  | grep -iE 'reloader|stakater|wave' | awk '{print $1, $2}')" "no Reloader-style controller found"
+echo "  -> ExternalSecret updates the Secret, but envFrom only injects at pod start, so a rotated"
+echo "     credential does nothing until the next deploy unless something restarts the pods."
+
 h "6) expectedKubeContext  ->  NOT obtainable from any workstation"
 echo "  '${CTX}' is THIS machine's kubeconfig alias; the deploy agent has its own name."
 echo "  Take it from a Deploy_<env> pipeline log line: 'kubectl context: <name>'"
