@@ -464,6 +464,86 @@ else
   echo "OK: Dockerfile asserts APP_UID against the chart runAsUser"
 fi
 
+echo "== supply chain of downloaded tooling =="
+# Pinning a version does not protect the download; the bytes must be verified too.
+for f in "${ROOT}/templates/dotnet/ci.yml" "${ROOT}/.github/workflows/ci.yml"; do
+  name="$(basename "$(dirname "${f}")")/$(basename "${f}")"
+  if grep -q 'yq_linux_amd64' "${f}"; then
+    if grep -q 'sha256sum -c' "${f}"; then
+      echo "OK: ${name} verifies the yq download checksum"
+    else
+      echo "FAIL: ${name} downloads yq without verifying its SHA-256"
+      FAILED=1
+    fi
+  fi
+done
+
+# The same yq version and checksum must be used everywhere, or one path validates
+# different bytes than the other.
+YQ_SHAS="$(grep -ho 'YQ_SHA256[:=] *"\?[a-f0-9]\{64\}' "${ROOT}/templates/dotnet/ci.yml" "${ROOT}/.github/workflows/ci.yml" \
+  | grep -o '[a-f0-9]\{64\}' | sort -u | wc -l | tr -d ' ')"
+if [[ "${YQ_SHAS}" == "1" ]]; then
+  echo "OK: a single yq checksum across ci.yml and the repo workflow"
+else
+  echo "FAIL: ci.yml and .github/workflows/ci.yml disagree on the yq checksum (${YQ_SHAS} distinct)"
+  FAILED=1
+fi
+
+# Tags are mutable; a compromised tag silently changes what runs in CI.
+UNPINNED="$(grep -n 'uses: .*@v[0-9]' "${ROOT}/.github/workflows/ci.yml" || true)"
+if [[ -n "${UNPINNED//[[:space:]]/}" ]]; then
+  echo "FAIL: GitHub actions referenced by mutable tag instead of commit SHA:"
+  sed 's/^/    /' <<<"${UNPINNED}"
+  FAILED=1
+else
+  echo "OK: all GitHub actions pinned to commit SHAs"
+fi
+
+# ECR_PULL_SECRET must survive both ways a consumer can define it.
+for v in ECR_PULL_SECRET_PARAM ECR_PULL_SECRET_RUNTIME; do
+  if ! grep -q "${v}" "${ROOT}/templates/dotnet/helm-deploy.yml"; then
+    echo "FAIL: helm-deploy.yml must read ${v} (compile-time param and runtime macro cover different sources)"
+    FAILED=1
+  else
+    echo "OK: helm-deploy.yml reads ${v}"
+  fi
+done
+if ! grep -qF "== '\$('*" "${ROOT}/templates/dotnet/helm-deploy.yml"; then
+  echo "FAIL: helm-deploy.yml must treat an unexpanded \$(NAME) macro as absent"
+  FAILED=1
+else
+  echo "OK: unexpanded ADO macro treated as absent"
+fi
+
+echo "== containerPool: ci.yml literals vs platform mapping =="
+# The Deploy pool is set at template-expansion time (pool: name:), and ADO cannot read a file
+# then, so the develop/homolog pools are necessarily literals in ci.yml. That duplicates
+# config/platform-environments.json, so assert the two agree rather than hoping they do.
+for env in develop homolog; do
+  want="$(yq -r ".${env}.containerPool // \"\"" "${ROOT}/config/platform-environments.json")"
+  if [[ -z "${want}" || "${want}" == "null" ]]; then
+    echo "##[skip] ${env}: containerPool not mapped yet"
+    continue
+  fi
+  if grep -q "eq(parameters.deployEnvironments\[0\].name, '${env}'), '${want}'" "${ROOT}/templates/dotnet/ci.yml"; then
+    echo "OK: ci.yml ${env} pool matches platform mapping (${want})"
+  else
+    echo "FAIL: ci.yml ${env} pool does not match config/platform-environments.json (${want})"
+    grep -n "name, '${env}')" "${ROOT}/templates/dotnet/ci.yml" | head -1 || true
+    FAILED=1
+  fi
+done
+
+# The documented per-env override must actually reach the deploy stage: coalesce has to wrap
+# the iif, not sit inside its else branch (where develop/homolog never reach it).
+OVERRIDE_OK=$(grep -c 'coalesce(parameters.deployEnvironments\[[0-2]\].containerPool, iif(' "${ROOT}/templates/dotnet/ci.yml" || true)
+if [[ "${OVERRIDE_OK}" -ne 3 ]]; then
+  echo "FAIL: deployEnvironments[].containerPool override must take precedence at all 3 call sites (found ${OVERRIDE_OK}/3)"
+  FAILED=1
+else
+  echo "OK: per-env containerPool override takes precedence at all 3 call sites"
+fi
+
 echo "== kubeVersion floor (derived from chart content) =="
 for ch in "${APP_CHART}" "${JOB_CHART}"; do
   if ! grep -q 'kubeVersion: ">=1.27.0-0"' "${ch}/Chart.yaml"; then
