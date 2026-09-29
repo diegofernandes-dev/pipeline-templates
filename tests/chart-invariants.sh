@@ -65,12 +65,104 @@ render_job() {
     "$@"
 }
 
+# expect_fail "<description>" "<message substring>" [--] cmd...
+# Requires non-zero exit AND that stderr/stdout contains the needle (so a typo
+# in --set cannot silently satisfy the test).
 expect_fail() {
   local msg="$1"
-  shift
+  local needle="$2"
+  shift 2
+  if [[ "${1:-}" == "--" ]]; then shift; fi
   local out
   if out="$("$@" 2>&1)"; then
     echo "FAIL: $msg (expected failure)"
+    FAILED=1
+  elif ! grep -qF -- "$needle" <<<"$out"; then
+    echo "FAIL: $msg (expected message containing: $needle)"
+    echo "  got: $(head -c 400 <<<"$out" | tr '\n' ' ')"
+    FAILED=1
+  else
+    echo "OK: $msg"
+  fi
+}
+
+# Same idea as expect_fail, but for rejections that come from values.schema.json rather than a
+# template `fail`. Helm's schema validator changed between majors and emits different prose for
+# the identical violation:
+#   helm 3 (xeipuuv):  "- workload: Additional property port is not allowed"
+#   helm 4 (santhosh): "- at '/workload': additional properties 'port' not allowed"
+# Matching either wording literally pins the suite to one Helm major, which is how this drifted:
+# assertions written against the local helm 4 while CI pins 3.16.2. Both DO name the offending
+# path, so assert on that plus the shared preamble — which still proves the schema layer (not
+# some unrelated error) rejected the right property.
+# Usage: expect_schema_fail "<description>" "<dotted values path>" [--] cmd...
+expect_schema_fail() {
+  local msg="$1"
+  local path="$2"
+  shift 2
+  if [[ "${1:-}" == "--" ]]; then shift; fi
+  local out
+  if out="$("$@" 2>&1)"; then
+    echo "FAIL: $msg (expected failure)"
+    FAILED=1
+    return
+  fi
+  if ! grep -qF "values don't meet the specifications of the schema" <<<"$out"; then
+    echo "FAIL: $msg (expected a values.schema.json rejection, got another error)"
+    echo "  got: $(head -c 400 <<<"$out" | tr '\n' ' ')"
+    FAILED=1
+    return
+  fi
+  # Built with tr, not ${path//./\/}: bash 3.2 (macOS system bash) renders that replacement as
+  # a literal backslash-slash, so the pointer match silently never fires there while it works on
+  # bash 5 / CI. Same class of trap as the helm-major wording difference.
+  local dotted pointer
+  dotted="$(printf '%s' "${path}" | sed 's/\./\\./g')"
+  pointer="/$(printf '%s' "${path}" | tr '.' '/')"
+  if grep -qE "(^|[[:space:]-])${dotted}[.:]" <<<"$out" \
+    || grep -qF "at '${pointer}" <<<"$out"; then
+    echo "OK: $msg"
+  else
+    echo "FAIL: $msg (schema rejected, but not at '${path}')"
+    echo "  got: $(head -c 400 <<<"$out" | tr '\n' ' ')"
+    FAILED=1
+  fi
+}
+
+# Temporarily move values.schema.json aside so template `fail` paths are reachable.
+# Restores the schema even if the command fails. Used to prove the dual lock (schema + template).
+with_schema_bypassed() {
+  local chart="$1"
+  shift
+  local schema="${chart}/values.schema.json"
+  local off="${schema}.tdd-off.$$"
+  if [[ ! -f "${schema}" ]]; then
+    echo "FAIL: with_schema_bypassed: missing ${schema}"
+    FAILED=1
+    return 1
+  fi
+  mv "${schema}" "${off}"
+  local rc=0
+  "$@" || rc=$?
+  mv "${off}" "${schema}"
+  return "${rc}"
+}
+
+# Structural assert: python expression over parsed multi-doc YAML must be truthy.
+# Usage: assert_struct "$yaml" "<msg>" 'docs' <<'PY'
+# ... python that sets ok=True/False using variable `docs` ...
+# PY  — actually simpler: pass a one-liner python snippet that receives docs.
+assert_struct() {
+  local haystack="$1" msg="$2" py="$3"
+  local err
+  if ! err="$(MANIFEST="$haystack" python3 -c "
+import os, sys, yaml
+docs = [d for d in yaml.safe_load_all(os.environ['MANIFEST']) if d]
+${py}
+" 2>&1)"; then
+    echo "FAIL: $msg"
+    echo "  $err" | head -c 500
+    echo
     FAILED=1
   else
     echo "OK: $msg"
@@ -188,50 +280,50 @@ else
 fi
 
 echo "== negatives (chart fail-fast) =="
-expect_fail "workload.port rejected" \
+expect_schema_fail "workload.port rejected" "workload" -- \
   render_app --set probes=false --set-json 'workload={"type":"web","port":9090}'
 
-expect_fail "probes.path rejected" \
+expect_schema_fail "probes.path rejected" "probes" -- \
   render_app --set-json 'probes={"path":"/health-check"}'
 
-expect_fail "web omit probes (null) fails" \
+expect_schema_fail "web omit probes (null) fails" "probes" -- \
   render_app --set probes=null
 
-expect_fail "web omit probes (empty map) fails" \
+expect_schema_fail "web omit probes (empty map) fails" "probes" -- \
   render_app --set-json 'probes={}'
 
-expect_fail "grpc omit probes fails" \
+expect_schema_fail "grpc omit probes fails" "probes" -- \
   render_app --set-string workload.type=grpc --set probes=null
 
-expect_fail "probes:true rejected" \
+expect_schema_fail "probes:true rejected" "probes" -- \
   render_app --set probes=true
 
-expect_fail "grpc with path rejected" \
+expect_fail "grpc with path rejected" "probes.readiness.path is invalid for grpc" -- \
   render_app --set-string workload.type=grpc --set-json 'probes={"readiness":{"path":"/health"}}'
 
-expect_fail "web with enabled rejected" \
+expect_fail "web with enabled rejected" "probes.<type>.enabled is for grpc only" -- \
   render_app --set-json 'probes={"readiness":{"enabled":true}}'
 
-expect_fail "worker with probes rejected" \
+expect_fail "worker with probes rejected" "probes are not supported for workload.type: worker" -- \
   render_app --set-string workload.type=worker --set-json 'probes={"readiness":{"path":"/x"}}'
 
-expect_fail "config ASPNETCORE_URLS rejected" \
+expect_fail "config ASPNETCORE_URLS rejected" "config.ASPNETCORE_URLS is platform-owned" -- \
   render_app --set probes=false --set-string 'config.ASPNETCORE_URLS=http://bad'
 
-expect_fail "config ASPNETCORE_HTTP_PORTS rejected" \
+expect_fail "config ASPNETCORE_HTTP_PORTS rejected" "config.ASPNETCORE_HTTP_PORTS is platform-owned" -- \
   render_app --set probes=false --set-string 'config.ASPNETCORE_HTTP_PORTS=8080'
 
-expect_fail "config ASPNETCORE_HTTPS_PORTS rejected" \
+expect_fail "config ASPNETCORE_HTTPS_PORTS rejected" "config.ASPNETCORE_HTTPS_PORTS is platform-owned" -- \
   render_app --set probes=false --set-string 'config.ASPNETCORE_HTTPS_PORTS=8443'
 
-expect_fail "config Kestrel__Endpoints__X rejected" \
+expect_fail "config Kestrel__Endpoints__X rejected" "platform-owned (Kestrel__*)" -- \
   render_app --set probes=false --set-string 'config.Kestrel__Endpoints__Http__Url=http://+:8080'
 
-expect_fail "config GOOGLE_APPLICATION_CREDENTIALS rejected" \
+expect_fail "config GOOGLE_APPLICATION_CREDENTIALS rejected" "config.GOOGLE_APPLICATION_CREDENTIALS is platform-owned" -- \
   render_app --set probes=false --set-string 'config.GOOGLE_APPLICATION_CREDENTIALS=/tmp/x'
 
 # Missing timeZone / timeoutSeconds — call helm directly so helper defaults do not apply.
-expect_fail "missing timeZone fails" \
+expect_schema_fail "missing timeZone fails" "schedule.timeZone" -- \
   helm template sample-job "${JOB_CHART}" \
     --set-string image.repository=example.dkr.ecr.us-east-1.amazonaws.com/sample-job \
     --set-string image.tag=deadbeef \
@@ -239,10 +331,10 @@ expect_fail "missing timeZone fails" \
     --set execution.timeoutSeconds=1800 \
     --set-string 'execution.args[0]=--mode=job'
 
-expect_fail "empty timeZone fails" \
+expect_schema_fail "empty timeZone fails" "schedule.timeZone" -- \
   render_job --set-string schedule.timeZone=
 
-expect_fail "missing timeoutSeconds fails" \
+expect_fail "missing timeoutSeconds fails" "execution.timeoutSeconds is required" -- \
   helm template sample-job "${JOB_CHART}" \
     --set-string image.repository=example.dkr.ecr.us-east-1.amazonaws.com/sample-job \
     --set-string image.tag=deadbeef \
@@ -250,12 +342,358 @@ expect_fail "missing timeoutSeconds fails" \
     --set-string schedule.timeZone=America/Sao_Paulo \
     --set-string 'execution.args[0]=--mode=job'
 
-expect_fail "bad concurrencyPolicy fails" \
+expect_schema_fail "bad concurrencyPolicy fails" "schedule.concurrencyPolicy" -- \
   render_job --set-string schedule.concurrencyPolicy=Nope
+
+# --- Application guards ---
+expect_schema_fail "wrong kind rejected" "kind" -- \
+  render_app --set probes=false --set-string kind=ScheduledJob
+
+expect_schema_fail "invalid workload.type rejected" "workload.type" -- \
+  render_app --set probes=false --set-string workload.type=foo
+
+expect_schema_fail "schedule on Application rejected" "schedule" -- \
+  render_app --set probes=false --set-string schedule.expression='0 * * * *'
+
+expect_schema_fail "execution on Application rejected" "execution" -- \
+  render_app --set probes=false --set execution.timeoutSeconds=60
+
+expect_schema_fail "history on Application rejected" "history" -- \
+  render_app --set probes=false --set history.successful=1
+
+expect_schema_fail "cronJob on Application rejected" "cronJob" -- \
+  render_app --set probes=false --set-string cronJob.schedule='0 * * * *'
+
+expect_schema_fail "legacyDns on worker rejected" "legacyDns" -- \
+  render_app --set-string workload.type=worker --set legacyDns=true
+
+expect_fail "autoscaling minReplicas > maxReplicas rejected" "must be <= autoscaling.maxReplicas" -- \
+  render_app --set probes=false --set autoscaling.minReplicas=9
+
+expect_schema_fail "empty image.repository rejected" "image.repository" -- \
+  helm template sample-api "${APP_CHART}" \
+    --set-string image.tag=deadbeef \
+    --set-string runtime.environment=develop \
+    --set probes=false
+
+# --- persistence ---
+expect_fail "persistence:true rejected" "persistence: true is invalid" -- \
+  render_app --set probes=false --set persistence=true
+
+expect_fail "persistence + autoscaling rejected" "persistence requires autoscaling: false" -- \
+  render_app --set probes=false --set-string persistence.mountPath=/data --set-string persistence.size=1Gi
+
+expect_fail "persistence + replicaCount>1 rejected" "persistence requires replicaCount: 1" -- \
+  render_app --set probes=false --set autoscaling=false --set replicaCount=2 \
+    --set-string persistence.mountPath=/data --set-string persistence.size=1Gi
+
+# --- externalSecret ---
+expect_fail "externalSecret:true rejected" "externalSecret: true is invalid" -- \
+  render_app --set probes=false --set externalSecret=true
+
+expect_fail "externalSecret data without store rejected" "requires externalSecret.secretStoreRef.name" -- \
+  render_app --set probes=false \
+    --set-json 'externalSecret={"data":[{"secretKey":"DB","remoteRef":{"key":"k"}}]}'
+
+expect_fail "externalSecret store without data rejected" "requires externalSecret.data" -- \
+  render_app --set probes=false --set-string externalSecret.secretStoreRef.name=aws
+
+expect_schema_fail "externalSecret remoteRef without key rejected" "externalSecret" -- \
+  render_app --set probes=false \
+    --set-json 'externalSecret={"secretStoreRef":{"name":"aws"},"data":[{"secretKey":"DB","remoteRef":{}}]}'
+
+# --- workloadIdentity ---
+expect_fail "WIF expirationSeconds < 600 rejected" "expirationSeconds must be >= 600" -- \
+  render_app --set probes=false \
+    --set-string workloadIdentity.gcp.audience=//iam.googleapis.com/x \
+    --set-string workloadIdentity.gcp.serviceAccountEmail=a@b.iam.gserviceaccount.com \
+    --set workloadIdentity.token.expirationSeconds=60
+
+expect_fail "WIF IRSA-reserved mountPath rejected" "must not use the IRSA reserved path" -- \
+  render_app --set probes=false \
+    --set-string workloadIdentity.gcp.audience=//iam.googleapis.com/x \
+    --set-string workloadIdentity.gcp.serviceAccountEmail=a@b.iam.gserviceaccount.com \
+    --set-string workloadIdentity.token.mountPath=/var/run/secrets/eks.amazonaws.com/serviceaccount
+
+# --- probes edge cases ---
+expect_schema_fail "worker probes:true rejected" "probes" -- \
+  render_app --set-string workload.type=worker --set probes=true
+
+expect_fail "grpc probes object without enabled rejected" "requires at least one of probes.startup|readiness|liveness.enabled" -- \
+  render_app --set-string workload.type=grpc --set-json 'probes={"readiness":{}}'
+
+expect_schema_fail "web probe path without leading slash rejected" "probes" -- \
+  render_app --set-json 'probes={"readiness":{"path":"health"}}'
+
+expect_schema_fail "probes invalid type (string) rejected" "probes" -- \
+  render_app --set-string probes=bogus
+
+# --- ScheduledJob guards ---
+expect_schema_fail "ScheduledJob wrong kind rejected" "kind" -- \
+  render_job --set-string kind=Application
+
+expect_schema_fail "ScheduledJob workload rejected" "workload" -- \
+  render_job --set-json 'workload={"type":"web"}'
+
+expect_schema_fail "ScheduledJob legacyDns rejected" "legacyDns" -- \
+  render_job --set legacyDns=true
+
+expect_schema_fail "ScheduledJob probes rejected" "probes" -- \
+  render_job --set probes=false
+
+expect_schema_fail "ScheduledJob autoscaling rejected" "autoscaling" -- \
+  render_job --set autoscaling=false
+
+expect_schema_fail "ScheduledJob persistence rejected" "persistence" -- \
+  render_job --set-string persistence.mountPath=/data
+
+expect_schema_fail "ScheduledJob retries < 0 rejected" "execution.retries" -- \
+  render_job --set execution.retries=-1
+
+expect_schema_fail "ScheduledJob history.successful < 0 rejected" "history.successful" -- \
+  render_job --set history.successful=-1
+
+expect_schema_fail "ScheduledJob history.failed < 0 rejected" "history.failed" -- \
+  render_job --set history.failed=-1
+
+expect_schema_fail "ScheduledJob startingDeadlineSeconds < 0 rejected" "schedule.startingDeadlineSeconds" -- \
+  render_job --set schedule.startingDeadlineSeconds=-1
+
+expect_fail "ScheduledJob config reserved key rejected" "config.ASPNETCORE_URLS is platform-owned" -- \
+  render_job --set-string 'config.ASPNETCORE_URLS=http://bad'
 
 # Platform-internal podSecurityContext on chart values still renders; public schema tested below.
 OUT_JOB_PSC="$(render_job)"
 assert_contains "$OUT_JOB_PSC" "runAsNonRoot: true" "job platform podSecurityContext still renders"
+
+echo "== positives (coverage gaps) =="
+OUT_LEGACY="$(render_app --set probes=false --set legacyDns=true)"
+assert_contains "$OUT_LEGACY" "sample-api.d.asa.com.br" "legacyDns adds legacy hostname on HTTPRoute"
+assert_contains "$OUT_LEGACY" "sample-api.dev.asa.corp" "legacyDns keeps corp hostname"
+
+OUT_LEGACY_GRPC="$(render_app --set-string workload.type=grpc --set probes=false --set legacyDns=true)"
+assert_contains "$OUT_LEGACY_GRPC" "sample-api.d.asa.com.br" "legacyDns adds legacy hostname on GRPCRoute"
+
+OUT_NO_HPA="$(render_app --set probes=false --set autoscaling=false)"
+assert_kind_count "$OUT_NO_HPA" HorizontalPodAutoscaler 0 "autoscaling:false disables HPA for web"
+assert_contains "$OUT_NO_HPA" "replicas: 1" "autoscaling:false keeps Deployment replicas"
+
+OUT_NO_SPREAD="$(render_app --set probes=false --set-string runtime.environment=production --set topologySpread.enabled=false)"
+assert_not_contains "$OUT_NO_SPREAD" "topologySpreadConstraints:" "topologySpread.enabled=false honoured"
+
+OUT_PVC="$(render_app --set probes=false --set autoscaling=false \
+  --set-string persistence.mountPath=/data --set-string persistence.size=1Gi)"
+assert_kind_count "$OUT_PVC" PersistentVolumeClaim 1 "persistence renders PVC"
+assert_contains "$OUT_PVC" "claimName: sample-api-data" "PVC claim name"
+assert_contains "$OUT_PVC" 'sizeLimit: "128Mi"' "tmp emptyDir sizeLimit"
+
+WIF_AUD="//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/eks"
+OUT_WIF_ONLY="$(render_app --set probes=false \
+  --set-string "workloadIdentity.gcp.audience=${WIF_AUD}" \
+  --set-string workloadIdentity.gcp.serviceAccountEmail=a@b.iam.gserviceaccount.com)"
+assert_contains "$OUT_WIF_ONLY" "GOOGLE_APPLICATION_CREDENTIALS" "WIF-only GOOGLE_APPLICATION_CREDENTIALS"
+assert_contains "$OUT_WIF_ONLY" "/var/run/secrets/gcp/serviceaccount" "WIF-only token mount"
+assert_not_contains "$OUT_WIF_ONLY" "eks.amazonaws.com/role-arn" "WIF-only has no IRSA annotation"
+
+OUT_ES="$(render_app --set probes=false \
+  --set-string externalSecret.secretStoreRef.name=aws-secrets \
+  --set-json 'externalSecret.data=[{"secretKey":"DB","remoteRef":{"key":"prod/db","property":"password"}}]')"
+assert_kind_count "$OUT_ES" ExternalSecret 1 "externalSecret renders ExternalSecret"
+assert_contains "$OUT_ES" 'secretKey: "DB"' "externalSecret secretKey"
+assert_contains "$OUT_ES" 'key: "prod/db"' "externalSecret remoteRef.key"
+
+OUT_LABELS="$(render_app --set probes=false)"
+assert_contains "$OUT_LABELS" 'app.kubernetes.io/version: "deadbeef"' "resource labels include image tag version"
+assert_contains "$OUT_LABELS" "app.kubernetes.io/managed-by: Helm" "resource labels include managed-by"
+assert_contains "$OUT_LABELS" "helm.sh/chart: asa-application-3.2.0" "resource metadata has helm.sh/chart"
+# helm.sh/chart must NOT appear on the pod template (would force rollout on chart bump).
+POD_LABELS="$(python3 -c '
+import sys, yaml
+docs=list(yaml.safe_load_all(sys.stdin))
+for d in docs:
+  if d and d.get("kind")=="Deployment":
+    print(yaml.dump(d["spec"]["template"]["metadata"].get("labels",{})))
+' <<<"$OUT_LABELS")"
+assert_contains "$POD_LABELS" "app.kubernetes.io/managed-by: Helm" "pod labels include managed-by"
+assert_not_contains "$POD_LABELS" "helm.sh/chart:" "pod labels omit helm.sh/chart"
+# selector stays only app=
+SELECTOR="$(python3 -c '
+import sys, yaml
+docs=list(yaml.safe_load_all(sys.stdin))
+for d in docs:
+  if d and d.get("kind")=="Deployment":
+    print(yaml.dump(d["spec"]["selector"]["matchLabels"]))
+' <<<"$OUT_LABELS")"
+assert_contains "$SELECTOR" "app: sample-api" "selector keeps app"
+assert_not_contains "$SELECTOR" "app.kubernetes.io/" "selector has no k8s recommended labels"
+
+OUT_JOB_LABELS="$(render_job)"
+assert_contains "$OUT_JOB_LABELS" "helm.sh/chart: asa-scheduled-job-3.2.0" "job resource has helm.sh/chart"
+assert_contains "$OUT_JOB_LABELS" 'sizeLimit: "128Mi"' "job tmp emptyDir sizeLimit"
+# helm.sh/chart must NOT appear on the CronJob pod template (would force Job recreation on chart bump).
+JOB_POD_LABELS="$(python3 -c '
+import sys, yaml
+docs=list(yaml.safe_load_all(sys.stdin))
+for d in docs:
+  if d and d.get("kind")=="CronJob":
+    print(yaml.dump(d["spec"]["jobTemplate"]["spec"]["template"]["metadata"].get("labels",{})))
+' <<<"$OUT_JOB_LABELS")"
+assert_contains "$JOB_POD_LABELS" "app.kubernetes.io/managed-by: Helm" "job pod labels include managed-by"
+assert_not_contains "$JOB_POD_LABELS" "helm.sh/chart:" "job pod labels omit helm.sh/chart"
+
+echo "== agent TDD guardrails (template state) =="
+# Properties an agent could delete while "refactoring" — must stay red if removed.
+
+# 1) ScheduledJob without command/args (template-reachable; critical under Forbid).
+expect_fail "ScheduledJob without command/args rejected" \
+  "execution.command or execution.args is required" -- \
+  helm template sample-job "${JOB_CHART}" \
+    --set-string image.repository=example.dkr.ecr.us-east-1.amazonaws.com/sample-job \
+    --set-string image.tag=deadbeef \
+    --set-string 'schedule.expression=0 2 * * *' \
+    --set-string schedule.timeZone=America/Sao_Paulo \
+    --set execution.timeoutSeconds=1800
+
+# 2) Security baseline — structural (wrong nesting / wrong resource would fail).
+assert_struct "$OUT_WEB" "web SA automountServiceAccountToken=false" '
+sa = next(d for d in docs if d["kind"]=="ServiceAccount")
+dep = next(d for d in docs if d["kind"]=="Deployment")
+pod = dep["spec"]["template"]["spec"]
+ctr = pod["containers"][0]
+assert sa.get("automountServiceAccountToken") is False
+assert pod.get("automountServiceAccountToken") is False
+assert pod.get("enableServiceLinks") is False
+assert pod["securityContext"]["seccompProfile"]["type"] == "RuntimeDefault"
+assert ctr["securityContext"]["readOnlyRootFilesystem"] is True
+assert ctr["securityContext"]["allowPrivilegeEscalation"] is False
+assert ctr["securityContext"]["capabilities"]["drop"] == ["ALL"]
+'
+
+assert_struct "$OUT_JOB_LABELS" "job SA+pod security baseline" '
+sa = next(d for d in docs if d["kind"]=="ServiceAccount")
+cj = next(d for d in docs if d["kind"]=="CronJob")
+pod = cj["spec"]["jobTemplate"]["spec"]["template"]["spec"]
+ctr = pod["containers"][0]
+assert sa.get("automountServiceAccountToken") is False
+assert pod.get("automountServiceAccountToken") is False
+assert pod.get("enableServiceLinks") is False
+assert pod["securityContext"]["seccompProfile"]["type"] == "RuntimeDefault"
+assert ctr["securityContext"]["readOnlyRootFilesystem"] is True
+assert ctr["securityContext"]["allowPrivilegeEscalation"] is False
+assert ctr["securityContext"]["capabilities"]["drop"] == ["ALL"]
+'
+
+# 3) checksum annotations force rollout when config/WIF change.
+OUT_CFG="$(render_app --set probes=false --set-string config.FOO=bar)"
+assert_struct "$OUT_CFG" "checksum/config on Deployment pod when config set" '
+dep = next(d for d in docs if d["kind"]=="Deployment")
+ann = dep["spec"]["template"]["metadata"].get("annotations") or {}
+assert "checksum/config" in ann and len(ann["checksum/config"]) > 0
+'
+
+OUT_WIF_CS="$(render_app --set probes=false \
+  --set-string "workloadIdentity.gcp.audience=${WIF_AUD}" \
+  --set-string workloadIdentity.gcp.serviceAccountEmail=a@b.iam.gserviceaccount.com)"
+assert_struct "$OUT_WIF_CS" "checksum/wif on Deployment pod when WIF set" '
+dep = next(d for d in docs if d["kind"]=="Deployment")
+ann = dep["spec"]["template"]["metadata"].get("annotations") or {}
+assert "checksum/wif" in ann and len(ann["checksum/wif"]) > 0
+'
+
+OUT_JOB_CFG="$(render_job --set-string config.FOO=bar)"
+assert_struct "$OUT_JOB_CFG" "checksum/config on CronJob pod when config set" '
+cj = next(d for d in docs if d["kind"]=="CronJob")
+ann = cj["spec"]["jobTemplate"]["spec"]["template"]["metadata"].get("annotations") or {}
+assert "checksum/config" in ann and len(ann["checksum/config"]) > 0
+'
+
+OUT_JOB_WIF="$(render_job \
+  --set-string "workloadIdentity.gcp.audience=${WIF_AUD}" \
+  --set-string workloadIdentity.gcp.serviceAccountEmail=a@b.iam.gserviceaccount.com)"
+assert_struct "$OUT_JOB_WIF" "checksum/wif on CronJob pod when WIF set" '
+cj = next(d for d in docs if d["kind"]=="CronJob")
+ann = cj["spec"]["jobTemplate"]["spec"]["template"]["metadata"].get("annotations") or {}
+assert "checksum/wif" in ann and len(ann["checksum/wif"]) > 0
+'
+
+# 4) CronJob platform defaults (history + backoff).
+assert_struct "$OUT_JOB_LABELS" "CronJob history/backoff defaults" '
+cj = next(d for d in docs if d["kind"]=="CronJob")
+assert cj["spec"]["successfulJobsHistoryLimit"] == 3
+assert cj["spec"]["failedJobsHistoryLimit"] == 1
+assert cj["spec"]["jobTemplate"]["spec"]["backoffLimit"] == 2
+'
+
+# 5) Service targetPort by name + appProtocol only on grpc.
+assert_struct "$OUT_WEB" "web Service targetPort=http, no appProtocol" '
+svc = next(d for d in docs if d["kind"]=="Service")
+p = svc["spec"]["ports"][0]
+assert p["name"] == "http"
+assert p["targetPort"] == "http"
+assert "appProtocol" not in p
+'
+
+OUT_GRPC_PORTS="$(render_app --set-string workload.type=grpc --set probes=false)"
+assert_struct "$OUT_GRPC_PORTS" "grpc Service targetPort=grpc + h2c appProtocol" '
+svc = next(d for d in docs if d["kind"]=="Service")
+p = svc["spec"]["ports"][0]
+assert p["name"] == "grpc"
+assert p["targetPort"] == "grpc"
+assert p.get("appProtocol") == "kubernetes.io/h2c"
+'
+
+# 6) Dual lock: template `fail` still fires when schema is bypassed.
+# If an agent deletes the template fail as "duplicate of schema", these go red.
+expect_fail "template dual-lock: workload.port" "workload.port is not supported" -- \
+  with_schema_bypassed "${APP_CHART}" \
+  render_app --set probes=false --set-json 'workload={"type":"web","port":9090}'
+
+expect_fail "template dual-lock: schedule on Application" \
+  "schedule/execution/history belong to kind: ScheduledJob" -- \
+  with_schema_bypassed "${APP_CHART}" \
+  render_app --set probes=false --set-string schedule.expression='0 * * * *'
+
+expect_fail "template dual-lock: execution on Application" \
+  "schedule/execution/history belong to kind: ScheduledJob" -- \
+  with_schema_bypassed "${APP_CHART}" \
+  render_app --set probes=false --set execution.timeoutSeconds=60
+
+expect_fail "template dual-lock: history on Application" \
+  "schedule/execution/history belong to kind: ScheduledJob" -- \
+  with_schema_bypassed "${APP_CHART}" \
+  render_app --set probes=false --set history.successful=1
+
+expect_fail "template dual-lock: cronJob on Application" "cronJob is removed" -- \
+  with_schema_bypassed "${APP_CHART}" \
+  render_app --set probes=false --set-json 'cronJob={"schedule":"0 * * * *"}'
+
+expect_fail "template dual-lock: wrong kind" "asa-application requires kind: Application" -- \
+  with_schema_bypassed "${APP_CHART}" \
+  render_app --set probes=false --set-string kind=ScheduledJob
+
+expect_fail "template dual-lock: legacyDns on worker" \
+  "legacyDns is invalid for workload.type: worker" -- \
+  with_schema_bypassed "${APP_CHART}" \
+  render_app --set-string workload.type=worker --set legacyDns=true
+
+expect_fail "template dual-lock: workload on ScheduledJob" \
+  "workload belongs to kind: Application" -- \
+  with_schema_bypassed "${JOB_CHART}" \
+  render_job --set-json 'workload={"type":"web"}'
+
+# Ensure bypass never left a schema displaced.
+for ch in "${APP_CHART}" "${JOB_CHART}"; do
+  if [[ ! -f "${ch}/values.schema.json" ]]; then
+    echo "FAIL: values.schema.json missing after dual-lock tests (${ch})"
+    FAILED=1
+  elif compgen -G "${ch}/values.schema.json.tdd-off.*" >/dev/null; then
+    echo "FAIL: leftover schema bypass file in ${ch}"
+    ls "${ch}"/values.schema.json.tdd-off.* || true
+    FAILED=1
+  else
+    echo "OK: schema intact after dual-lock (${ch##*/})"
+  fi
+done
 
 echo "== public manifesto schema =="
 VALIDATE="${ROOT}/scripts/validate-manifest.py"
@@ -283,9 +721,14 @@ else
   fi
 
   schema_reject() {
-    local msg="$1" schema="$2" json="$3"
-    if echo "$json" | python3 "${VALIDATE}" "$schema" --stdin >/dev/null 2>&1; then
-      echo "FAIL: $msg"
+    local msg="$1" schema="$2" json="$3" needle="$4"
+    local out
+    if out="$(echo "$json" | python3 "${VALIDATE}" "$schema" --stdin 2>&1)"; then
+      echo "FAIL: $msg (expected rejection)"
+      FAILED=1
+    elif ! grep -qF -- "$needle" <<<"$out"; then
+      echo "FAIL: $msg (expected message containing: $needle)"
+      echo "  got: $(head -c 400 <<<"$out" | tr '\n' ' ')"
       FAILED=1
     else
       echo "OK: $msg"
@@ -296,17 +739,23 @@ else
   JOB_SCHEMA="${ROOT}/schemas/scheduled-job.manifest.schema.json"
 
   schema_reject "typo legasyDns rejected" "$APP_SCHEMA" \
-    '{"kind":"Application","workload":{"type":"web"},"probes":false,"legasyDns":true}'
+    '{"kind":"Application","workload":{"type":"web"},"probes":false,"legasyDns":true}' \
+    "Additional properties are not allowed ('legasyDns' was unexpected)"
   schema_reject "typo resources.requets rejected" "$APP_SCHEMA" \
-    '{"kind":"Application","workload":{"type":"web"},"probes":false,"resources":{"requets":{"cpu":"100m"}}}'
+    '{"kind":"Application","workload":{"type":"web"},"probes":false,"resources":{"requets":{"cpu":"100m"}}}' \
+    "Additional properties are not allowed ('requets' was unexpected)"
   schema_reject "serviceAccount.create rejected" "$APP_SCHEMA" \
-    '{"kind":"Application","workload":{"type":"web"},"probes":false,"serviceAccount":{"create":true}}'
+    '{"kind":"Application","workload":{"type":"web"},"probes":false,"serviceAccount":{"create":true}}' \
+    "Additional properties are not allowed ('create' was unexpected)"
   schema_reject "probes.path rejected by public schema" "$APP_SCHEMA" \
-    '{"kind":"Application","workload":{"type":"web"},"probes":{"path":"/health"}}'
+    '{"kind":"Application","workload":{"type":"web"},"probes":{"path":"/health"}}' \
+    "is not valid under any of the given schemas"
   schema_reject "ScheduledJob without timeoutSeconds rejected" "$JOB_SCHEMA" \
-    '{"kind":"ScheduledJob","schedule":{"expression":"0 2 * * *","timeZone":"America/Sao_Paulo"},"execution":{"args":["x"]}}'
+    '{"kind":"ScheduledJob","schedule":{"expression":"0 2 * * *","timeZone":"America/Sao_Paulo"},"execution":{"args":["x"]}}' \
+    "'timeoutSeconds' is a required property"
   schema_reject "podSecurityContext on public ScheduledJob rejected" "$JOB_SCHEMA" \
-    '{"kind":"ScheduledJob","schedule":{"expression":"0 2 * * *","timeZone":"America/Sao_Paulo"},"execution":{"timeoutSeconds":60,"args":["x"]},"podSecurityContext":{"runAsNonRoot":true}}'
+    '{"kind":"ScheduledJob","schedule":{"expression":"0 2 * * *","timeZone":"America/Sao_Paulo"},"execution":{"timeoutSeconds":60,"args":["x"]},"podSecurityContext":{"runAsNonRoot":true}}' \
+    "Additional properties are not allowed ('podSecurityContext' was unexpected)"
 fi
 
 echo "== static checks (ADO / helm) =="
@@ -466,16 +915,19 @@ fi
 
 echo "== supply chain of downloaded tooling =="
 # Pinning a version does not protect the download; the bytes must be verified too.
-for f in "${ROOT}/templates/dotnet/ci.yml" "${ROOT}/.github/workflows/ci.yml"; do
-  name="$(basename "$(dirname "${f}")")/$(basename "${f}")"
-  if grep -q 'yq_linux_amd64' "${f}"; then
-    if grep -q 'sha256sum -c' "${f}"; then
-      echo "OK: ${name} verifies the yq download checksum"
-    else
-      echo "FAIL: ${name} downloads yq without verifying its SHA-256"
-      FAILED=1
+for tool in yq_linux_amd64 kubeconform-linux-amd64; do
+  for f in "${ROOT}/templates/dotnet/ci.yml" "${ROOT}/.github/workflows/ci.yml"; do
+    [[ -f "${f}" ]] || continue
+    name="$(basename "$(dirname "${f}")")/$(basename "${f}")"
+    if grep -q "${tool}" "${f}"; then
+      if grep -q 'sha256sum -c' "${f}"; then
+        echo "OK: ${name} verifies the ${tool} download checksum"
+      else
+        echo "FAIL: ${name} downloads ${tool} without verifying its SHA-256"
+        FAILED=1
+      fi
     fi
-  fi
+  done
 done
 
 # The same yq version and checksum must be used everywhere, or one path validates
@@ -553,7 +1005,7 @@ for ch in "${APP_CHART}" "${JOB_CHART}"; do
     echo "OK: $(basename "${ch}") declares kubeVersion >=1.27.0-0"
   fi
 done
-expect_fail "app chart rejects Kubernetes 1.26" \
+expect_fail "app chart rejects Kubernetes 1.26" "kubeVersion: >=1.27.0-0" -- \
   render_app --set probes=false --kube-version 1.26.0
 if render_app --set probes=false --kube-version 1.27.0 >/dev/null 2>&1; then
   echo "OK: app chart accepts Kubernetes 1.27"
@@ -609,14 +1061,22 @@ if ! bash "${ROOT}/tests/gateway-consistency.sh"; then
   FAILED=1
 fi
 
+echo "== chart conform (kubeconform) =="
+if ! bash "${ROOT}/tests/chart-conform.sh"; then
+  echo "FAIL: chart-conform.sh"
+  FAILED=1
+fi
+
 echo "== helm lint =="
-if ! helm lint "${APP_CHART}"; then
+if ! helm lint "${APP_CHART}" \
+  --set-string image.repository=example.dkr.ecr.us-east-1.amazonaws.com/sample-api; then
   echo "FAIL: helm lint asa-application"
   FAILED=1
 else
   echo "OK: helm lint asa-application"
 fi
 if ! helm lint "${JOB_CHART}" \
+  --set-string image.repository=example.dkr.ecr.us-east-1.amazonaws.com/sample-job \
   --set-string schedule.expression='0 2 * * *' \
   --set-string schedule.timeZone=America/Sao_Paulo \
   --set execution.timeoutSeconds=1800 \
