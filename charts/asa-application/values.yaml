@@ -60,6 +60,10 @@ persistence:
 # Reserved platform keys are rejected (ASPNETCORE_URLS, Kestrel__*, GOOGLE_APPLICATION_CREDENTIALS, …).
 config: {}
 
+# Writable scratch for readOnlyRootFilesystem pods. Platform-owned (not in public manifesto).
+tmp:
+  sizeLimit: 128Mi
+
 externalSecret:
   refreshInterval: 1h
   secretStoreRef:

@@ -10,6 +10,7 @@ FAILED=0
 # Shared primitives that must stay byte-identical until a library chart is extracted.
 SHARED=(
   _workloadidentity.tpl
+  _labels.tpl
   serviceaccount.yaml
   externalsecret.yaml
   configmap.yaml

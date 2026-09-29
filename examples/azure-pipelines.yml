@@ -7,7 +7,7 @@ resources:
       type: github
       name: diegofernandes-dev/pipeline-templates
       endpoint: github-diegofernandes-dev
-      ref: refs/tags/v3.1.2
+      ref: refs/tags/v3.2.0
 
 extends:
   template: templates/dotnet/ci.yml@templates

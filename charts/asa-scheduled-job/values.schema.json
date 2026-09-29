@@ -72,7 +72,10 @@
             "type": "string"
           }
         }
-      }
+      },
+      "required": [
+        "timeoutSeconds"
+      ]
     },
     "history": {
       "type": "object",
@@ -93,7 +96,8 @@
       "additionalProperties": false,
       "properties": {
         "repository": {
-          "type": "string"
+          "type": "string",
+          "minLength": 1
         },
         "tag": {
           "type": "string"
@@ -217,12 +221,16 @@
                     "additionalProperties": false,
                     "properties": {
                       "key": {
-                        "type": "string"
+                        "type": "string",
+                        "minLength": 1
                       },
                       "property": {
                         "type": "string"
                       }
-                    }
+                    },
+                    "required": [
+                      "key"
+                    ]
                   }
                 }
               }
@@ -271,6 +279,16 @@
     "legacyDns": false,
     "probes": false,
     "autoscaling": false,
-    "persistence": false
+    "persistence": false,
+    "tmp": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sizeLimit": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
   }
 }

@@ -4,14 +4,13 @@
 {{- include "chart.validateProbes" . }}
 {{- include "chart.validateExternalSecret" . }}
 {{- include "chart.validateConfig" . }}
+{{- include "chart.validateAutoscaling" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ .Release.Name }}
   labels:
-    app: {{ .Release.Name }}
-    app.kubernetes.io/name: {{ .Release.Name }}
-    app.kubernetes.io/instance: {{ .Release.Name }}
+    {{- include "chart.labels" . | nindent 4 }}
     app.kubernetes.io/component: {{ include "chart.workloadType" . }}
 spec:
   {{- if not ((include "chart.autoscalingEnabled" .) | eq "true") }}
@@ -38,9 +37,7 @@ spec:
   template:
     metadata:
       labels:
-        app: {{ .Release.Name }}
-        app.kubernetes.io/name: {{ .Release.Name }}
-        app.kubernetes.io/instance: {{ .Release.Name }}
+        {{- include "chart.podLabels" . | nindent 8 }}
         app.kubernetes.io/component: {{ include "chart.workloadType" . }}
       {{- $cfgOn := (include "chart.configEnabled" .) | eq "true" -}}
       {{- $wifOn := (include "chart.workloadIdentityEnabled" .) | eq "true" -}}
@@ -179,7 +176,8 @@ spec:
       {{- end }}
       volumes:
         - name: tmp
-          emptyDir: {}
+          emptyDir:
+            sizeLimit: {{ ((.Values.tmp | default dict).sizeLimit | default "128Mi") | quote }}
         {{- if (include "chart.persistenceEnabled" .) | eq "true" }}
         - name: data
           persistentVolumeClaim:

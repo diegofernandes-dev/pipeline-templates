@@ -14,7 +14,7 @@ Templates YAML reutilizáveis para Azure DevOps (GitHub → `extends`).
 | [`charts/asa-scheduled-job`](charts/asa-scheduled-job) | `kind: ScheduledJob` — CronJob |
 | [`schemas/`](schemas/) | Schema **público** (`additionalProperties: false`) |
 | [`scripts/`](scripts/) | `jsonschema`, identidade cross-env, paridade de schemas, descoberta de valores de plataforma |
-| [`tests/`](tests/) | Render invariants + drift de chart/schema + consistência de gateway |
+| [`tests/`](tests/) | Render invariants + drift de chart/schema + consistência de gateway + kubeconform |
 | [`.github/workflows/ci.yml`](.github/workflows/ci.yml) | CI obrigatório do repositório |
 
 ## Consumo
@@ -26,7 +26,7 @@ resources:
       type: github
       name: diegofernandes-dev/pipeline-templates
       endpoint: github-diegofernandes-dev
-      ref: refs/tags/v3.1.2   # após release; até lá use commit SHA
+      ref: refs/tags/v3.2.0   # após release; até lá use commit SHA
 
 extends:
   template: templates/dotnet/ci.yml@templates
@@ -121,18 +121,24 @@ em qual cluster está aplicando.
 ### Testes locais / CI do repo
 
 ```bash
-helm lint charts/asa-application
-helm lint charts/asa-scheduled-job --set-string schedule.expression='0 2 * * *' \
+helm lint charts/asa-application \
+  --set-string image.repository=example.dkr.ecr.us-east-1.amazonaws.com/sample-api
+helm lint charts/asa-scheduled-job --set-string image.repository=example.dkr.ecr.us-east-1.amazonaws.com/sample-job \
+  --set-string schedule.expression='0 2 * * *' \
   --set-string schedule.timeZone=UTC --set execution.timeoutSeconds=60 \
   --set-string 'execution.args[0]=x'
 ./tests/chart-drift.sh            # primitivas compartilhadas + paridade dos schemas
 ./tests/gateway-consistency.sh    # chart × platform-environments.json
-./tests/chart-invariants.sh       # suíte completa (chama as duas acima)
+./tests/chart-conform.sh          # kubeconform -strict nos manifests renderizados
+./tests/chart-invariants.sh       # suíte completa (chama as três acima)
 ```
+
+**TDD / guardrail para agentes:** antes de mudar `charts/**/templates/**` ou `values.schema.json`, escreva ou ajuste o assert em [`tests/chart-invariants.sh`](tests/chart-invariants.sh) que prova a propriedade; só então edite o chart. A suíte deve ficar vermelha se a propriedade sumir. Alguns negativos de “dupla trava” usam bypass temporário do `values.schema.json` para exercitar o `fail` do template (além do schema) — assim remover o `fail` “duplicado” no `.tpl` também quebra o CI.
 
 ### Premissas / docs
 
-- **Baseline de pod (platform-owned, fora do manifesto público):** `runAsNonRoot` + `runAsUser`/`runAsGroup`/`fsGroup` **1654** (= `APP_UID` de `mcr.microsoft.com/dotnet/aspnet`, verificado em 8.0/9.0/10.0 e **asseverado em build time** por [`docker/dotnet/Dockerfile`](docker/dotnet/Dockerfile) — imagem e chart não divergem em silêncio), `readOnlyRootFilesystem`, `seccompProfile: RuntimeDefault`, `drop: [ALL]`, `automountServiceAccountToken: false`, `enableServiceLinks: false`, `terminationMessagePolicy: FallbackToLogsOnError`.
+- **Baseline de pod (platform-owned, fora do manifesto público):** `runAsNonRoot` + `runAsUser`/`runAsGroup`/`fsGroup` **1654** (= `APP_UID` de `mcr.microsoft.com/dotnet/aspnet`, verificado em 8.0/9.0/10.0 e **asseverado em build time** por [`docker/dotnet/Dockerfile`](docker/dotnet/Dockerfile) — imagem e chart não divergem em silêncio), `readOnlyRootFilesystem`, `seccompProfile: RuntimeDefault`, `drop: [ALL]`, `automountServiceAccountToken: false`, `enableServiceLinks: false`, `terminationMessagePolicy: FallbackToLogsOnError`, `/tmp` como `emptyDir` com `sizeLimit: 128Mi`.
+- **Labels:** `app.kubernetes.io/{name,instance,version,managed-by}` + `helm.sh/chart` no metadata dos recursos. `helm.sh/chart` **não** vai no pod template (bump de chart não força rollout). `spec.selector.matchLabels` permanece só `app: <release>` (campo imutável).
 - **Rollout:** `revisionHistoryLimit: 3`; `progressDeadlineSeconds: 240` — mantenha **abaixo** do `helmTimeout` (default `5m`) para que rollout travado apareça como `ProgressDeadlineExceeded` em vez de timeout opaco do `helm --wait`. `maxUnavailable: 0` preserva capacidade; com PVC RWO a strategy vira `Recreate`.
 - **Data Protection:** `readOnlyRootFilesystem` + múltiplas réplicas pode exigir key ring externo na aplicação — não resolvido pelo chart.
 - **Alta disponibilidade (derivado, não descoberto):**
@@ -149,3 +155,4 @@ helm lint charts/asa-scheduled-job --set-string schedule.expression='0 2 * * *' 
 | `v3.1.0` | imutável |
 | `v3.1.1` | **RETIRADA — não usar.** Duas sintaxes jq inválidas no mikefarah/yq: `yq -e --arg` no preflight de Gateway faz **todo deploy web/grpc falhar**, e `\| last \|` quebra o rollback. `gatewayNamespace` também estava errado (`asa-infra`). |
 | `v3.1.2` | correção da `v3.1.1` + hardening: `expectedKubeContext` ligado ao mapping autoritativo, invariantes de chart validadas **antes** do push de imagem, preflight por apiVersion exata, baseline de pod endurecido (`runAsUser` 1654, `enableServiceLinks: false`, `revisionHistoryLimit`, `progressDeadlineSeconds`), guardas de drift de gateway e de schema |
+| `v3.2.0` | kubeconform nos manifests renderizados; `expect_fail` com asserção de mensagem; `validateAutoscaling` (min≤max); `remoteRef.key` required; `image.repository` minLength; `/tmp` `emptyDir.sizeLimit`; labels padrão (`version`/`managed-by`/`helm.sh/chart`); gate de bump de versão no CI |

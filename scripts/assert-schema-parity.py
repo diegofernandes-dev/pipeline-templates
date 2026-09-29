@@ -37,8 +37,9 @@ INTENTIONAL: dict[tuple[str, str], str] = {
         "covers worker -> legacyDns: false."
     ),
     ("ScheduledJob", "properties.execution"): (
-        "chart allows timeoutSeconds: null and omits `required` because values.yaml ships null "
-        "defaults; _runtime.tpl enforces presence and > 0 with a platform-specific message."
+        "chart allows timeoutSeconds: null (values.yaml ships null defaults for helm lint) while "
+        "the public schema requires a positive integer; both require the key. _runtime.tpl still "
+        "enforces > 0 with a platform-specific message."
     ),
 }
 

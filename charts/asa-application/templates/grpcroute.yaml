@@ -4,9 +4,7 @@ kind: GRPCRoute
 metadata:
   name: {{ .Release.Name }}
   labels:
-    app: {{ .Release.Name }}
-    app.kubernetes.io/name: {{ .Release.Name }}
-    app.kubernetes.io/instance: {{ .Release.Name }}
+    {{- include "chart.labels" . | nindent 4 }}
 spec:
   parentRefs:
     - name: {{ include "chart.gatewayName" . }}

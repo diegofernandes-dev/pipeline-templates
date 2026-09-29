@@ -83,6 +83,16 @@ false
 {{- end -}}
 {{- end }}
 
+{{- define "chart.validateAutoscaling" -}}
+{{- if (include "chart.autoscalingEnabled" .) | eq "true" -}}
+{{- $min := include "chart.hpaMinReplicas" . | int -}}
+{{- $max := include "chart.hpaMaxReplicas" . | int -}}
+{{- if gt $min $max -}}
+{{- fail (printf "autoscaling.minReplicas (%d) must be <= autoscaling.maxReplicas (%d)" $min $max) -}}
+{{- end -}}
+{{- end -}}
+{{- end }}
+
 {{/*
 Effective floor on running replicas: the HPA minimum when autoscaling is on, otherwise
 replicaCount. Used to decide whether a PDB is meaningful at all.
