@@ -12,10 +12,7 @@ spec:
       group: gateway.networking.k8s.io
       kind: Gateway
   hostnames:
-    - {{ include "chart.corpHostname" . | quote }}
-    {{- if .Values.legacyDns }}
-    - {{ include "chart.legacyHostname" . | quote }}
-    {{- end }}
+    {{- include "chart.hostnames" . | nindent 4 }}
   rules:
     - backendRefs:
         - name: {{ .Release.Name }}

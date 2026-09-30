@@ -438,7 +438,7 @@
         "tier",
         "gatewayName",
         "gatewayNamespace",
-        "corpDnsZone",
+        "dnsZone",
         "defaultMinReplicas"
       ],
       "properties": {
@@ -456,7 +456,7 @@
         "gatewayNamespace": {
           "type": "string"
         },
-        "corpDnsZone": {
+        "dnsZone": {
           "type": "string"
         },
         "legacyDnsZone": {

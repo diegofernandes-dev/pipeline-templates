@@ -592,7 +592,7 @@ assert_contains "$OUT_ES" 'key: "prod/db"' "externalSecret remoteRef.key"
 OUT_LABELS="$(render_app --set probes=false)"
 assert_contains "$OUT_LABELS" 'app.kubernetes.io/version: "deadbeef"' "resource labels include image tag version"
 assert_contains "$OUT_LABELS" "app.kubernetes.io/managed-by: Helm" "resource labels include managed-by"
-assert_contains "$OUT_LABELS" "helm.sh/chart: asa-application-5.0.0" "resource metadata has helm.sh/chart"
+assert_contains "$OUT_LABELS" "helm.sh/chart: asa-application-5.1.0" "resource metadata has helm.sh/chart"
 # helm.sh/chart must NOT appear on the pod template (would force rollout on chart bump).
 POD_LABELS="$(python3 -c '
 import sys, yaml
@@ -615,7 +615,7 @@ assert_contains "$SELECTOR" "app: sample-api" "selector keeps app"
 assert_not_contains "$SELECTOR" "app.kubernetes.io/" "selector has no k8s recommended labels"
 
 OUT_JOB_LABELS="$(render_job)"
-assert_contains "$OUT_JOB_LABELS" "helm.sh/chart: asa-scheduled-job-4.0.0" "job resource has helm.sh/chart"
+assert_contains "$OUT_JOB_LABELS" "helm.sh/chart: asa-scheduled-job-4.1.0" "job resource has helm.sh/chart"
 assert_contains "$OUT_JOB_LABELS" 'sizeLimit: "128Mi"' "job tmp emptyDir sizeLimit"
 # helm.sh/chart must NOT appear on the CronJob pod template (would force Job recreation on chart bump).
 JOB_POD_LABELS="$(python3 -c '
@@ -1178,6 +1178,74 @@ assert_not_contains "$OUT_PDB_PRD" "whenUnsatisfiable: DoNotSchedule" "no hard D
 # Explicit opt-out still honoured.
 OUT_PDB_OFF="$(PLATFORM_ENV=production render_app --set probes=false --set pdb.enabled=false)"
 assert_kind_count "$OUT_PDB_OFF" PodDisruptionBudget 0 "pdb.enabled=false honoured"
+
+echo "== hostname composition =="
+# The hostname list is composed from two inputs of different origin: legacyDns is consumer
+# intent (public manifest) and legacyDnsZone is a platform fact (area profile). Both route
+# kinds need the identical list, so it is composed once in chart.hostnames and the route
+# templates stay purely structural.
+hostnames_of() {
+  local kind="$1" rendered="$2"
+  printf '%s' "${rendered}" | yq ea -r "select(.kind == \"${kind}\") | .spec.hostnames[]" 2>/dev/null | awk 'NF'
+}
+assert_hostnames() {
+  local msg="$1" kind="$2" rendered="$3" expected="$4"
+  local got
+  got="$(hostnames_of "${kind}" "${rendered}" | tr '\n' ',' | sed 's/,$//')"
+  if [[ "${got}" == "${expected}" ]]; then
+    echo "OK: ${msg}"
+  else
+    echo "FAIL: ${msg} (got '${got}', want '${expected}')"
+    FAILED=1
+  fi
+}
+
+OUT_H_WEB="$(render_app --set-string workload.type=web --set-json 'probes={"readiness":{"path":"/h"}}')"
+assert_hostnames "web: corp hostname only when legacyDns is off" HTTPRoute "$OUT_H_WEB" \
+  "sample-api.dev.asa.corp"
+
+OUT_H_WEB_L="$(render_app --set-string workload.type=web --set-json 'probes={"readiness":{"path":"/h"}}' --set legacyDns=true)"
+assert_hostnames "web: corp then legacy when legacyDns is on" HTTPRoute "$OUT_H_WEB_L" \
+  "sample-api.dev.asa.corp,sample-api.d.asa.com.br"
+
+OUT_H_GRPC="$(render_app --set-string workload.type=grpc --set-json 'probes={"readiness":{"enabled":true}}')"
+assert_hostnames "grpc: corp hostname only when legacyDns is off" GRPCRoute "$OUT_H_GRPC" \
+  "sample-api.dev.asa.corp"
+
+OUT_H_GRPC_L="$(render_app --set-string workload.type=grpc --set-json 'probes={"readiness":{"enabled":true}}' --set legacyDns=true)"
+assert_hostnames "grpc: corp then legacy when legacyDns is on" GRPCRoute "$OUT_H_GRPC_L" \
+  "sample-api.dev.asa.corp,sample-api.d.asa.com.br"
+
+# An area whose legacy zone equals its corp zone must not emit the hostname twice. The API
+# server accepts a duplicate silently, so nothing downstream would catch it.
+OUT_H_SAME="$(render_app --set-string workload.type=web --set-json 'probes={"readiness":{"path":"/h"}}' \
+  --set legacyDns=true --set-string platform.legacyDnsZone=dev.asa.corp)"
+assert_hostnames "identical corp and legacy zones collapse to one hostname" HTTPRoute "$OUT_H_SAME" \
+  "sample-api.dev.asa.corp"
+
+OUT_H_SAME_GRPC="$(render_app --set-string workload.type=grpc --set-json 'probes={"readiness":{"enabled":true}}' \
+  --set legacyDns=true --set-string platform.legacyDnsZone=dev.asa.corp)"
+assert_hostnames "grpc: identical zones collapse to one hostname" GRPCRoute "$OUT_H_SAME_GRPC" \
+  "sample-api.dev.asa.corp"
+
+# legacyDns without a zone is a misconfiguration, and both route kinds must reject it with
+# the same message from the same place — not from whichever route template happens to render.
+expect_fail "legacyDns without a legacy zone rejected (web)" "legacyDns=true requires platform.legacyDnsZone" -- \
+  render_app --set-string workload.type=web --set-json 'probes={"readiness":{"path":"/h"}}' \
+    --set legacyDns=true --set-string platform.legacyDnsZone=
+expect_fail "legacyDns without a legacy zone rejected (grpc)" "legacyDns=true requires platform.legacyDnsZone" -- \
+  render_app --set-string workload.type=grpc --set-json 'probes={"readiness":{"enabled":true}}' \
+    --set legacyDns=true --set-string platform.legacyDnsZone=
+
+# Route templates must not re-implement the rule; they consume the composed list.
+for rt in httproute grpcroute; do
+  if grep -q 'legacyDns' "${APP_CHART}/templates/${rt}.yaml"; then
+    echo "FAIL: ${rt}.yaml decides hostname policy — it must include chart.hostnames instead"
+    FAILED=1
+  else
+    echo "OK: ${rt}.yaml consumes the composed hostname list"
+  fi
+done
 
 echo "== label values satisfy the Kubernetes label syntax =="
 # kubeconform validates structure and types but NOT label value syntax, so a tag like a

@@ -102,7 +102,7 @@ TIER_JSON="$(printf '%s' "${PLATFORM_JSON}" | yq -o=json -I=0 ".tiers.\"${TIER}\
 REQUIRED_KEYS=(
   gatewayName
   gatewayNamespace
-  corpDnsZone
+  dnsZone
   defaultMinReplicas
 )
 
@@ -120,7 +120,7 @@ fi
 
 GATEWAY_NAME="$(printf '%s' "${TIER_JSON}" | yq -r '.gatewayName')"
 GATEWAY_NAMESPACE="$(printf '%s' "${TIER_JSON}" | yq -r '.gatewayNamespace')"
-CORP_DNS_ZONE="$(printf '%s' "${TIER_JSON}" | yq -r '.corpDnsZone')"
+DNS_ZONE="$(printf '%s' "${TIER_JSON}" | yq -r '.dnsZone')"
 LEGACY_DNS_ZONE="$(printf '%s' "${TIER_JSON}" | yq -r '.legacyDnsZone // ""')"
 DEFAULT_MIN_REPLICAS="$(printf '%s' "${TIER_JSON}" | yq -r '.defaultMinReplicas')"
 
@@ -157,7 +157,7 @@ platform:
   tier: ${TIER}
   gatewayName: ${GATEWAY_NAME}
   gatewayNamespace: ${GATEWAY_NAMESPACE}
-  corpDnsZone: ${CORP_DNS_ZONE}
+  dnsZone: ${DNS_ZONE}
 ${LEGACY_LINE}
   defaultMinReplicas: ${DEFAULT_MIN_REPLICAS}
 EOF

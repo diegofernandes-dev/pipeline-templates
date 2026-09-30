@@ -10,7 +10,7 @@ metadata:
     app.kubernetes.io/instance: golden-app
     app.kubernetes.io/version: "deadbeef"
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: asa-application-5.0.0
+    helm.sh/chart: asa-application-5.1.0
     asa.platform/area: lab
     asa.platform/tier: develop
 automountServiceAccountToken: false
@@ -26,7 +26,7 @@ metadata:
     app.kubernetes.io/instance: golden-app
     app.kubernetes.io/version: "deadbeef"
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: asa-application-5.0.0
+    helm.sh/chart: asa-application-5.1.0
     asa.platform/area: lab
     asa.platform/tier: develop
 spec:
@@ -50,7 +50,7 @@ metadata:
     app.kubernetes.io/instance: golden-app
     app.kubernetes.io/version: "deadbeef"
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: asa-application-5.0.0
+    helm.sh/chart: asa-application-5.1.0
     asa.platform/area: lab
     asa.platform/tier: develop
     app.kubernetes.io/component: grpc
@@ -151,7 +151,7 @@ metadata:
     app.kubernetes.io/instance: golden-app
     app.kubernetes.io/version: "deadbeef"
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: asa-application-5.0.0
+    helm.sh/chart: asa-application-5.1.0
     asa.platform/area: lab
     asa.platform/tier: develop
 spec:
@@ -180,7 +180,7 @@ metadata:
     app.kubernetes.io/instance: golden-app
     app.kubernetes.io/version: "deadbeef"
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: asa-application-5.0.0
+    helm.sh/chart: asa-application-5.1.0
     asa.platform/area: lab
     asa.platform/tier: develop
 spec:

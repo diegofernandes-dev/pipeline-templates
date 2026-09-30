@@ -91,6 +91,6 @@ platform:
   tier: ""
   gatewayName: ""
   gatewayNamespace: ""
-  corpDnsZone: ""
+  dnsZone: ""
   legacyDnsZone: ""
   defaultMinReplicas: 1

@@ -321,7 +321,7 @@
         "gatewayNamespace": {
           "type": "string"
         },
-        "corpDnsZone": {
+        "dnsZone": {
           "type": "string"
         },
         "legacyDnsZone": {

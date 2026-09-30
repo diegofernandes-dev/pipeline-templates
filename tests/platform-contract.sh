@@ -102,7 +102,7 @@ print('OK: ${area} schema')
     want_name="$(yq -r ".platform.gatewayName" "${pf}")"
     want_ns="$(yq -r ".platform.gatewayNamespace" "${pf}")"
     want_min="$(yq -r ".platform.defaultMinReplicas" "${pf}")"
-    want_corp="$(yq -r ".platform.corpDnsZone" "${pf}")"
+    want_dns="$(yq -r ".platform.dnsZone" "${pf}")"
     want_area="$(yq -r ".platform.area" "${pf}")"
     want_tier="$(yq -r ".platform.tier" "${pf}")"
 
@@ -126,12 +126,16 @@ print('OK: ${area} schema')
         continue
       }
 
-      got_name="$(printf '%s' "${rendered}" | yq -r "select(.kind == \"${kind}\") | .spec.parentRefs[0].name")"
-      got_ns="$(printf '%s' "${rendered}" | yq -r "select(.kind == \"${kind}\") | .spec.parentRefs[0].namespace")"
-      got_host="$(printf '%s' "${rendered}" | yq -r "select(.kind == \"${kind}\") | .spec.hostnames[0]")"
-      got_min="$(printf '%s' "${rendered}" | yq -r 'select(.kind == "HorizontalPodAutoscaler") | .spec.minReplicas // ""')"
-      got_label_area="$(printf '%s' "${rendered}" | yq -r 'select(.kind == "Service") | .metadata.labels["asa.platform/area"] // ""')"
-      got_label_tier="$(printf '%s' "${rendered}" | yq -r 'select(.kind == "Service") | .metadata.labels["asa.platform/tier"] // ""')"
+      # eval-all (ea) + first non-empty line: on a multi-doc render plain `yq` emits document
+      # separators and blank lines for the documents that `select` filters out, so the value
+      # arrives buried in them. Same pattern helm-deploy.yml already uses for the preflight.
+      pick() { printf '%s' "${rendered}" | yq ea -r "$1" 2>/dev/null | awk 'NF{print; exit}'; }
+      got_name="$(pick "select(.kind == \"${kind}\") | .spec.parentRefs[0].name // \"\"")"
+      got_ns="$(pick "select(.kind == \"${kind}\") | .spec.parentRefs[0].namespace // \"\"")"
+      got_host="$(pick "select(.kind == \"${kind}\") | .spec.hostnames[0] // \"\"")"
+      got_min="$(pick 'select(.kind == "HorizontalPodAutoscaler") | .spec.minReplicas // ""')"
+      got_label_area="$(pick 'select(.kind == "Service") | .metadata.labels["asa.platform/area"] // ""')"
+      got_label_tier="$(pick 'select(.kind == "Service") | .metadata.labels["asa.platform/tier"] // ""')"
 
       if [[ "${got_name}" != "${want_name}" ]]; then
         echo "FAIL: ${area}/${tier}/${kind}: gateway name '${got_name}' != resolved '${want_name}'"
@@ -143,8 +147,8 @@ print('OK: ${area} schema')
         echo "FAIL: ${area}/${tier}/${kind}: gateway namespace '${got_ns}' != resolved '${want_ns}'"
         FAILED=1
       fi
-      if [[ "${got_host}" != "sample.${want_corp}" ]]; then
-        echo "FAIL: ${area}/${tier}/${kind}: hostname '${got_host}' != sample.${want_corp}"
+      if [[ "${got_host}" != "sample.${want_dns}" ]]; then
+        echo "FAIL: ${area}/${tier}/${kind}: hostname '${got_host}' != sample.${want_dns}"
         FAILED=1
       fi
       if [[ -n "${got_min}" && "${got_min}" != "${want_min}" ]]; then
@@ -188,7 +192,7 @@ parameters:
           expectedKubeContext: null
           gatewayName: preview-gateway
           gatewayNamespace: asa-infra-nginx-gateway
-          corpDnsZone: preview.asa.corp
+          dnsZone: preview.asa.corp
           legacyDnsZone: preview.asa.com.br
           defaultMinReplicas: 1
           smokeAllowed: true

@@ -27,7 +27,7 @@ parameters:
           expectedKubeContext: null
           gatewayName: d-asa-com-br-internal-gateway
           gatewayNamespace: asa-infra-nginx-gateway
-          corpDnsZone: dev.asa.corp
+          dnsZone: dev.asa.corp
           legacyDnsZone: d.asa.com.br
           defaultMinReplicas: 1
           smokeAllowed: true
@@ -43,7 +43,7 @@ parameters:
           expectedKubeContext: null
           gatewayName: h-asa-com-br-internal-gateway
           gatewayNamespace: asa-infra-nginx-gateway
-          corpDnsZone: hml.asa.corp
+          dnsZone: hml.asa.corp
           legacyDnsZone: h.asa.com.br
           defaultMinReplicas: 1
           smokeAllowed: false
@@ -60,7 +60,7 @@ parameters:
           expectedKubeContext: null
           gatewayName: p-asa-com-br-internal-gateway
           gatewayNamespace: asa-infra-nginx-gateway
-          corpDnsZone: prd.asa.corp
+          dnsZone: prd.asa.corp
           legacyDnsZone: p.asa.com.br
           defaultMinReplicas: 2
           smokeAllowed: false

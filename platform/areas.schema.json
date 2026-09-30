@@ -40,7 +40,7 @@
           "awsRegion",
           "gatewayName",
           "gatewayNamespace",
-          "corpDnsZone",
+          "dnsZone",
           "defaultMinReplicas",
           "smokeAllowed",
           "podSecurity"
@@ -77,7 +77,7 @@
             "type": "string",
             "minLength": 1
           },
-          "corpDnsZone": {
+          "dnsZone": {
             "type": "string",
             "minLength": 1
           },
