@@ -1,0 +1,394 @@
+# Internal delivery stages for a platform area (DeployContract + Container + Deploy_*).
+# Included only via platform/areas/<area>.yml — consumers never reference this file directly.
+# Compile-time: pool and ADO Environment come from parameters.platform.tiers[<tier>].
+# Runtime: chart facts and guards come from scripts/resolve-platform-values.sh <area> <tier>.
+parameters:
+  - name: delivery
+    type: object
+  - name: platform
+    type: object
+
+stages:
+  - stage: DeployContract
+    displayName: Validate deploy manifests
+    dependsOn:
+      - CI
+    condition: succeeded()
+    jobs:
+      - job: CrossEnvIdentity
+        displayName: Cross-env kind / workload.type
+        pool:
+          vmImage: ${{ parameters.delivery.vmImage }}
+        steps:
+          - checkout: self
+            path: app
+          - checkout: templates
+            path: pipeline-templates
+          - bash: |
+              set -Eeuo pipefail
+              WORKSPACE="${PIPELINE_WORKSPACE:-${AGENT_BUILDDIRECTORY}}"
+              APP_DIR="${WORKSPACE}/app"
+              TEMPLATES_DIR="${WORKSPACE}/pipeline-templates"
+              CONFIG="${APP_DIR}/${RUNTIME_CONFIG_PATH}"
+              YQ_VERSION="v4.44.3"
+              YQ_SHA256="a2c097180dd884a8d50c956ee16a9cec070f30a7947cf4ebf87d5f36213e9ed7"
+              PYYAML_VERSION="6.0.2"
+              JSONSCHEMA_VERSION="4.23.0"
+
+              if ! command -v yq >/dev/null 2>&1; then
+                echo "Installing pinned yq ${YQ_VERSION} (Microsoft-hosted)"
+                wget -qO /tmp/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+                echo "${YQ_SHA256}  /tmp/yq" | sha256sum -c - \
+                  || { echo "##vso[task.logissue type=error]yq checksum mismatch — refusing to install"; exit 1; }
+                sudo install -m 0755 /tmp/yq /usr/local/bin/yq
+                rm -f /tmp/yq
+              fi
+              yq --version
+
+              if ! command -v helm >/dev/null 2>&1; then
+                echo "##vso[task.logissue type=error]helm not found on agent — required to validate chart invariants before the image push"
+                exit 1
+              fi
+              HELM_V="$(helm version --short 2>/dev/null || true)"
+              echo "helm: ${HELM_V}"
+              if [[ ! "${HELM_V}" =~ ^v?3\. ]]; then
+                echo "##vso[task.logissue type=error]Unsupported Helm version '${HELM_V}' — platform requires Helm 3.x (must match the deploy agents)"
+                exit 1
+              fi
+
+              if [[ -z "${APPLICATION_NAME}" ]]; then
+                echo "##vso[task.logissue type=error]applicationName is required when deployEnvironments is set"
+                exit 1
+              fi
+              if [[ -z "${PLATFORM_AREA}" ]]; then
+                echo "##vso[task.logissue type=error]platformArea is required"
+                exit 1
+              fi
+
+              mapfile -t ENVS < <(printf '%s' "${DEPLOY_ENVIRONMENTS_JSON}" | yq -r '.[].name')
+              if [[ "${#ENVS[@]}" -eq 0 ]]; then
+                echo "##vso[task.logissue type=error]deployEnvironments produced an empty name list"
+                exit 1
+              fi
+
+              MAX_ENVS="$(printf '%s' "${PLATFORM_JSON}" | yq -r '.tiers | keys | length')"
+              if [[ "${#ENVS[@]}" -gt "${MAX_ENVS}" ]]; then
+                echo "##vso[task.logissue type=error]At most ${MAX_ENVS} deployEnvironments supported for area '${PLATFORM_AREA}' (got ${#ENVS[@]})"
+                exit 1
+              fi
+
+              uniq_count="$(printf '%s\n' "${ENVS[@]}" | sort -u | wc -l | tr -d ' ')"
+              if [[ "${uniq_count}" -ne "${#ENVS[@]}" ]]; then
+                echo "##vso[task.logissue type=error]Duplicate tier names in deployEnvironments"
+                exit 1
+              fi
+
+              # Canonical promotion order = tiers.*.order (subset OK, never inverted).
+              mapfile -t PROMO < <(printf '%s' "${PLATFORM_JSON}" | yq -r '.tiers | to_entries | sort_by(.value.order) | .[].key')
+              declare -A RANK=()
+              for i in "${!PROMO[@]}"; do
+                RANK["${PROMO[$i]}"]=$((i + 1))
+              done
+              prev=0
+              for env in "${ENVS[@]}"; do
+                if [[ "$(printf '%s' "${PLATFORM_JSON}" | yq -r ".tiers | has(\"${env}\")")" != "true" ]]; then
+                  echo "##vso[task.logissue type=error]Unknown tier '${env}' for area '${PLATFORM_AREA}' — add it under platform.tiers in platform/areas/${PLATFORM_AREA}.yml"
+                  exit 1
+                fi
+                r="${RANK[$env]}"
+                if (( r < prev )); then
+                  echo "##vso[task.logissue type=error]deployEnvironments order must follow platform.tiers.*.order (got inverted: ${ENVS[*]})"
+                  exit 1
+                fi
+                prev=$r
+
+                pool="$(printf '%s' "${PLATFORM_JSON}" | yq -r ".tiers.\"${env}\".deployPool // \"null\"")"
+                if [[ "${pool}" == "null" || -z "${pool}" ]]; then
+                  echo "##vso[task.logissue type=error]EXTERNAL BLOCKER: no deployPool for '${PLATFORM_AREA}/${env}' — fill platform.tiers.${env}.deployPool before deploying"
+                  exit 1
+                fi
+                ctx="$(printf '%s' "${PLATFORM_JSON}" | yq -r ".tiers.\"${env}\".expectedKubeContext // \"null\"")"
+                if [[ "${ctx}" == "null" || -z "${ctx}" ]]; then
+                  echo "##[warning]EXTERNAL BLOCKER: expectedKubeContext for '${PLATFORM_AREA}/${env}' not mapped — deploy will skip exact context assert until filled"
+                fi
+                acct="$(printf '%s' "${PLATFORM_JSON}" | yq -r ".tiers.\"${env}\".awsAccountId // \"null\"")"
+                if [[ "${acct}" == "null" || -z "${acct}" ]]; then
+                  echo "##[warning]EXTERNAL BLOCKER: awsAccountId for '${PLATFORM_AREA}/${env}' not mapped — deploy will skip sts account assert until filled"
+                fi
+              done
+              echo "Tiers OK (${PLATFORM_AREA}): ${ENVS[*]}"
+
+              pip3 install --user "pyyaml==${PYYAML_VERSION}" "jsonschema==${JSONSCHEMA_VERSION}" >/dev/null
+              export PATH="${HOME}/.local/bin:${PATH}"
+
+              bash "${TEMPLATES_DIR}/scripts/assert-deploy-identity.sh" "${CONFIG}" "${ENVS[@]}"
+
+              for env in "${ENVS[@]}"; do
+                manifest="${CONFIG}/${env}.yaml"
+                kind="$(yq -r '.kind // ""' "${manifest}")"
+                case "${kind}" in
+                  Application)
+                    schema="${TEMPLATES_DIR}/schemas/application.manifest.schema.json"
+                    chart="${TEMPLATES_DIR}/charts/asa-application"
+                    ;;
+                  ScheduledJob)
+                    schema="${TEMPLATES_DIR}/schemas/scheduled-job.manifest.schema.json"
+                    chart="${TEMPLATES_DIR}/charts/asa-scheduled-job"
+                    ;;
+                  *) echo "##vso[task.logissue type=error]Unsupported kind ${kind}"; exit 1 ;;
+                esac
+
+                # IRSA account must match the cluster account when both are known.
+                role_arn="$(yq -r '.serviceAccount.annotations["eks.amazonaws.com/role-arn"] // ""' "${manifest}")"
+                if [[ -n "${role_arn}" ]]; then
+                  want_acct="$(printf '%s' "${PLATFORM_JSON}" | yq -r ".tiers.\"${env}\".awsAccountId // \"\"")"
+                  if [[ -n "${want_acct}" && "${want_acct}" != "null" ]]; then
+                    arn_acct="$(printf '%s' "${role_arn}" | sed -n 's|^arn:aws:iam::\([0-9]\{12\}\):.*|\1|p')"
+                    if [[ -z "${arn_acct}" ]]; then
+                      echo "##vso[task.logissue type=error]${env}: serviceAccount IRSA annotation is not a parseable role ARN: ${role_arn}"
+                      exit 1
+                    fi
+                    if [[ "${arn_acct}" != "${want_acct}" ]]; then
+                      echo "##vso[task.logissue type=error]${env}: IRSA role account ${arn_acct} != cluster awsAccountId ${want_acct} (area ${PLATFORM_AREA})"
+                      exit 1
+                    fi
+                    echo "OK ${env}: IRSA account matches cluster ${want_acct}"
+                  fi
+                fi
+
+                echo "##[group]${env}: public schema (${kind})"
+                python3 "${TEMPLATES_DIR}/scripts/validate-manifest.py" "${schema}" "${manifest}"
+                echo "##[endgroup]"
+
+                HELM_RENDER_SET=(
+                  --set-string "image.repository=validation.invalid/${APPLICATION_NAME}"
+                  --set-string "image.tag=deploycontract"
+                )
+                PLATFORM_VALUES="$(mktemp -t asa-platform.XXXXXX.yaml)"
+                bash "${TEMPLATES_DIR}/scripts/resolve-platform-values.sh" "${PLATFORM_AREA}" "${env}" "${PLATFORM_VALUES}"
+
+                echo "##[group]${env}: helm template (chart invariants)"
+                if ! helm template "${APPLICATION_NAME}" "${chart}" \
+                  -f "${manifest}" \
+                  -f "${PLATFORM_VALUES}" \
+                  "${HELM_RENDER_SET[@]}" >/dev/null; then
+                  echo "##vso[task.logissue type=error]${env}: manifest violates a chart invariant — see the helm error above. Fix ${RUNTIME_CONFIG_PATH}/${env}.yaml before deploying."
+                  exit 1
+                fi
+                echo "##[endgroup]"
+                echo "OK ${env}: schema + chart invariants"
+                rm -f "${PLATFORM_VALUES}"
+              done
+            displayName: Assert identity + public schemas + tier guards
+            env:
+              DEPLOY_ENVIRONMENTS_JSON: ${{ convertToJson(parameters.delivery.deployEnvironments) }}
+              PLATFORM_JSON: ${{ convertToJson(parameters.platform) }}
+              PLATFORM_AREA: ${{ parameters.platform.area }}
+              APPLICATION_NAME: ${{ parameters.delivery.applicationName }}
+              RUNTIME_CONFIG_PATH: ${{ parameters.delivery.runtimeConfigPath }}
+
+  - stage: Container
+    displayName: Docker Build and Push
+    dependsOn:
+      - CI
+      - DeployContract
+    condition: succeeded()
+    variables:
+      aspnetTag: $[stageDependencies.CI.BuildAndTest.outputs['publishApp.aspnetTag']]
+      appDll: $[stageDependencies.CI.BuildAndTest.outputs['publishApp.appDll']]
+    jobs:
+      - job: DockerBuildPush
+        displayName: Build and push image to ECR
+        pool:
+          name: ${{ parameters.platform.buildPool }}
+        steps:
+          - checkout: templates
+            displayName: Checkout platform Dockerfile
+            path: pipeline-templates
+
+          - task: DownloadPipelineArtifact@2
+            displayName: Download app artifact
+            inputs:
+              artifact: app
+              path: $(Pipeline.Workspace)/app
+
+          - task: Bash@3
+            name: dockerBuildPush
+            displayName: ECR login, buildctl build and push
+            env:
+              AWS_REGION: ${{ parameters.platform.registry.awsRegion }}
+              AWS_DEFAULT_REGION: ${{ parameters.platform.registry.awsRegion }}
+              ECR_REGISTRY_ACCOUNT: ${{ parameters.platform.registry.awsAccountId }}
+              APPLICATION_NAME: ${{ parameters.delivery.applicationName }}
+              ASPNET_TAG: $(aspnetTag)
+              APP_DLL: $(appDll)
+              IMAGE_TAG: $(Build.SourceVersion)
+              BUILDKIT_HOST: unix:///run/buildkit/buildkitd.sock
+              BUILD_POOL: ${{ parameters.platform.buildPool }}
+            inputs:
+              targetType: inline
+              script: |
+                set -Eeuo pipefail
+
+                export PATH="/opt/tenv3/container-build-tools/bin:${PATH}"
+
+                if [[ -z "${APPLICATION_NAME:-}" ]]; then
+                  echo "##vso[task.logissue type=error]applicationName is required when deployEnvironments is set"
+                  exit 1
+                fi
+
+                if [[ -z "${ASPNET_TAG:-}" ]]; then
+                  echo "##vso[task.logissue type=error]aspnetTag missing from CI outputs"
+                  exit 1
+                fi
+
+                if [[ -z "${APP_DLL:-}" ]]; then
+                  echo "##vso[task.logissue type=error]appDll missing from CI outputs"
+                  exit 1
+                fi
+
+                if [[ -z "${ECR_REGISTRY_ACCOUNT:-}" || ! "${ECR_REGISTRY_ACCOUNT}" =~ ^[0-9]{12}$ ]]; then
+                  echo "##vso[task.logissue type=error]platform.registry.awsAccountId must be a 12-digit account id (got '${ECR_REGISTRY_ACCOUNT:-}')"
+                  exit 1
+                fi
+
+                WORKSPACE="${PIPELINE_WORKSPACE:-${AGENT_BUILDDIRECTORY}}"
+                APP_CONTEXT="${WORKSPACE}/app"
+                if [[ ! -f "${APP_CONTEXT}/${APP_DLL}" ]]; then
+                  echo "##vso[task.logissue type=error]Published DLL not found: ${APP_CONTEXT}/${APP_DLL}"
+                  ls -la "${APP_CONTEXT}" || true
+                  exit 1
+                fi
+
+                DOCKERFILE_DIR="${WORKSPACE}/pipeline-templates/docker/dotnet"
+                if [[ ! -f "${DOCKERFILE_DIR}/Dockerfile" ]]; then
+                  echo "##vso[task.logissue type=error]Platform Dockerfile not found: ${DOCKERFILE_DIR}/Dockerfile"
+                  exit 1
+                fi
+
+                RUNTIME_IMAGE="mcr.microsoft.com/dotnet/aspnet:${ASPNET_TAG}"
+                ECR_REPOSITORY="${APPLICATION_NAME}"
+
+                if ! command -v buildctl >/dev/null || ! command -v crane >/dev/null; then
+                  echo "##vso[task.logissue type=error]buildctl/crane not found — pool ${BUILD_POOL} must expose BuildKit tools"
+                  exit 1
+                fi
+
+                echo "##[group]aws caller identity (ambient credentials on agent)"
+                aws sts get-caller-identity
+                echo "##[endgroup]"
+
+                REGISTRY="${ECR_REGISTRY_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+                IMAGE_REF="${REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+
+                echo "##[group]ecr login ${REGISTRY}"
+                aws ecr get-login-password --region "${AWS_REGION}" \
+                  | crane auth login "${REGISTRY}" -u AWS --password-stdin
+                echo "##[endgroup]"
+
+                echo "##[group]ensure ecr repository ${ECR_REPOSITORY} (IMMUTABLE) in shared registry ${ECR_REGISTRY_ACCOUNT}"
+                # Ownership: delivery creates the repository; cross-account pull policy is
+                # pre-provisioned by infra on the shared registry (not applied here).
+                if ! aws ecr describe-repositories \
+                     --registry-id "${ECR_REGISTRY_ACCOUNT}" \
+                     --repository-names "${ECR_REPOSITORY}" \
+                     --region "${AWS_REGION}" >/dev/null 2>&1; then
+                  aws ecr create-repository \
+                    --registry-id "${ECR_REGISTRY_ACCOUNT}" \
+                    --repository-name "${ECR_REPOSITORY}" \
+                    --region "${AWS_REGION}" \
+                    --image-tag-mutability IMMUTABLE \
+                    >/dev/null
+                  echo "Created repository ${ECR_REPOSITORY} with IMMUTABLE tags in ${ECR_REGISTRY_ACCOUNT}"
+                else
+                  MUTABILITY="$(aws ecr describe-repositories \
+                    --registry-id "${ECR_REGISTRY_ACCOUNT}" \
+                    --repository-names "${ECR_REPOSITORY}" \
+                    --region "${AWS_REGION}" \
+                    --query 'repositories[0].imageTagMutability' --output text)"
+                  echo "Repository ${ECR_REPOSITORY} exists (imageTagMutability=${MUTABILITY})"
+                  if [[ "${MUTABILITY}" != "IMMUTABLE" ]]; then
+                    echo "Enforcing IMMUTABLE on existing repository"
+                    aws ecr put-image-tag-mutability \
+                      --registry-id "${ECR_REGISTRY_ACCOUNT}" \
+                      --repository-name "${ECR_REPOSITORY}" \
+                      --region "${AWS_REGION}" \
+                      --image-tag-mutability IMMUTABLE >/dev/null
+                  fi
+                fi
+                echo "##[endgroup]"
+
+                IMAGE_REPOSITORY="${REGISTRY}/${ECR_REPOSITORY}"
+
+                if EXISTING_DIGEST="$(crane digest "${IMAGE_REF}" 2>/dev/null)"; then
+                  echo "Image ${IMAGE_REF} already exists (${EXISTING_DIGEST}) — skipping build/push (immutable tag)"
+                else
+                  echo "##[group]buildctl build+push ${IMAGE_REF} (RUNTIME_IMAGE=${RUNTIME_IMAGE} APP_DLL=${APP_DLL})"
+                  buildctl build \
+                    --frontend dockerfile.v0 \
+                    --local context="${APP_CONTEXT}" \
+                    --local dockerfile="${DOCKERFILE_DIR}" \
+                    --opt filename=Dockerfile \
+                    --opt "build-arg:RUNTIME_IMAGE=${RUNTIME_IMAGE}" \
+                    --opt "build-arg:APP_DLL=${APP_DLL}" \
+                    --opt platform=linux/amd64 \
+                    --output "type=image,name=${IMAGE_REF},push=true"
+                  echo "##[endgroup]"
+                  echo "Pushed ${IMAGE_REF}"
+                fi
+
+                echo "##vso[task.setvariable variable=imageRef;isOutput=true]${IMAGE_REF}"
+                echo "##vso[task.setvariable variable=imageTag;isOutput=true]${IMAGE_TAG}"
+                echo "##vso[task.setvariable variable=imageRepository;isOutput=true]${IMAGE_REPOSITORY}"
+
+  - template: helm-deploy.yml
+    parameters:
+      tier: ${{ parameters.delivery.deployEnvironments[0].name }}
+      environmentName: ${{ parameters.platform.tiers[parameters.delivery.deployEnvironments[0].name].environmentName }}
+      containerPool: ${{ parameters.platform.tiers[parameters.delivery.deployEnvironments[0].name].deployPool }}
+      platformArea: ${{ parameters.platform.area }}
+      awsRegion: ${{ parameters.platform.tiers[parameters.delivery.deployEnvironments[0].name].awsRegion }}
+      variableGroups: ${{ parameters.delivery.deployEnvironments[0].variableGroups }}
+      dependsOn:
+        - Container
+      applicationName: ${{ parameters.delivery.applicationName }}
+      helmTimeout: ${{ coalesce(parameters.delivery.deployEnvironments[0].helmTimeout, parameters.delivery.helmTimeout) }}
+      runtimeConfigPath: ${{ parameters.delivery.runtimeConfigPath }}
+      ecrPullSecret: ${{ coalesce(variables['ECR_PULL_SECRET'], '') }}
+      smokeScheduledJob: ${{ coalesce(parameters.delivery.deployEnvironments[0].smokeScheduledJob, false) }}
+
+  - ${{ if gt(length(parameters.delivery.deployEnvironments), 1) }}:
+    - template: helm-deploy.yml
+      parameters:
+        tier: ${{ parameters.delivery.deployEnvironments[1].name }}
+        environmentName: ${{ parameters.platform.tiers[parameters.delivery.deployEnvironments[1].name].environmentName }}
+        containerPool: ${{ parameters.platform.tiers[parameters.delivery.deployEnvironments[1].name].deployPool }}
+        platformArea: ${{ parameters.platform.area }}
+        awsRegion: ${{ parameters.platform.tiers[parameters.delivery.deployEnvironments[1].name].awsRegion }}
+        variableGroups: ${{ parameters.delivery.deployEnvironments[1].variableGroups }}
+        dependsOn:
+          - Container
+          - Deploy_${{ parameters.delivery.deployEnvironments[0].name }}
+        applicationName: ${{ parameters.delivery.applicationName }}
+        helmTimeout: ${{ coalesce(parameters.delivery.deployEnvironments[1].helmTimeout, parameters.delivery.helmTimeout) }}
+        runtimeConfigPath: ${{ parameters.delivery.runtimeConfigPath }}
+        ecrPullSecret: ${{ coalesce(variables['ECR_PULL_SECRET'], '') }}
+        smokeScheduledJob: ${{ coalesce(parameters.delivery.deployEnvironments[1].smokeScheduledJob, false) }}
+
+  - ${{ if gt(length(parameters.delivery.deployEnvironments), 2) }}:
+    - template: helm-deploy.yml
+      parameters:
+        tier: ${{ parameters.delivery.deployEnvironments[2].name }}
+        environmentName: ${{ parameters.platform.tiers[parameters.delivery.deployEnvironments[2].name].environmentName }}
+        containerPool: ${{ parameters.platform.tiers[parameters.delivery.deployEnvironments[2].name].deployPool }}
+        platformArea: ${{ parameters.platform.area }}
+        awsRegion: ${{ parameters.platform.tiers[parameters.delivery.deployEnvironments[2].name].awsRegion }}
+        variableGroups: ${{ parameters.delivery.deployEnvironments[2].variableGroups }}
+        dependsOn:
+          - Container
+          - Deploy_${{ parameters.delivery.deployEnvironments[1].name }}
+        applicationName: ${{ parameters.delivery.applicationName }}
+        helmTimeout: ${{ coalesce(parameters.delivery.deployEnvironments[2].helmTimeout, parameters.delivery.helmTimeout) }}
+        runtimeConfigPath: ${{ parameters.delivery.runtimeConfigPath }}
+        ecrPullSecret: ${{ coalesce(variables['ECR_PULL_SECRET'], '') }}
+        smokeScheduledJob: ${{ coalesce(parameters.delivery.deployEnvironments[2].smokeScheduledJob, false) }}

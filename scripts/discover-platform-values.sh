@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Read-only discovery of the platform values that config/platform-environments.json and the
+# Read-only discovery of the platform values that platform/areas/<area>.yml and the
 # charts still need. NOTHING is created, modified or deleted.
 #
 #   ./scripts/discover-platform-values.sh <kube-context>
 #
-# Run it once per environment (develop, homolog, production) with that environment's context.
+# Run it once per cluster (area × tier) with that cluster's context.
 #
 # Optionally set EKS_CLUSTER (+ AWS_REGION) to also read what the AWS API can answer WITHOUT
 # cluster network access — control-plane version and Availability Zones. Useful when the EKS
@@ -87,7 +87,7 @@ echo "  reachable"
 
 h "1) kubeVersion  ->  charts/*/Chart.yaml"
 say_or "$($K version 2>/dev/null | grep -i '^server version')" "UNREACHABLE (check VPN / kubeconfig / IP allowlist)"
-echo "  -> use the LOWEST major.minor across develop/homolog/production:"
+echo "  -> use the LOWEST major.minor across area×tier clusters:"
 echo "     kubeVersion: \">=<major>.<minor>.0-0\""
 
 h "2) Pod Security Admission labels already in use"
@@ -150,11 +150,12 @@ say_or "$($K get deploy,daemonset -A --no-headers 2>/dev/null \
 echo "  -> ExternalSecret updates the Secret, but envFrom only injects at pod start, so a rotated"
 echo "     credential does nothing until the next deploy unless something restarts the pods."
 
-h "6) expectedKubeContext  ->  NOT obtainable from any workstation"
+h "6) expectedKubeContext / awsAccountId  ->  NOT obtainable from any workstation"
 echo "  '${CTX}' is THIS machine's kubeconfig alias; the deploy agent has its own name."
-echo "  Take it from a Deploy_<env> pipeline log line: 'kubectl context: <name>'"
+echo "  Take expectedKubeContext from a Deploy_<tier> pipeline log line: 'kubectl context: <name>'"
+echo "  Take awsAccountId from the deploy pool's sts get-caller-identity (must match the cluster account)."
 
 h "contexts available here"
 say_or "$(kubectl config get-contexts -o name 2>/dev/null)" "none"
 
-printf '\nRecord the findings in config/platform-environments.json / charts, then re-run ./tests/chart-invariants.sh\n'
+printf '\nRecord the findings in platform/areas/<area>.yml / charts, then re-run ./tests/chart-invariants.sh\n'

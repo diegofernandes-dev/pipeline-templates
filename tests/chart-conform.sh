@@ -15,14 +15,26 @@ if ! command -v kubeconform >/dev/null 2>&1; then
 fi
 
 render_app() {
+  local area="${PLATFORM_AREA:-lab}"
+  local tier="${PLATFORM_TIER:-${PLATFORM_ENV:-develop}}"
+  local pf rc=0
+  pf="$(mktemp -t asa-platform.XXXXXX.yaml)"
+  "${ROOT}/scripts/resolve-platform-values.sh" "${area}" "${tier}" "${pf}"
   helm template sample-api "${APP_CHART}" \
     --set-string image.repository=example.dkr.ecr.us-east-1.amazonaws.com/sample-api \
     --set-string image.tag=deadbeef \
-    --set-string runtime.environment=develop \
-    "$@"
+    -f "${pf}" \
+    "$@" || rc=$?
+  rm -f "${pf}"
+  return "${rc}"
 }
 
 render_job() {
+  local area="${PLATFORM_AREA:-lab}"
+  local tier="${PLATFORM_TIER:-${PLATFORM_ENV:-develop}}"
+  local pf rc=0
+  pf="$(mktemp -t asa-platform.XXXXXX.yaml)"
+  "${ROOT}/scripts/resolve-platform-values.sh" "${area}" "${tier}" "${pf}"
   helm template sample-job "${JOB_CHART}" \
     --set-string image.repository=example.dkr.ecr.us-east-1.amazonaws.com/sample-job \
     --set-string image.tag=deadbeef \
@@ -30,7 +42,10 @@ render_job() {
     --set-string schedule.timeZone=America/Sao_Paulo \
     --set execution.timeoutSeconds=1800 \
     --set-string 'execution.args[0]=--mode=job' \
-    "$@"
+    -f "${pf}" \
+    "$@" || rc=$?
+  rm -f "${pf}"
+  return "${rc}"
 }
 
 conform() {
@@ -72,8 +87,8 @@ conform "grpc readiness enabled" \
 conform "worker" \
   render_app --set-string workload.type=worker
 
-conform "production (PDB + topology)" \
-  render_app --set probes=false --set-string runtime.environment=production
+PLATFORM_ENV=production conform "production (PDB + topology)" \
+  render_app --set probes=false
 
 conform "persistence Recreate" \
   render_app --set probes=false --set autoscaling=false \

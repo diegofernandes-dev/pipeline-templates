@@ -80,3 +80,17 @@ securityContext:
   capabilities:
     drop:
       - ALL
+
+# Label-only environment name. Injected by resolve-platform-values.sh with platform.*.
+runtime:
+  environment: ""
+
+# Resolved by scripts/resolve-platform-values.sh (area/tier labels; gateway fields unused by CronJob).
+platform:
+  area: ""
+  tier: ""
+  gatewayName: ""
+  gatewayNamespace: ""
+  corpDnsZone: ""
+  legacyDnsZone: ""
+  defaultMinReplicas: 1

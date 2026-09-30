@@ -8,7 +8,7 @@ metadata:
 spec:
   parentRefs:
     - name: {{ include "chart.gatewayName" . }}
-      namespace: asa-infra-nginx-gateway
+      namespace: {{ include "chart.gatewayNamespace" . }}
       group: gateway.networking.k8s.io
       kind: Gateway
   hostnames:

@@ -6,15 +6,17 @@ Templates YAML reutilizáveis para Azure DevOps (GitHub → `extends`).
 
 | Caminho | Escopo |
 |---------|--------|
-| [`templates/dotnet/ci.yml`](templates/dotnet/ci.yml) | CI → DeployContract → ECR → Helm |
-| [`templates/dotnet/helm-deploy.yml`](templates/dotnet/helm-deploy.yml) | Stage Helm por Environment (`kind` → chart) |
-| [`config/platform-environments.json`](config/platform-environments.json) | Mapping autoritativo env → pool / gateway / `expectedKubeContext` |
+| [`templates/dotnet/ci.yml`](templates/dotnet/ci.yml) | CI → area profile → DeployContract → ECR → Helm |
+| [`templates/dotnet/delivery.yml`](templates/dotnet/delivery.yml) | Stages de delivery (interno; incluído via area profile) |
+| [`templates/dotnet/helm-deploy.yml`](templates/dotnet/helm-deploy.yml) | Stage Helm por tier (`kind` → chart) |
+| [`platform/areas/`](platform/areas/) | Fonte única área × tier → pool / ADO Environment / gateway / contas |
+| [`platform/areas.schema.json`](platform/areas.schema.json) | Schema do objeto `platform` em cada area profile |
 | [`docker/dotnet/Dockerfile`](docker/dotnet/Dockerfile) | Dockerfile plataforma (.NET; listen 8080) |
 | [`charts/asa-application`](charts/asa-application) | `kind: Application` — web \| grpc \| worker |
 | [`charts/asa-scheduled-job`](charts/asa-scheduled-job) | `kind: ScheduledJob` — CronJob |
 | [`schemas/`](schemas/) | Schema **público** (`additionalProperties: false`) |
-| [`scripts/`](scripts/) | `jsonschema`, identidade cross-env, paridade de schemas, descoberta de valores de plataforma |
-| [`tests/`](tests/) | Render invariants + drift de chart/schema + consistência de gateway + kubeconform |
+| [`scripts/`](scripts/) | Resolver de plataforma, `jsonschema`, identidade cross-env, descoberta |
+| [`tests/`](tests/) | Render invariants + drift + platform-contract + kubeconform + golden |
 | [`.github/workflows/ci.yml`](.github/workflows/ci.yml) | CI obrigatório do repositório |
 
 ## Consumo
@@ -34,6 +36,7 @@ extends:
     solution: '**/*.sln'
     applicationName: sample-api
     dotnetProject: src/Sample.Api/Sample.Api.csproj
+    platformArea: lab
     deployEnvironments:
       - name: develop
         variableGroups: []
@@ -103,34 +106,58 @@ execution:
 
 ADO Environments de deploy devem ter **exclusividade/lock** (requisito operacional; não há lock em Bash).
 
-### Platform environment mapping
+### Platform area × tier mapping
 
-Ver [`config/platform-environments.json`](config/platform-environments.json).
+Fonte única: [`platform/areas/<area>.yml`](platform/areas/) (ex.: [`lab.yml`](platform/areas/lab.yml)).
+O ADO lê o profile em tempo de compilação (pool / Environment); o resolvedor lê o mesmo arquivo
+em runtime (gateway, DNS, `defaultMinReplicas`, guards).
 
-| Env | Pool | expectedKubeContext |
-|-----|------|---------------------|
-| develop | `PG-AWS-EKS` | **EXTERNAL BLOCKER** (não mapeado) |
-| homolog | `PG-AWS-EKS-HML` | **EXTERNAL BLOCKER** |
-| production | **EXTERNAL BLOCKER** | **EXTERNAL BLOCKER** |
+| Área | Tier | Deploy pool | ADO Environment | expectedKubeContext | awsAccountId |
+|------|------|-------------|-----------------|---------------------|--------------|
+| lab | develop | `PG-AWS-EKS` | `develop` | **EXTERNAL BLOCKER** | **EXTERNAL BLOCKER** |
+| lab | homolog | `PG-AWS-EKS-HML` | `homolog` | **EXTERNAL BLOCKER** | **EXTERNAL BLOCKER** |
+| lab | production | **EXTERNAL BLOCKER** (`null`) | `production` | **EXTERNAL BLOCKER** | **EXTERNAL BLOCKER** |
 
-Contexto kubectl: match **exato** quando mapeado (sem substring). O stage de Deploy lê
-`expectedKubeContext` **desse arquivo** — preencher o mapping ativa a guarda de identidade de
-cluster, sem mexer em pipeline. Enquanto estiver `null`, o deploy emite warning e **não** valida
-em qual cluster está aplicando.
+- Contexto kubectl e conta STS: match **exato** quando mapeados. Enquanto `null`, o deploy emite warning e não valida identidade.
+- Registry ECR compartilhado: `platform.registry` no profile (conta/região). A **repository policy** de pull cross-account é pré-provisionada pela infra; o pipeline só cria o repositório com `--registry-id`.
+- Manifestos da app continuam em `deploy/config/<tier>.yaml`. O stage chama-se `Deploy_<tier>`; o Environment ADO pode diferir (`environmentName` no profile).
+
+#### Ownership (delivery vs infra)
+
+| Recurso | Owner | Quem provisiona |
+|---------|-------|-----------------|
+| Repositório ECR | delivery | Pipeline (`create-repository --registry-id`) |
+| Repository policy / Org pull | infra | Conta compartilhada (ex.: `aws:PrincipalOrgID`) |
+| Namespace K8s | delivery | `kubectl apply` quando ausente |
+| Agent pools / ADO Environments | infra | Pré-requisito por cluster |
+| `ClusterSecretStore` / node ECR pull | infra | Pré-requisito por cluster |
+| DNS | ExternalDNS | Pipeline **não** cria registros |
+
+#### Pré-requisitos de infra por cluster
+
+- Pool de deploy com o nome em `deployPool` e identidade (Pod Identity / IRSA) limitada ao cluster.
+- Pool de build (`buildPool`) com push no ECR compartilhado.
+- ADO Environment com o nome em `environmentName`, com exclusividade/lock e (recomendado) Required template check.
+- Role dos nodes com `ecr:BatchGetImage` / `ecr:GetDownloadUrlForLayer` no registry compartilhado.
+- `ClusterSecretStore` com assume-role na conta do Secrets Manager compartilhado.
 
 ### Testes locais / CI do repo
 
 ```bash
 helm lint charts/asa-application \
+  -f <(./scripts/resolve-platform-values.sh lab develop) \
   --set-string image.repository=example.dkr.ecr.us-east-1.amazonaws.com/sample-api
-helm lint charts/asa-scheduled-job --set-string image.repository=example.dkr.ecr.us-east-1.amazonaws.com/sample-job \
+helm lint charts/asa-scheduled-job \
+  -f <(./scripts/resolve-platform-values.sh lab develop) \
+  --set-string image.repository=example.dkr.ecr.us-east-1.amazonaws.com/sample-job \
   --set-string schedule.expression='0 2 * * *' \
   --set-string schedule.timeZone=UTC --set execution.timeoutSeconds=60 \
   --set-string 'execution.args[0]=x'
 ./tests/chart-drift.sh            # primitivas compartilhadas + paridade dos schemas
-./tests/gateway-consistency.sh    # chart × platform-environments.json
+./tests/platform-contract.sh      # area profiles × chart (resolve + render + allowlist)
+./tests/chart-golden.sh check     # snapshots de render (gate de refatoração)
 ./tests/chart-conform.sh          # kubeconform -strict nos manifests renderizados
-./tests/chart-invariants.sh       # suíte completa (chama as três acima)
+./tests/chart-invariants.sh       # suíte completa (chama drift/contract/conform)
 ```
 
 **TDD / guardrail para agentes:** antes de mudar `charts/**/templates/**` ou `values.schema.json`, escreva ou ajuste o assert em [`tests/chart-invariants.sh`](tests/chart-invariants.sh) que prova a propriedade; só então edite o chart. A suíte deve ficar vermelha se a propriedade sumir. Alguns negativos de “dupla trava” usam bypass temporário do `values.schema.json` para exercitar o `fail` do template (além do schema) — assim remover o `fail` “duplicado” no `.tpl` também quebra o CI.
@@ -140,15 +167,15 @@ helm lint charts/asa-scheduled-job --set-string image.repository=example.dkr.ecr
 ### Premissas / docs
 
 - **Baseline de pod (platform-owned, fora do manifesto público):** `runAsNonRoot` + `runAsUser`/`runAsGroup`/`fsGroup` **1654** (= `APP_UID` de `mcr.microsoft.com/dotnet/aspnet`, verificado em 8.0/9.0/10.0 e **asseverado em build time** por [`docker/dotnet/Dockerfile`](docker/dotnet/Dockerfile) — imagem e chart não divergem em silêncio), `readOnlyRootFilesystem`, `seccompProfile: RuntimeDefault`, `drop: [ALL]`, `automountServiceAccountToken: false`, `enableServiceLinks: false`, `terminationMessagePolicy: FallbackToLogsOnError`, `/tmp` como `emptyDir` com `sizeLimit: 128Mi`.
-- **Labels:** `app.kubernetes.io/{name,instance,version,managed-by}` + `helm.sh/chart` no metadata dos recursos. `helm.sh/chart` **não** vai no pod template (bump de chart não força rollout). `spec.selector.matchLabels` permanece só `app: <release>` (campo imutável).
+- **Labels:** `app.kubernetes.io/{name,instance,version,managed-by}` + `helm.sh/chart` + `asa.platform/{area,tier}` no metadata dos recursos. `helm.sh/chart` e `asa.platform/*` **não** vão no pod template (bump de chart/área não força rollout). `spec.selector.matchLabels` permanece só `app: <release>` (campo imutável).
 - **Rollout:** `revisionHistoryLimit: 3`; `progressDeadlineSeconds: 240` — mantenha **abaixo** do `helmTimeout` (default `5m`) para que rollout travado apareça como `ProgressDeadlineExceeded` em vez de timeout opaco do `helm --wait`. `maxUnavailable: 0` preserva capacidade; com PVC RWO a strategy vira `Recreate`.
 - **Data Protection:** `readOnlyRootFilesystem` + múltiplas réplicas pode exigir key ring externo na aplicação — não resolvido pelo chart.
 - **Alta disponibilidade (derivado, não descoberto):**
   - `kubeVersion: ">=1.27.0-0"` — piso derivado do que os charts **aplicam**, não do que algum cluster roda. Manda o `CronJob.spec.timeZone`, estável na [v1.27](https://kubernetes.io/docs/concepts/workloads/controllers/cron-jobs/). Gateway API `v1` e `external-secrets.io/v1` são CRDs, não versão de Kubernetes, então não cabem aqui — o preflight do deploy asseta esses group/versions por cluster.
   - **PDB** renderizado só a partir de 2 réplicas efetivas (abaixo disso não protege nada). `maxUnavailable: 1` em vez do `minAvailable: 90%` sugerido pelo [upstream para frontends stateless](https://kubernetes.io/docs/tasks/run-application/configure-pdb/): percentuais de `minAvailable` arredondam **para cima**, então 90% de 2 réplicas resolve para 2 e bloquearia **toda** disrupção voluntária, inclusive drain de nó. `unhealthyPodEvictionPolicy: AlwaysAllow` segue a recomendação explícita do upstream.
   - **TopologySpread** com `whenUnsatisfiable: ScheduleAnyway` de propósito: o upstream [alerta](https://kubernetes.io/docs/concepts/scheduling-eviction/topology-spread-constraints/) que `DoNotSchedule` em cluster com poucos domínios atrasa ou bloqueia agendamento. Soft é no-op em cluster de uma zona e ainda enviesa o scheduler em multi-zona — mesmo chart correto para os três ambientes, sem descoberta por cluster.
-  - **PSA** por ambiente em [`config/platform-environments.json`](config/platform-environments.json) (`podSecurity.enforce` + `enforceVersion`). `null` ⇒ namespace **não** é rotulado. Os charts satisfazem o perfil [`restricted`](https://kubernetes.io/docs/concepts/security/pod-security-standards/) (`runAsNonRoot` + `runAsUser`, `allowPrivilegeEscalation: false`, `drop: [ALL]`, `seccompProfile: RuntimeDefault`), então `enforce=restricted` deve passar — mas *enforçar* é decisão de política da plataforma, não default de chart. Se `enforce` é setado sem `enforceVersion`, o deploy falha: versão não pinada faz um upgrade de cluster mudar silenciosamente o que é enforçado.
-- **Proving ground (não inventar):** label `Gateway.allowedRoutes` por cluster / drain do gateway para `preStop` / prova gRPC e2e no cluster. Ver [`scripts/discover-platform-values.sh`](scripts/discover-platform-values.sh) — rode **uma vez por ambiente**; o que varia por cluster vai para `config/platform-environments.json`, não para o chart.
+  - **PSA** por cluster em [`platform/areas/<area>.yml`](platform/areas/) (`podSecurity.enforce` + `enforceVersion`). `null` ⇒ namespace **não** é rotulado. Os charts satisfazem o perfil [`restricted`](https://kubernetes.io/docs/concepts/security/pod-security-standards/) (`runAsNonRoot` + `runAsUser`, `allowPrivilegeEscalation: false`, `drop: [ALL]`, `seccompProfile: RuntimeDefault`), então `enforce=restricted` deve passar — mas *enforçar* é decisão de política da plataforma, não default de chart. Se `enforce` é setado sem `enforceVersion`, o deploy falha: versão não pinada faz um upgrade de cluster mudar silenciosamente o que é enforçado.
+- **Proving ground (não inventar):** label `Gateway.allowedRoutes` por cluster / drain do gateway para `preStop` / prova gRPC e2e no cluster. Ver [`scripts/discover-platform-values.sh`](scripts/discover-platform-values.sh) — rode **uma vez por cluster (área × tier)**; o que varia por cluster vai para `platform/areas/<area>.yml`, não para o chart.
 
 ### Versões
 
@@ -158,3 +185,5 @@ helm lint charts/asa-scheduled-job --set-string image.repository=example.dkr.ecr
 | `v3.1.1` | **RETIRADA — não usar.** Duas sintaxes jq inválidas no mikefarah/yq: `yq -e --arg` no preflight de Gateway faz **todo deploy web/grpc falhar**, e `\| last \|` quebra o rollback. `gatewayNamespace` também estava errado (`asa-infra`). |
 | `v3.1.2` | correção da `v3.1.1` + hardening: `expectedKubeContext` ligado ao mapping autoritativo, invariantes de chart validadas **antes** do push de imagem, preflight por apiVersion exata, baseline de pod endurecido (`runAsUser` 1654, `enableServiceLinks: false`, `revisionHistoryLimit`, `progressDeadlineSeconds`), guardas de drift de gateway e de schema |
 | `v3.2.0` | kubeconform nos manifests renderizados; `expect_fail` com asserção de mensagem; `validateAutoscaling` (min≤max); `remoteRef.key` required; `image.repository` minLength; `/tmp` `emptyDir.sizeLimit`; labels padrão (`version`/`managed-by`/`helm.sh/chart`); gate de bump de versão no CI |
+| `v4.0.0` | Desacoplamento env→topology via `resolve-platform-values.sh` + `platform.*` no chart; asa-application 4.x |
+| `v5.0.0` | Cluster axis: `platform/areas/<area>.yml` (pool/Environment em compile-time + facts em runtime); `platformArea`; ECR registry compartilhado; labels `asa.platform/area|tier`; asa-application 5.0.0 / asa-scheduled-job 4.0.0 |

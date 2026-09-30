@@ -89,18 +89,36 @@ dry_run() {
 }
 
 app() {
+  local area="${PLATFORM_AREA:-lab}"
+  local tier="${PLATFORM_TIER:-${PLATFORM_ENV:-develop}}"
+  local pf rc=0
+  pf="$(mktemp -t asa-platform.XXXXXX.yaml)"
+  "${ROOT}/scripts/resolve-platform-values.sh" "${area}" "${tier}" "${pf}"
   helm template probe "${APP_CHART}" \
     --set-string image.repository=example.invalid/app \
-    --set-string image.tag=deadbeef "$@"
+    --set-string image.tag=deadbeef \
+    -f "${pf}" \
+    "$@" || rc=$?
+  rm -f "${pf}"
+  return "${rc}"
 }
 job() {
+  local area="${PLATFORM_AREA:-lab}"
+  local tier="${PLATFORM_TIER:-${PLATFORM_ENV:-develop}}"
+  local pf rc=0
+  pf="$(mktemp -t asa-platform.XXXXXX.yaml)"
+  "${ROOT}/scripts/resolve-platform-values.sh" "${area}" "${tier}" "${pf}"
   helm template probe "${JOB_CHART}" \
     --set-string image.repository=example.invalid/job \
     --set-string image.tag=deadbeef \
     --set-string 'schedule.expression=0 2 * * *' \
     --set-string schedule.timeZone=America/Sao_Paulo \
     --set execution.timeoutSeconds=1800 \
-    --set-string 'execution.args[0]=--mode=job' "$@"
+    --set-string 'execution.args[0]=--mode=job' \
+    -f "${pf}" \
+    "$@" || rc=$?
+  rm -f "${pf}"
+  return "${rc}"
 }
 
 ALL_ON=(
@@ -113,9 +131,9 @@ ALL_ON=(
 
 echo "== server-side apply --dry-run =="
 dry_run "web / develop" -- app --set-string workload.type=web \
-  --set-json 'probes={"readiness":{"path":"/h"}}' --set-string runtime.environment=develop
-dry_run "web / production (PDB + topology spread)" -- app --set-string workload.type=web \
-  --set-json 'probes={"readiness":{"path":"/h"}}' --set-string runtime.environment=production
+  --set-json 'probes={"readiness":{"path":"/h"}}'
+PLATFORM_ENV=production dry_run "web / production (PDB + topology spread)" -- app --set-string workload.type=web \
+  --set-json 'probes={"readiness":{"path":"/h"}}'
 dry_run "web / all probes" -- app --set-string workload.type=web \
   --set-json 'probes={"startup":{"path":"/s"},"readiness":{"path":"/r"},"liveness":{"path":"/l"}}'
 dry_run "grpc / h2c + native probes" -- app --set-string workload.type=grpc \
@@ -128,8 +146,8 @@ dry_run "web / persistence (RWO, Recreate)" -- app --set-string workload.type=we
   --set-string persistence.mountPath=/data --set-string persistence.size=1Gi
 dry_run "web / legacyDns" -- app --set-string workload.type=web \
   --set-json 'probes={"readiness":{"path":"/h"}}' --set legacyDns=true
-dry_run "web / everything on" -- app --set-string workload.type=web \
-  --set-json 'probes={"readiness":{"path":"/h"}}' --set-string runtime.environment=production "${ALL_ON[@]}"
+PLATFORM_ENV=production dry_run "web / everything on" -- app --set-string workload.type=web \
+  --set-json 'probes={"readiness":{"path":"/h"}}' "${ALL_ON[@]}"
 dry_run "grpc / everything on" -- app --set-string workload.type=grpc \
   --set-json 'probes={"readiness":{"enabled":true}}' "${ALL_ON[@]}"
 dry_run "worker / everything on" -- app --set-string workload.type=worker "${ALL_ON[@]}"

@@ -426,12 +426,45 @@
       "additionalProperties": false,
       "properties": {
         "environment": {
+          "type": "string"
+        }
+      }
+    },
+    "platform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "area",
+        "tier",
+        "gatewayName",
+        "gatewayNamespace",
+        "corpDnsZone",
+        "defaultMinReplicas"
+      ],
+      "properties": {
+        "area": {
           "type": "string",
-          "enum": [
-            "develop",
-            "homolog",
-            "production"
-          ]
+          "minLength": 1
+        },
+        "tier": {
+          "type": "string",
+          "minLength": 1
+        },
+        "gatewayName": {
+          "type": "string"
+        },
+        "gatewayNamespace": {
+          "type": "string"
+        },
+        "corpDnsZone": {
+          "type": "string"
+        },
+        "legacyDnsZone": {
+          "type": "string"
+        },
+        "defaultMinReplicas": {
+          "type": "integer",
+          "minimum": 1
         }
       }
     },

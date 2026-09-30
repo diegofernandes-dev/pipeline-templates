@@ -166,17 +166,36 @@ conform_combo() {
 }
 
 app() {
+  local area="${PLATFORM_AREA:-lab}"
+  local tier="${PLATFORM_TIER:-${PLATFORM_ENV:-develop}}"
+  local pf rc=0
+  pf="$(mktemp -t asa-platform.XXXXXX.yaml)"
+  "${ROOT}/scripts/resolve-platform-values.sh" "${area}" "${tier}" "${pf}"
   helm template t "${APP_CHART}" \
     --set-string image.repository=example.invalid/app \
-    --set-string image.tag=v1 "$@"
+    --set-string image.tag=v1 \
+    -f "${pf}" \
+    "$@" || rc=$?
+  rm -f "${pf}"
+  return "${rc}"
 }
 job() {
+  local area="${PLATFORM_AREA:-lab}"
+  local tier="${PLATFORM_TIER:-${PLATFORM_ENV:-develop}}"
+  local pf rc=0
+  pf="$(mktemp -t asa-platform.XXXXXX.yaml)"
+  "${ROOT}/scripts/resolve-platform-values.sh" "${area}" "${tier}" "${pf}"
   helm template t "${JOB_CHART}" \
     --set-string image.repository=example.invalid/job \
     --set-string image.tag=v1 \
     --set-string 'schedule.expression=0 2 * * *' \
     --set-string schedule.timeZone=America/Sao_Paulo \
-    --set execution.timeoutSeconds=60 "$@"
+    --set execution.timeoutSeconds=60 \
+    --set-string 'execution.args[0]=--mode=job' \
+    -f "${pf}" \
+    "$@" || rc=$?
+  rm -f "${pf}"
+  return "${rc}"
 }
 
 echo "== interaction matrix: Application =="
@@ -186,7 +205,8 @@ for TYPE in web grpc worker; do
       for WIF in 0 1; do
         for ESO in 0 1; do
           for CFG in 0 1; do
-            ARGS="--set-string workload.type=${TYPE} --set-string runtime.environment=${ENV}"
+            ARGS="--set-string workload.type=${TYPE}"
+            export PLATFORM_ENV="${ENV}"
             case "${TYPE}" in
               web)  PROBE="--set-json probes={\"readiness\":{\"path\":\"/h\"}}" ;;
               grpc) PROBE="--set-json probes={\"readiness\":{\"enabled\":true}}" ;;
@@ -245,8 +265,8 @@ for TYPE in web grpc worker; do
     *)    PROBE="" ;;
   esac
   # shellcheck disable=SC2086
-  conform_combo "app/${TYPE}/all-on/production" app --set-string workload.type=${TYPE} \
-    --set-string runtime.environment=production ${PROBE} ${ALL_ON}
+  PLATFORM_ENV=production conform_combo "app/${TYPE}/all-on/production" app --set-string workload.type=${TYPE} \
+    ${PROBE} ${ALL_ON}
 done
 # shellcheck disable=SC2086
 conform_combo "app/web/all-on+persistence" app --set-string workload.type=web \

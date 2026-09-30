@@ -96,63 +96,14 @@ spec:
               containerPort: {{ include "chart.containerPort" . }}
               protocol: TCP
           {{- end }}
-          {{- $probeCfg := (.Values.probes | default dict) -}}
-          {{- if not (kindIs "map" $probeCfg) -}}{{- $probeCfg = dict -}}{{- end -}}
-          {{- $startupCfg := $probeCfg.startup | default dict -}}
-          {{- $readinessCfg := $probeCfg.readiness | default dict -}}
-          {{- $livenessCfg := $probeCfg.liveness | default dict -}}
-          {{- $startupMode := include "chart.probeTypeEnabled" (list . "startup") -}}
-          {{- $readinessMode := include "chart.probeTypeEnabled" (list . "readiness") -}}
-          {{- $livenessMode := include "chart.probeTypeEnabled" (list . "liveness") -}}
-          {{- if eq $startupMode "http" }}
-          startupProbe:
-            httpGet:
-              path: {{ include "chart.probeHttpPath" (list . "startup") | quote }}
-              port: http
-            failureThreshold: {{ $startupCfg.failureThreshold | default 30 }}
-            periodSeconds: {{ $startupCfg.periodSeconds | default 5 }}
-          {{- else if eq $startupMode "grpc" }}
-          startupProbe:
-            grpc:
-              port: {{ include "chart.containerPort" . | int }}
-            failureThreshold: {{ $startupCfg.failureThreshold | default 30 }}
-            periodSeconds: {{ $startupCfg.periodSeconds | default 5 }}
+          {{- with (include "chart.renderProbe" (list . "startup")) }}
+          {{- . | nindent 10 }}
           {{- end }}
-          {{- if eq $livenessMode "http" }}
-          livenessProbe:
-            httpGet:
-              path: {{ include "chart.probeHttpPath" (list . "liveness") | quote }}
-              port: http
-            initialDelaySeconds: {{ $livenessCfg.initialDelaySeconds | default 10 }}
-            periodSeconds: {{ $livenessCfg.periodSeconds | default 10 }}
-            timeoutSeconds: {{ $livenessCfg.timeoutSeconds | default 3 }}
-            failureThreshold: {{ $livenessCfg.failureThreshold | default 3 }}
-          {{- else if eq $livenessMode "grpc" }}
-          livenessProbe:
-            grpc:
-              port: {{ include "chart.containerPort" . | int }}
-            initialDelaySeconds: {{ $livenessCfg.initialDelaySeconds | default 10 }}
-            periodSeconds: {{ $livenessCfg.periodSeconds | default 10 }}
-            timeoutSeconds: {{ $livenessCfg.timeoutSeconds | default 3 }}
-            failureThreshold: {{ $livenessCfg.failureThreshold | default 3 }}
+          {{- with (include "chart.renderProbe" (list . "liveness")) }}
+          {{- . | nindent 10 }}
           {{- end }}
-          {{- if eq $readinessMode "http" }}
-          readinessProbe:
-            httpGet:
-              path: {{ include "chart.probeHttpPath" (list . "readiness") | quote }}
-              port: http
-            initialDelaySeconds: {{ $readinessCfg.initialDelaySeconds | default 10 }}
-            periodSeconds: {{ $readinessCfg.periodSeconds | default 10 }}
-            timeoutSeconds: {{ $readinessCfg.timeoutSeconds | default 3 }}
-            failureThreshold: {{ $readinessCfg.failureThreshold | default 3 }}
-          {{- else if eq $readinessMode "grpc" }}
-          readinessProbe:
-            grpc:
-              port: {{ include "chart.containerPort" . | int }}
-            initialDelaySeconds: {{ $readinessCfg.initialDelaySeconds | default 10 }}
-            periodSeconds: {{ $readinessCfg.periodSeconds | default 10 }}
-            timeoutSeconds: {{ $readinessCfg.timeoutSeconds | default 3 }}
-            failureThreshold: {{ $readinessCfg.failureThreshold | default 3 }}
+          {{- with (include "chart.renderProbe" (list . "readiness")) }}
+          {{- . | nindent 10 }}
           {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}

@@ -35,28 +35,26 @@ parameters:
     type: string
     default: ''
 
-  # Lista ordenada de ambientes para promover a mesma imagem.
-  # Ex.: [{ name: homolog, containerPool: PG-AWS-EKS-HML, variableGroups: [] }]
-  # name ∈ { develop, homolog, production }.
-  # containerPool (opcional): pool do Deploy desse ambiente. Tem precedência sobre o default da
-  #   plataforma. develop/homolog têm default; production NÃO tem — passe explicitamente ou o
-  #   DeployContract aborta (containerPool null em config/platform-environments.json).
-  # App env overlay: deploy/config/<name>.yaml no repo da app (IRSA, WIF, HPA, config, externalSecret).
-  # variableGroups: legado/opcional (não alimenta IRSA/WIF/config de app). Lista vazia ⇒ só CI se deployEnvironments vazio.
+  # Lista ordenada de tiers para promover a mesma imagem (nome lógico = chave em
+  # platform/areas/<platformArea>.yml → platform.tiers.<name>).
+  # Ex.: [{ name: develop, variableGroups: [] }, { name: homolog, variableGroups: [] }]
+  # Pool e ADO Environment vêm do area profile (compile-time lookup) — não do consumer.
+  # App overlay: deploy/config/<tier>.yaml (IRSA, WIF, HPA, config, externalSecret).
+  # Lista vazia ⇒ só CI.
   - name: deployEnvironments
-    displayName: Ambientes ADO (+ pool por ambiente)
+    displayName: Tiers de promoção (develop → homolog → production)
     type: object
     default: []
 
-  - name: containerPool
-    displayName: Agent pool com Docker + acesso ao ECR
+  # Área de plataforma (cluster axis). Obrigatório quando deployEnvironments não está vazio.
+  # Allowlist = arquivos em platform/areas/ (exceto o valor vazio = CI-only).
+  - name: platformArea
+    displayName: Área de plataforma (lab, …)
     type: string
-    default: 'PG-AWS-EKS'
-
-  - name: awsRegion
-    displayName: Região do ECR
-    type: string
-    default: 'us-east-1'
+    default: ''
+    values:
+      - ''
+      - lab
 
   # Path do .csproj a publicar na imagem (obrigatório quando há Container).
   - name: dotnetProject
@@ -69,15 +67,14 @@ parameters:
     type: string
     default: '5m'
 
-  # Pasta no repo da app com overlays <environment>.yaml (default: deploy/config).
+  # Pasta no repo da app com overlays <tier>.yaml (default: deploy/config).
   # Cada manifesto deve declarar kind: Application | ScheduledJob.
   - name: runtimeConfigPath
-    displayName: Caminho dos manifestos por ambiente
+    displayName: Caminho dos manifestos por tier
     type: string
     default: 'deploy/config'
 
-  # expectedKubeContext is NOT a parameter: the deploy stage reads it from
-  # config/platform-environments.json (single source of truth, exact match).
+  # expectedKubeContext / awsAccountId / pools: platform/areas/<area>.yml (single source of truth).
 
 stages:
   - stage: CI
@@ -182,6 +179,7 @@ stages:
                 targetPath: $(Build.ArtifactStagingDirectory)/app
                 artifact: app
 
+
   - ${{ if gt(length(parameters.deployEnvironments), 3) }}:
     - stage: DeployEnvironmentsOverflow
       displayName: Too many deployEnvironments
@@ -196,361 +194,28 @@ stages:
                 exit 1
               displayName: Fail on overflow
 
-  - ${{ if and(gt(length(parameters.deployEnvironments), 0), le(length(parameters.deployEnvironments), 3)) }}:
-    - stage: DeployContract
-      displayName: Validate deploy manifests
-      dependsOn:
-        - CI
-      condition: succeeded()
+  - ${{ if and(gt(length(parameters.deployEnvironments), 0), eq(parameters.platformArea, '')) }}:
+    - stage: PlatformAreaRequired
+      displayName: platformArea is required
+      dependsOn: CI
       jobs:
-        - job: CrossEnvIdentity
-          displayName: Cross-env kind / workload.type
+        - job: Fail
           pool:
             vmImage: ${{ parameters.vmImage }}
           steps:
-            - checkout: self
-              path: app
-            - checkout: templates
-              path: pipeline-templates
             - bash: |
-                set -Eeuo pipefail
-                WORKSPACE="${PIPELINE_WORKSPACE:-${AGENT_BUILDDIRECTORY}}"
-                APP_DIR="${WORKSPACE}/app"
-                TEMPLATES_DIR="${WORKSPACE}/pipeline-templates"
-                CONFIG="${APP_DIR}/${{ parameters.runtimeConfigPath }}"
-                PLATFORM_ENVS="${TEMPLATES_DIR}/config/platform-environments.json"
-                YQ_VERSION="v4.44.3"
-                YQ_SHA256="a2c097180dd884a8d50c956ee16a9cec070f30a7947cf4ebf87d5f36213e9ed7"
-                PYYAML_VERSION="6.0.2"
-                JSONSCHEMA_VERSION="4.23.0"
+                echo "##vso[task.logissue type=error]platformArea is required when deployEnvironments is set (values: lab, …)"
+                exit 1
+              displayName: Fail without platformArea
 
-                if ! command -v yq >/dev/null 2>&1; then
-                  echo "Installing pinned yq ${YQ_VERSION} (Microsoft-hosted)"
-                  # Version pinning alone does not protect the download: verify the published
-                  # SHA-256 before putting the binary on PATH.
-                  wget -qO /tmp/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
-                  echo "${YQ_SHA256}  /tmp/yq" | sha256sum -c - \
-                    || { echo "##vso[task.logissue type=error]yq checksum mismatch — refusing to install"; exit 1; }
-                  sudo install -m 0755 /tmp/yq /usr/local/bin/yq
-                  rm -f /tmp/yq
-                fi
-                yq --version
-
-                # helm ships with the Microsoft-hosted image; fail loudly rather than skipping
-                # the chart-invariant layer if that ever changes.
-                if ! command -v helm >/dev/null 2>&1; then
-                  echo "##vso[task.logissue type=error]helm not found on ${{ parameters.vmImage }} — required to validate chart invariants before the image push"
-                  exit 1
-                fi
-                HELM_V="$(helm version --short 2>/dev/null || true)"
-                echo "helm: ${HELM_V}"
-                if [[ ! "${HELM_V}" =~ ^v?3\. ]]; then
-                  echo "##vso[task.logissue type=error]Unsupported Helm version '${HELM_V}' — platform requires Helm 3.x (must match the deploy agents)"
-                  exit 1
-                fi
-
-                # Fails here rather than as an opaque helm error below, and earlier than the
-                # Container stage's own check.
-                if [[ -z "${{ parameters.applicationName }}" ]]; then
-                  echo "##vso[task.logissue type=error]applicationName is required when deployEnvironments is set"
-                  exit 1
-                fi
-
-                mapfile -t ENVS < <(printf '%s' "${DEPLOY_ENVIRONMENTS_JSON}" | yq -r '.[].name')
-                if [[ "${#ENVS[@]}" -eq 0 ]]; then
-                  echo "##vso[task.logissue type=error]deployEnvironments produced an empty name list"
-                  exit 1
-                fi
-                if [[ "${#ENVS[@]}" -gt 3 ]]; then
-                  echo "##vso[task.logissue type=error]At most 3 deployEnvironments supported (got ${#ENVS[@]}) — extra envs would be silently ignored"
-                  exit 1
-                fi
-
-                # Duplicates
-                uniq_count="$(printf '%s\n' "${ENVS[@]}" | sort -u | wc -l | tr -d ' ')"
-                if [[ "${uniq_count}" -ne "${#ENVS[@]}" ]]; then
-                  echo "##vso[task.logissue type=error]Duplicate environment names in deployEnvironments"
-                  exit 1
-                fi
-
-                # Canonical order: develop → homolog → production (subset OK, never inverted)
-                declare -A RANK=([develop]=1 [homolog]=2 [production]=3)
-                prev=0
-                for env in "${ENVS[@]}"; do
-                  case "${env}" in
-                    develop|homolog|production) ;;
-                    *) echo "##vso[task.logissue type=error]Unsupported environment '${env}'"; exit 1 ;;
-                  esac
-                  r="${RANK[$env]}"
-                  if (( r < prev )); then
-                    echo "##vso[task.logissue type=error]deployEnvironments order must follow develop→homolog→production (got inverted: ${ENVS[*]})"
-                    exit 1
-                  fi
-                  prev=$r
-
-                  pool="$(yq -r ".${env}.containerPool // \"null\"" "${PLATFORM_ENVS}")"
-                  if [[ "${pool}" == "null" || -z "${pool}" ]]; then
-                    echo "##vso[task.logissue type=error]EXTERNAL BLOCKER: no authoritative containerPool for '${env}' in config/platform-environments.json — fill mapping before deploying"
-                    exit 1
-                  fi
-                  ctx="$(yq -r ".${env}.expectedKubeContext // \"null\"" "${PLATFORM_ENVS}")"
-                  if [[ "${ctx}" == "null" || -z "${ctx}" ]]; then
-                    echo "##[warning]EXTERNAL BLOCKER: expectedKubeContext for '${env}' not mapped — deploy will skip exact context assert until filled"
-                  fi
-                done
-                echo "Environments OK: ${ENVS[*]}"
-
-                pip3 install --user "pyyaml==${PYYAML_VERSION}" "jsonschema==${JSONSCHEMA_VERSION}" >/dev/null
-                export PATH="${HOME}/.local/bin:${PATH}"
-
-                bash "${TEMPLATES_DIR}/scripts/assert-deploy-identity.sh" "${CONFIG}" "${ENVS[@]}"
-
-                # Two validation layers, both BEFORE the image push:
-                #   1. public JSON Schema  — rejects unknown/typo keys (additionalProperties: false)
-                #   2. helm template       — runs the chart's own fail-fast rules (reserved config keys,
-                #                            probe shape per workload.type, persistence vs autoscaling,
-                #                            partial WIF/ExternalSecret, ScheduledJob command/args, …)
-                # Without layer 2 here, those rules would only fire during Deploy — after the image is
-                # pushed, and for production only after develop/homolog were already rolled out.
-                for env in "${ENVS[@]}"; do
-                  manifest="${CONFIG}/${env}.yaml"
-                  kind="$(yq -r '.kind // ""' "${manifest}")"
-                  case "${kind}" in
-                    Application)
-                      schema="${TEMPLATES_DIR}/schemas/application.manifest.schema.json"
-                      chart="${TEMPLATES_DIR}/charts/asa-application"
-                      ;;
-                    ScheduledJob)
-                      schema="${TEMPLATES_DIR}/schemas/scheduled-job.manifest.schema.json"
-                      chart="${TEMPLATES_DIR}/charts/asa-scheduled-job"
-                      ;;
-                    *) echo "##vso[task.logissue type=error]Unsupported kind ${kind}"; exit 1 ;;
-                  esac
-
-                  echo "##[group]${env}: public schema (${kind})"
-                  python3 "${TEMPLATES_DIR}/scripts/validate-manifest.py" "${schema}" "${manifest}"
-                  echo "##[endgroup]"
-
-                  # Same platform-injected values the Deploy stage uses, with placeholder image
-                  # coordinates — the real digest is irrelevant to the chart's validation rules.
-                  HELM_RENDER_SET=(
-                    --set-string "image.repository=validation.invalid/${{ parameters.applicationName }}"
-                    --set-string "image.tag=deploycontract"
-                  )
-                  if [[ "${kind}" == "Application" ]]; then
-                    HELM_RENDER_SET+=(--set-string "runtime.environment=${env}")
-                  fi
-
-                  echo "##[group]${env}: helm template (chart invariants)"
-                  if ! helm template "${{ parameters.applicationName }}" "${chart}" \
-                    -f "${manifest}" \
-                    "${HELM_RENDER_SET[@]}" >/dev/null; then
-                    echo "##vso[task.logissue type=error]${env}: manifest violates a chart invariant — see the helm error above. Fix ${{ parameters.runtimeConfigPath }}/${env}.yaml before deploying."
-                    exit 1
-                  fi
-                  echo "##[endgroup]"
-                  echo "OK ${env}: schema + chart invariants"
-                done
-              displayName: Assert identity + public schemas + env guards
-              env:
-                DEPLOY_ENVIRONMENTS_JSON: ${{ convertToJson(parameters.deployEnvironments) }}
-
-    - stage: Container
-      displayName: Docker Build and Push
-      dependsOn:
-        - CI
-        - DeployContract
-      condition: succeeded()
-      variables:
-        aspnetTag: $[stageDependencies.CI.BuildAndTest.outputs['publishApp.aspnetTag']]
-        appDll: $[stageDependencies.CI.BuildAndTest.outputs['publishApp.appDll']]
-      jobs:
-        - job: DockerBuildPush
-          displayName: Build and push image to ECR
-          pool:
-            name: ${{ parameters.containerPool }}
-          steps:
-            - checkout: templates
-              displayName: Checkout platform Dockerfile
-              path: pipeline-templates
-
-            - task: DownloadPipelineArtifact@2
-              displayName: Download app artifact
-              inputs:
-                artifact: app
-                path: $(Pipeline.Workspace)/app
-
-            - task: Bash@3
-              name: dockerBuildPush
-              displayName: ECR login, buildctl build and push
-              env:
-                AWS_REGION: ${{ parameters.awsRegion }}
-                AWS_DEFAULT_REGION: ${{ parameters.awsRegion }}
-                APPLICATION_NAME: ${{ parameters.applicationName }}
-                ASPNET_TAG: $(aspnetTag)
-                APP_DLL: $(appDll)
-                IMAGE_TAG: $(Build.SourceVersion)
-                # PG-AWS-EKS (tenv3) usa BuildKit sidecar + crane — sem Docker Engine.
-                BUILDKIT_HOST: unix:///run/buildkit/buildkitd.sock
-              inputs:
-                targetType: inline
-                script: |
-                  set -Eeuo pipefail
-
-                  export PATH="/opt/tenv3/container-build-tools/bin:${PATH}"
-
-                  if [[ -z "${APPLICATION_NAME:-}" ]]; then
-                    echo "##vso[task.logissue type=error]applicationName is required when deployEnvironments is set"
-                    exit 1
-                  fi
-
-                  if [[ -z "${ASPNET_TAG:-}" ]]; then
-                    echo "##vso[task.logissue type=error]aspnetTag missing from CI outputs"
-                    exit 1
-                  fi
-
-                  if [[ -z "${APP_DLL:-}" ]]; then
-                    echo "##vso[task.logissue type=error]appDll missing from CI outputs"
-                    exit 1
-                  fi
-
-                  WORKSPACE="${PIPELINE_WORKSPACE:-${AGENT_BUILDDIRECTORY}}"
-                  APP_CONTEXT="${WORKSPACE}/app"
-                  if [[ ! -f "${APP_CONTEXT}/${APP_DLL}" ]]; then
-                    echo "##vso[task.logissue type=error]Published DLL not found: ${APP_CONTEXT}/${APP_DLL}"
-                    ls -la "${APP_CONTEXT}" || true
-                    exit 1
-                  fi
-
-                  DOCKERFILE_DIR="${WORKSPACE}/pipeline-templates/docker/dotnet"
-                  if [[ ! -f "${DOCKERFILE_DIR}/Dockerfile" ]]; then
-                    echo "##vso[task.logissue type=error]Platform Dockerfile not found: ${DOCKERFILE_DIR}/Dockerfile"
-                    exit 1
-                  fi
-
-                  RUNTIME_IMAGE="mcr.microsoft.com/dotnet/aspnet:${ASPNET_TAG}"
-                  ECR_REPOSITORY="${APPLICATION_NAME}"
-
-                  if ! command -v buildctl >/dev/null || ! command -v crane >/dev/null; then
-                    echo "##vso[task.logissue type=error]buildctl/crane not found — pool ${{ parameters.containerPool }} must expose BuildKit tools"
-                    exit 1
-                  fi
-
-                  echo "##[group]aws caller identity (ambient credentials on agent)"
-                  aws sts get-caller-identity
-                  AWS_ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
-                  echo "##[endgroup]"
-
-                  if [[ -z "${AWS_ACCOUNT_ID}" || "${AWS_ACCOUNT_ID}" == "None" ]]; then
-                    echo "##vso[task.logissue type=error]Could not resolve AWS account id from sts (agent ambient credentials)"
-                    exit 1
-                  fi
-
-                  REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
-                  IMAGE_REF="${REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
-
-                  echo "##[group]ecr login ${REGISTRY}"
-                  aws ecr get-login-password --region "${AWS_REGION}" \
-                    | crane auth login "${REGISTRY}" -u AWS --password-stdin
-                  echo "##[endgroup]"
-
-                  echo "##[group]ensure ecr repository ${ECR_REPOSITORY} (IMMUTABLE)"
-                  if ! aws ecr describe-repositories --repository-names "${ECR_REPOSITORY}" --region "${AWS_REGION}" >/dev/null 2>&1; then
-                    aws ecr create-repository \
-                      --repository-name "${ECR_REPOSITORY}" \
-                      --region "${AWS_REGION}" \
-                      --image-tag-mutability IMMUTABLE \
-                      >/dev/null
-                    echo "Created repository ${ECR_REPOSITORY} with IMMUTABLE tags"
-                  else
-                    MUTABILITY="$(aws ecr describe-repositories --repository-names "${ECR_REPOSITORY}" --region "${AWS_REGION}" \
-                      --query 'repositories[0].imageTagMutability' --output text)"
-                    echo "Repository ${ECR_REPOSITORY} exists (imageTagMutability=${MUTABILITY})"
-                    if [[ "${MUTABILITY}" != "IMMUTABLE" ]]; then
-                      echo "Enforcing IMMUTABLE on existing repository"
-                      aws ecr put-image-tag-mutability \
-                        --repository-name "${ECR_REPOSITORY}" \
-                        --region "${AWS_REGION}" \
-                        --image-tag-mutability IMMUTABLE >/dev/null
-                    fi
-                  fi
-                  echo "##[endgroup]"
-
-                  IMAGE_REPOSITORY="${REGISTRY}/${ECR_REPOSITORY}"
-
-                  # Commit SHA tags + ECR IMMUTABLE: re-runs of the same commit must reuse, not overwrite.
-                  if EXISTING_DIGEST="$(crane digest "${IMAGE_REF}" 2>/dev/null)"; then
-                    echo "Image ${IMAGE_REF} already exists (${EXISTING_DIGEST}) — skipping build/push (immutable tag)"
-                  else
-                    echo "##[group]buildctl build+push ${IMAGE_REF} (RUNTIME_IMAGE=${RUNTIME_IMAGE} APP_DLL=${APP_DLL})"
-                    buildctl build \
-                      --frontend dockerfile.v0 \
-                      --local context="${APP_CONTEXT}" \
-                      --local dockerfile="${DOCKERFILE_DIR}" \
-                      --opt filename=Dockerfile \
-                      --opt "build-arg:RUNTIME_IMAGE=${RUNTIME_IMAGE}" \
-                      --opt "build-arg:APP_DLL=${APP_DLL}" \
-                      --opt platform=linux/amd64 \
-                      --output "type=image,name=${IMAGE_REF},push=true"
-                    echo "##[endgroup]"
-                    echo "Pushed ${IMAGE_REF}"
-                  fi
-
-                  echo "##vso[task.setvariable variable=imageRef;isOutput=true]${IMAGE_REF}"
-                  echo "##vso[task.setvariable variable=imageTag;isOutput=true]${IMAGE_TAG}"
-                  echo "##vso[task.setvariable variable=imageRepository;isOutput=true]${IMAGE_REPOSITORY}"
-
-    - template: helm-deploy.yml
+  # Delivery (DeployContract + Container + Deploy_*) is owned by the area profile so
+  # compile-time lookups of pool / ADO Environment resolve from platform.tiers.
+  - ${{ if and(gt(length(parameters.deployEnvironments), 0), ne(parameters.platformArea, ''), le(length(parameters.deployEnvironments), 3)) }}:
+    - template: ../../platform/areas/${{ parameters.platformArea }}.yml
       parameters:
-        environmentName: ${{ parameters.deployEnvironments[0].name }}
-        variableGroups: ${{ parameters.deployEnvironments[0].variableGroups }}
-        dependsOn:
-          - Container
-        applicationName: ${{ parameters.applicationName }}
-        # Explicit per-env override wins; otherwise the platform default for that env.
-        # Must stay in sync with config/platform-environments[].containerPool — ADO cannot read
-        # a file at template-expansion time, so tests/chart-invariants.sh asserts they agree.
-        containerPool: ${{ coalesce(parameters.deployEnvironments[0].containerPool, iif(eq(parameters.deployEnvironments[0].name, 'develop'), 'PG-AWS-EKS', iif(eq(parameters.deployEnvironments[0].name, 'homolog'), 'PG-AWS-EKS-HML', parameters.containerPool))) }}
-        awsRegion: ${{ parameters.awsRegion }}
-        helmTimeout: ${{ coalesce(parameters.deployEnvironments[0].helmTimeout, parameters.helmTimeout) }}
-        runtimeConfigPath: ${{ parameters.runtimeConfigPath }}
-        ecrPullSecret: ${{ coalesce(variables['ECR_PULL_SECRET'], '') }}
-        smokeScheduledJob: ${{ coalesce(parameters.deployEnvironments[0].smokeScheduledJob, false) }}
-
-  - ${{ if gt(length(parameters.deployEnvironments), 1) }}:
-    - template: helm-deploy.yml
-      parameters:
-        environmentName: ${{ parameters.deployEnvironments[1].name }}
-        variableGroups: ${{ parameters.deployEnvironments[1].variableGroups }}
-        dependsOn:
-          - Container
-          - Deploy_${{ parameters.deployEnvironments[0].name }}
-        applicationName: ${{ parameters.applicationName }}
-        # Explicit per-env override wins; otherwise the platform default for that env.
-        # Must stay in sync with config/platform-environments[].containerPool — ADO cannot read
-        # a file at template-expansion time, so tests/chart-invariants.sh asserts they agree.
-        containerPool: ${{ coalesce(parameters.deployEnvironments[1].containerPool, iif(eq(parameters.deployEnvironments[1].name, 'develop'), 'PG-AWS-EKS', iif(eq(parameters.deployEnvironments[1].name, 'homolog'), 'PG-AWS-EKS-HML', parameters.containerPool))) }}
-        awsRegion: ${{ parameters.awsRegion }}
-        helmTimeout: ${{ coalesce(parameters.deployEnvironments[1].helmTimeout, parameters.helmTimeout) }}
-        runtimeConfigPath: ${{ parameters.runtimeConfigPath }}
-        ecrPullSecret: ${{ coalesce(variables['ECR_PULL_SECRET'], '') }}
-        smokeScheduledJob: ${{ coalesce(parameters.deployEnvironments[1].smokeScheduledJob, false) }}
-
-  - ${{ if gt(length(parameters.deployEnvironments), 2) }}:
-    - template: helm-deploy.yml
-      parameters:
-        environmentName: ${{ parameters.deployEnvironments[2].name }}
-        variableGroups: ${{ parameters.deployEnvironments[2].variableGroups }}
-        dependsOn:
-          - Container
-          - Deploy_${{ parameters.deployEnvironments[1].name }}
-        applicationName: ${{ parameters.applicationName }}
-        # Explicit per-env override wins; otherwise the platform default for that env.
-        # Must stay in sync with config/platform-environments[].containerPool — ADO cannot read
-        # a file at template-expansion time, so tests/chart-invariants.sh asserts they agree.
-        containerPool: ${{ coalesce(parameters.deployEnvironments[2].containerPool, iif(eq(parameters.deployEnvironments[2].name, 'develop'), 'PG-AWS-EKS', iif(eq(parameters.deployEnvironments[2].name, 'homolog'), 'PG-AWS-EKS-HML', parameters.containerPool))) }}
-        awsRegion: ${{ parameters.awsRegion }}
-        helmTimeout: ${{ coalesce(parameters.deployEnvironments[2].helmTimeout, parameters.helmTimeout) }}
-        runtimeConfigPath: ${{ parameters.runtimeConfigPath }}
-        ecrPullSecret: ${{ coalesce(variables['ECR_PULL_SECRET'], '') }}
-        smokeScheduledJob: ${{ coalesce(parameters.deployEnvironments[2].smokeScheduledJob, false) }}
+        delivery:
+          deployEnvironments: ${{ parameters.deployEnvironments }}
+          applicationName: ${{ parameters.applicationName }}
+          helmTimeout: ${{ parameters.helmTimeout }}
+          runtimeConfigPath: ${{ parameters.runtimeConfigPath }}
+          vmImage: ${{ parameters.vmImage }}

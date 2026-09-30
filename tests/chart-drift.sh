@@ -8,6 +8,7 @@ JOB="${ROOT}/charts/asa-scheduled-job/templates"
 FAILED=0
 
 # Shared primitives that must stay byte-identical until a library chart is extracted.
+# Evaluation (defer until third chart / repeated fix): docs/library-chart-decision.md
 SHARED=(
   _workloadidentity.tpl
   _labels.tpl

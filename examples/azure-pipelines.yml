@@ -7,7 +7,7 @@ resources:
       type: github
       name: diegofernandes-dev/pipeline-templates
       endpoint: github-diegofernandes-dev
-      ref: refs/tags/v3.2.0
+      ref: refs/tags/v5.0.0
 
 extends:
   template: templates/dotnet/ci.yml@templates
@@ -15,8 +15,8 @@ extends:
     solution: '**/*.sln'
     applicationName: sample-api
     dotnetProject: src/Sample.Api/Sample.Api.csproj
-    # containerPool for Container stage (build/push). Deploy pools are platform-derived.
-    containerPool: 'PG-AWS-EKS'
+    # Area profile owns buildPool, deploy pools, registry, and ADO Environments.
+    platformArea: lab
     deployEnvironments:
       - name: develop
         variableGroups: []

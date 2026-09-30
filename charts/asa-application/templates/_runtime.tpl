@@ -1,6 +1,23 @@
 {{/*
 Presence-based toggles: non-empty map/list ⇒ on.
+
+chart.toggleState classifies a values key that may be bool | map | nil:
+  empty      — omitted / null / empty map
+  off        — explicit false
+  bare-true  — explicit true (usually invalid — prefer a map)
+  on         — non-empty map
+  bad-type   — anything else
 */}}
+{{- define "chart.toggleState" -}}
+{{- $v := index . 0 -}}
+{{- if kindIs "invalid" $v -}}empty
+{{- else if kindIs "bool" $v -}}
+{{- if $v -}}bare-true{{- else -}}off{{- end -}}
+{{- else if kindIs "map" $v -}}
+{{- if eq (len $v) 0 -}}empty{{- else -}}on{{- end -}}
+{{- else -}}bad-type
+{{- end -}}
+{{- end }}
 
 {{- define "chart.configEnabled" -}}
 {{- $c := .Values.config | default dict -}}
@@ -15,10 +32,10 @@ Presence-based toggles: non-empty map/list ⇒ on.
 
 {{- define "chart.validateExternalSecret" -}}
 {{- $es := .Values.externalSecret | default dict -}}
-{{- if kindIs "bool" $es -}}
-{{- if $es -}}
+{{- $state := include "chart.toggleState" (list $es) -}}
+{{- if eq $state "bare-true" -}}
 {{- fail "externalSecret: true is invalid — set externalSecret.data and externalSecret.secretStoreRef.name (or omit / externalSecret: false)" -}}
-{{- end -}}
+{{- else if or (eq $state "off") (eq $state "empty") -}}
 {{- else -}}
 {{- $data := $es.data | default list -}}
 {{- $store := ($es.secretStoreRef | default dict).name | default "" -}}
@@ -43,9 +60,12 @@ Autoscaling:
 {{- define "chart.autoscalingEnabled" -}}
 {{- $t := include "chart.workloadType" . -}}
 {{- $a := .Values.autoscaling -}}
-{{- if kindIs "bool" $a -}}
-{{- if $a -}}true{{- else -}}false{{- end -}}
-{{- else if and $a (kindIs "map" $a) (gt (len $a) 0) -}}
+{{- $state := include "chart.toggleState" (list $a) -}}
+{{- if eq $state "bare-true" -}}
+true
+{{- else if eq $state "off" -}}
+false
+{{- else if eq $state "on" -}}
 true
 {{- else if or (eq $t "web") (eq $t "grpc") -}}
 true
@@ -59,8 +79,7 @@ false
 {{- if and (kindIs "map" $a) (hasKey $a "minReplicas") -}}
 {{- $a.minReplicas -}}
 {{- else -}}
-{{- $env := (.Values.runtime | default dict).environment | default "develop" -}}
-{{- if eq $env "production" -}}2{{- else -}}1{{- end -}}
+{{- required "platform.defaultMinReplicas is required (pipeline must inject via resolve-platform-values.sh)" .Values.platform.defaultMinReplicas -}}
 {{- end -}}
 {{- end }}
 
@@ -119,9 +138,12 @@ false
 
 {{- define "chart.persistenceEnabled" -}}
 {{- $p := .Values.persistence -}}
-{{- if kindIs "bool" $p -}}
-{{- if $p -}}true{{- else -}}false{{- end -}}
-{{- else if and (kindIs "map" $p) ($p.mountPath | default "") -}}
+{{- $state := include "chart.toggleState" (list $p) -}}
+{{- if eq $state "bare-true" -}}
+true
+{{- else if eq $state "off" -}}
+false
+{{- else if and (eq $state "on") ($p.mountPath | default "") -}}
 true
 {{- else -}}
 false
@@ -135,11 +157,12 @@ false
 {{- define "chart.validatePersistence" -}}
 {{- if (include "chart.persistenceEnabled" .) | eq "true" -}}
 {{- $p := .Values.persistence | default dict -}}
-{{- if not (kindIs "bool" $p) -}}
+{{- $state := include "chart.toggleState" (list $p) -}}
+{{- if eq $state "bare-true" -}}
+{{- fail "persistence: true is invalid — set persistence.mountPath and persistence.size (or persistence: false)" -}}
+{{- else -}}
 {{- $_ := required "persistence.mountPath is required when persistence is set" ($p.mountPath | default "") -}}
 {{- $_ := required "persistence.size is required when persistence.mountPath is set" ($p.size | default "") -}}
-{{- else -}}
-{{- fail "persistence: true is invalid — set persistence.mountPath and persistence.size (or persistence: false)" -}}
 {{- end -}}
 {{- if (include "chart.autoscalingEnabled" .) | eq "true" -}}
 {{- fail "persistence requires autoscaling: false (RWO PVC cannot be shared across HPA replicas)" -}}

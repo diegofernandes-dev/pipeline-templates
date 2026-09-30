@@ -1,0 +1,93 @@
+---
+# Source: asa-scheduled-job/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: golden-job
+  labels:
+    app: golden-job
+    app.kubernetes.io/name: golden-job
+    app.kubernetes.io/instance: golden-job
+    app.kubernetes.io/version: "deadbeef"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: asa-scheduled-job-4.0.0
+    asa.platform/area: lab
+    asa.platform/tier: develop
+automountServiceAccountToken: false
+---
+# Source: asa-scheduled-job/templates/cronjob.yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: golden-job
+  labels:
+    app: golden-job
+    app.kubernetes.io/name: golden-job
+    app.kubernetes.io/instance: golden-job
+    app.kubernetes.io/version: "deadbeef"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: asa-scheduled-job-4.0.0
+    asa.platform/area: lab
+    asa.platform/tier: develop
+    app.kubernetes.io/component: scheduled-job
+spec:
+  schedule: "0 2 * * *"
+  timeZone: "America/Sao_Paulo"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 1800
+      template:
+        metadata:
+          labels:
+            app: golden-job
+            app.kubernetes.io/name: golden-job
+            app.kubernetes.io/instance: golden-job
+            app.kubernetes.io/version: "deadbeef"
+            app.kubernetes.io/managed-by: Helm
+            app.kubernetes.io/component: scheduled-job
+        spec:
+          restartPolicy: Never
+          serviceAccountName: golden-job
+          automountServiceAccountToken: false
+          # No implicit SVC_* env vars from every Service in the namespace.
+          enableServiceLinks: false
+          securityContext:
+            fsGroup: 1654
+            runAsGroup: 1654
+            runAsNonRoot: true
+            runAsUser: 1654
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: job
+              image: "example.invalid/job:deadbeef"
+              imagePullPolicy: IfNotPresent
+              # Surface the failure reason in the Job status when the run dies without a message file.
+              terminationMessagePolicy: FallbackToLogsOnError
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                  - ALL
+                privileged: false
+                readOnlyRootFilesystem: true
+              args:
+                - --mode=job
+              resources:
+                limits:
+                  memory: 512Mi
+                requests:
+                  cpu: 150m
+                  memory: 256Mi
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+                
+          volumes:
+            - name: tmp
+              emptyDir:
+                sizeLimit: "128Mi"

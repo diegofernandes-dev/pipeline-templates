@@ -73,25 +73,44 @@ assert_kind_count() {
   fi
 }
 
-# Always inject image + runtime (pipeline-owned).
+# Always inject image + platform facts (pipeline-owned via resolve-platform-values.sh).
+# Override with PLATFORM_AREA=<area> and PLATFORM_TIER=<tier> (or PLATFORM_ENV alias).
+# Defaults: lab / develop.
 render_app() {
+  local area="${PLATFORM_AREA:-lab}"
+  local tier="${PLATFORM_TIER:-${PLATFORM_ENV:-develop}}"
+  local pf rc=0
+  pf="$(mktemp -t asa-platform.XXXXXX.yaml)"
+  "${ROOT}/scripts/resolve-platform-values.sh" "${area}" "${tier}" "${pf}"
   helm template sample-api "${APP_CHART}" \
     --set-string image.repository=example.dkr.ecr.us-east-1.amazonaws.com/sample-api \
     --set-string image.tag=deadbeef \
-    --set-string runtime.environment=develop \
-    "$@"
+    -f "${pf}" \
+    "$@" || rc=$?
+  rm -f "${pf}"
+  return "${rc}"
 }
 
-# Always inject image + required schedule/execution fields.
+# Always inject image + required schedule/execution fields + platform labels.
 render_job() {
+  local area="${PLATFORM_AREA:-lab}"
+  local tier="${PLATFORM_TIER:-${PLATFORM_ENV:-develop}}"
+  local pf rc=0
+  pf="$(mktemp -t asa-platform.XXXXXX.yaml)"
+  "${ROOT}/scripts/resolve-platform-values.sh" "${area}" "${tier}" "${pf}"
   helm template sample-job "${JOB_CHART}" \
     --set-string image.repository=example.dkr.ecr.us-east-1.amazonaws.com/sample-job \
     --set-string image.tag=deadbeef \
+    --set-string platform.area=lab \
+    --set-string platform.tier=develop \
     --set-string 'schedule.expression=0 2 * * *' \
     --set-string schedule.timeZone=America/Sao_Paulo \
     --set execution.timeoutSeconds=1800 \
     --set-string 'execution.args[0]=--mode=job' \
-    "$@"
+    -f "${pf}" \
+    "$@" || rc=$?
+  rm -f "${pf}"
+  return "${rc}"
 }
 
 # expect_fail "<description>" "<message substring>" [--] cmd...
@@ -267,12 +286,12 @@ OUT_WORKER_HPA="$(render_app --set-string workload.type=worker \
 assert_kind_count "$OUT_WORKER_HPA" HorizontalPodAutoscaler 1 "worker: HPA when autoscaling explicit"
 assert_contains "$OUT_WORKER_HPA" "minReplicas: 1" "worker HPA minReplicas"
 
-echo "== Application / HPA minReplicas by runtime.environment =="
-OUT_DEV="$(render_app --set probes=false --set-string runtime.environment=develop)"
+echo "== Application / HPA minReplicas by platform.defaultMinReplicas =="
+OUT_DEV="$(PLATFORM_ENV=develop render_app --set probes=false)"
 assert_contains "$OUT_DEV" "minReplicas: 1" "HPA minReplicas develop=1"
-OUT_HML="$(render_app --set probes=false --set-string runtime.environment=homolog)"
+OUT_HML="$(PLATFORM_ENV=homolog render_app --set probes=false)"
 assert_contains "$OUT_HML" "minReplicas: 1" "HPA minReplicas homolog=1"
-OUT_PRD="$(render_app --set probes=false --set-string runtime.environment=production)"
+OUT_PRD="$(PLATFORM_ENV=production render_app --set probes=false)"
 assert_contains "$OUT_PRD" "minReplicas: 2" "HPA minReplicas production=2"
 
 echo "== ScheduledJob timeZone + timeoutSeconds =="
@@ -356,6 +375,8 @@ expect_schema_fail "missing timeZone fails" "schedule.timeZone" -- \
   helm template sample-job "${JOB_CHART}" \
     --set-string image.repository=example.dkr.ecr.us-east-1.amazonaws.com/sample-job \
     --set-string image.tag=deadbeef \
+    --set-string platform.area=lab \
+    --set-string platform.tier=develop \
     --set-string 'schedule.expression=0 2 * * *' \
     --set execution.timeoutSeconds=1800 \
     --set-string 'execution.args[0]=--mode=job'
@@ -367,6 +388,8 @@ expect_fail "missing timeoutSeconds fails" "execution.timeoutSeconds is required
   helm template sample-job "${JOB_CHART}" \
     --set-string image.repository=example.dkr.ecr.us-east-1.amazonaws.com/sample-job \
     --set-string image.tag=deadbeef \
+    --set-string platform.area=lab \
+    --set-string platform.tier=develop \
     --set-string 'schedule.expression=0 2 * * *' \
     --set-string schedule.timeZone=America/Sao_Paulo \
     --set-string 'execution.args[0]=--mode=job'
@@ -400,10 +423,17 @@ expect_fail "autoscaling minReplicas > maxReplicas rejected" "must be <= autosca
   render_app --set probes=false --set autoscaling.minReplicas=9
 
 expect_schema_fail "empty image.repository rejected" "image.repository" -- \
-  helm template sample-api "${APP_CHART}" \
-    --set-string image.tag=deadbeef \
-    --set-string runtime.environment=develop \
-    --set probes=false
+  bash -c '
+    pf="$(mktemp -t asa-platform.XXXXXX.yaml)"
+    "'"${ROOT}"'/scripts/resolve-platform-values.sh" lab develop "${pf}"
+    helm template sample-api "'"${APP_CHART}"'" \
+      --set-string image.tag=deadbeef \
+      -f "${pf}" \
+      --set probes=false
+    rc=$?
+    rm -f "${pf}"
+    exit $rc
+  '
 
 # --- persistence ---
 expect_fail "persistence:true rejected" "persistence: true is invalid" -- \
@@ -535,7 +565,7 @@ OUT_NO_HPA="$(render_app --set probes=false --set autoscaling=false)"
 assert_kind_count "$OUT_NO_HPA" HorizontalPodAutoscaler 0 "autoscaling:false disables HPA for web"
 assert_contains "$OUT_NO_HPA" "replicas: 1" "autoscaling:false keeps Deployment replicas"
 
-OUT_NO_SPREAD="$(render_app --set probes=false --set-string runtime.environment=production --set topologySpread.enabled=false)"
+OUT_NO_SPREAD="$(PLATFORM_ENV=production render_app --set probes=false --set topologySpread.enabled=false)"
 assert_not_contains "$OUT_NO_SPREAD" "topologySpreadConstraints:" "topologySpread.enabled=false honoured"
 
 OUT_PVC="$(render_app --set probes=false --set autoscaling=false \
@@ -562,7 +592,7 @@ assert_contains "$OUT_ES" 'key: "prod/db"' "externalSecret remoteRef.key"
 OUT_LABELS="$(render_app --set probes=false)"
 assert_contains "$OUT_LABELS" 'app.kubernetes.io/version: "deadbeef"' "resource labels include image tag version"
 assert_contains "$OUT_LABELS" "app.kubernetes.io/managed-by: Helm" "resource labels include managed-by"
-assert_contains "$OUT_LABELS" "helm.sh/chart: asa-application-3.2.0" "resource metadata has helm.sh/chart"
+assert_contains "$OUT_LABELS" "helm.sh/chart: asa-application-5.0.0" "resource metadata has helm.sh/chart"
 # helm.sh/chart must NOT appear on the pod template (would force rollout on chart bump).
 POD_LABELS="$(python3 -c '
 import sys, yaml
@@ -585,7 +615,7 @@ assert_contains "$SELECTOR" "app: sample-api" "selector keeps app"
 assert_not_contains "$SELECTOR" "app.kubernetes.io/" "selector has no k8s recommended labels"
 
 OUT_JOB_LABELS="$(render_job)"
-assert_contains "$OUT_JOB_LABELS" "helm.sh/chart: asa-scheduled-job-3.2.0" "job resource has helm.sh/chart"
+assert_contains "$OUT_JOB_LABELS" "helm.sh/chart: asa-scheduled-job-4.0.0" "job resource has helm.sh/chart"
 assert_contains "$OUT_JOB_LABELS" 'sizeLimit: "128Mi"' "job tmp emptyDir sizeLimit"
 # helm.sh/chart must NOT appear on the CronJob pod template (would force Job recreation on chart bump).
 JOB_POD_LABELS="$(python3 -c '
@@ -607,6 +637,8 @@ expect_fail "ScheduledJob without command/args rejected" \
   helm template sample-job "${JOB_CHART}" \
     --set-string image.repository=example.dkr.ecr.us-east-1.amazonaws.com/sample-job \
     --set-string image.tag=deadbeef \
+    --set-string platform.area=lab \
+    --set-string platform.tier=develop \
     --set-string 'schedule.expression=0 2 * * *' \
     --set-string schedule.timeZone=America/Sao_Paulo \
     --set execution.timeoutSeconds=1800
@@ -819,13 +851,14 @@ else
 fi
 
 echo "== static checks (ADO / helm) =="
-if ! grep -q 'convertToJson(parameters.deployEnvironments)' "${ROOT}/templates/dotnet/ci.yml"; then
-  echo "FAIL: convertToJson(deployEnvironments) missing"
+if ! grep -q 'convertToJson(parameters.delivery.deployEnvironments)' "${ROOT}/templates/dotnet/delivery.yml"; then
+  echo "FAIL: convertToJson(delivery.deployEnvironments) missing in delivery.yml"
   FAILED=1
 else
   echo "OK: convertToJson present"
 fi
-if grep -n 'each env in parameters.deployEnvironments' "${ROOT}/templates/dotnet/ci.yml" | grep -q .; then
+if grep -n 'each env in parameters.deployEnvironments' "${ROOT}/templates/dotnet/ci.yml" \
+     "${ROOT}/templates/dotnet/delivery.yml" | grep -q .; then
   echo "FAIL: invalid each-env DeployContract loop still present"
   FAILED=1
 else
@@ -842,9 +875,8 @@ fi
 if ! grep -q 'ecrPullSecret' "${ROOT}/templates/dotnet/helm-deploy.yml"; then
   echo "FAIL: ecrPullSecret parameter missing in helm-deploy.yml"
   FAILED=1
-elif ! grep -q "ecrPullSecret: \${{ coalesce(variables\['ECR_PULL_SECRET'\], '') }}" "${ROOT}/templates/dotnet/ci.yml" \
-  && ! grep -qF "variables['ECR_PULL_SECRET']" "${ROOT}/templates/dotnet/ci.yml"; then
-  echo "FAIL: ci.yml must pass variables['ECR_PULL_SECRET'] into ecrPullSecret"
+elif ! grep -qF "variables['ECR_PULL_SECRET']" "${ROOT}/templates/dotnet/delivery.yml"; then
+  echo "FAIL: delivery.yml must pass variables['ECR_PULL_SECRET'] into ecrPullSecret"
   FAILED=1
 else
   echo "OK: ECR_PULL_SECRET wired via ecrPullSecret parameter"
@@ -895,7 +927,10 @@ fi
 # whole pipeline surface so neither can come back.
 # Comment lines are excluded so the notes explaining these very bugs do not trip the check.
 yq_code_lines() {
-  grep -hn -- "yq" "${ROOT}/templates/dotnet/ci.yml" "${ROOT}/templates/dotnet/helm-deploy.yml" \
+  grep -hn -- "yq" \
+    "${ROOT}/templates/dotnet/ci.yml" \
+    "${ROOT}/templates/dotnet/delivery.yml" \
+    "${ROOT}/templates/dotnet/helm-deploy.yml" \
     | grep -vE '^[0-9]+:[[:space:]]*#'
 }
 for jqism in "--arg" "| last |" "| first |"; do
@@ -908,23 +943,23 @@ for jqism in "--arg" "| last |" "| first |"; do
   fi
 done
 
-# expectedKubeContext must come from config/platform-environments.json, never a dead parameter.
+# expectedKubeContext must come from the area profile via resolve --facts, never a dead parameter.
 if grep -q "expectedKubeContext: ''" "${ROOT}/templates/dotnet/ci.yml"; then
   echo "FAIL: ci.yml pins expectedKubeContext to '' — the cluster-identity guard can never fire"
   FAILED=1
 else
   echo "OK: ci.yml does not pin expectedKubeContext to ''"
 fi
-if ! grep -q 'EXPECTED_KUBE_CONTEXT="$(yq -r ".${ADO_ENVIRONMENT}.expectedKubeContext' "${ROOT}/templates/dotnet/helm-deploy.yml"; then
-  echo "FAIL: helm-deploy.yml must read expectedKubeContext from config/platform-environments.json"
+if ! grep -q "EXPECTED_KUBE_CONTEXT=\"\$(yq -r '.cluster.expectedKubeContext" "${ROOT}/templates/dotnet/helm-deploy.yml"; then
+  echo "FAIL: helm-deploy.yml must read expectedKubeContext from resolve-platform-values.sh --facts"
   FAILED=1
 else
-  echo "OK: expectedKubeContext read from the authoritative platform mapping"
+  echo "OK: expectedKubeContext read from platform facts"
 fi
 
 # Chart invariants must run BEFORE the image push, not only at deploy time.
-if ! grep -q 'helm template' "${ROOT}/templates/dotnet/ci.yml"; then
-  echo "FAIL: DeployContract must run helm template per environment (chart invariants before the image push)"
+if ! grep -q 'helm template' "${ROOT}/templates/dotnet/delivery.yml"; then
+  echo "FAIL: DeployContract must run helm template per tier (chart invariants before the image push)"
   FAILED=1
 else
   echo "OK: DeployContract renders each manifest with helm template"
@@ -945,7 +980,7 @@ else
 fi
 
 echo "== hardening baseline renders =="
-OUT_HARD="$(render_app --set probes=false --set-string runtime.environment=production)"
+OUT_HARD="$(PLATFORM_ENV=production render_app --set probes=false)"
 assert_contains "$OUT_HARD" "revisionHistoryLimit: 3" "app revisionHistoryLimit pinned"
 assert_contains "$OUT_HARD" "progressDeadlineSeconds: 240" "app progressDeadlineSeconds pinned"
 assert_contains "$OUT_HARD" "enableServiceLinks: false" "app enableServiceLinks disabled"
@@ -1079,33 +1114,29 @@ else
   echo "OK: unexpanded ADO macro treated as absent"
 fi
 
-echo "== containerPool: ci.yml literals vs platform mapping =="
-# The Deploy pool is set at template-expansion time (pool: name:), and ADO cannot read a file
-# then, so the develop/homolog pools are necessarily literals in ci.yml. That duplicates
-# config/platform-environments.json, so assert the two agree rather than hoping they do.
-for env in develop homolog; do
-  want="$(yq -r ".${env}.containerPool // \"\"" "${ROOT}/config/platform-environments.json")"
-  if [[ -z "${want}" || "${want}" == "null" ]]; then
-    echo "##[skip] ${env}: containerPool not mapped yet"
-    continue
-  fi
-  if grep -q "eq(parameters.deployEnvironments\[0\].name, '${env}'), '${want}'" "${ROOT}/templates/dotnet/ci.yml"; then
-    echo "OK: ci.yml ${env} pool matches platform mapping (${want})"
-  else
-    echo "FAIL: ci.yml ${env} pool does not match config/platform-environments.json (${want})"
-    grep -n "name, '${env}')" "${ROOT}/templates/dotnet/ci.yml" | head -1 || true
-    FAILED=1
-  fi
-done
-
-# The documented per-env override must actually reach the deploy stage: coalesce has to wrap
-# the iif, not sit inside its else branch (where develop/homolog never reach it).
-OVERRIDE_OK=$(grep -c 'coalesce(parameters.deployEnvironments\[[0-2]\].containerPool, iif(' "${ROOT}/templates/dotnet/ci.yml" || true)
-if [[ "${OVERRIDE_OK}" -ne 3 ]]; then
-  echo "FAIL: deployEnvironments[].containerPool override must take precedence at all 3 call sites (found ${OVERRIDE_OK}/3)"
+echo "== deploy pool: platform.tiers lookup at all 3 call sites =="
+LOOKUP_OK=$(grep -c 'parameters.platform.tiers\[parameters.delivery.deployEnvironments\[[0-2]\].name\].deployPool' \
+  "${ROOT}/templates/dotnet/delivery.yml" || true)
+if [[ "${LOOKUP_OK}" -ne 3 ]]; then
+  echo "FAIL: delivery.yml must resolve deployPool via platform.tiers[...] at all 3 call sites (found ${LOOKUP_OK}/3)"
   FAILED=1
 else
-  echo "OK: per-env containerPool override takes precedence at all 3 call sites"
+  echo "OK: deployPool resolved via platform.tiers lookup at all 3 call sites"
+fi
+ENV_LOOKUP_OK=$(grep -c 'parameters.platform.tiers\[parameters.delivery.deployEnvironments\[[0-2]\].name\].environmentName' \
+  "${ROOT}/templates/dotnet/delivery.yml" || true)
+if [[ "${ENV_LOOKUP_OK}" -ne 3 ]]; then
+  echo "FAIL: delivery.yml must resolve environmentName via platform.tiers[...] at all 3 call sites (found ${ENV_LOOKUP_OK}/3)"
+  FAILED=1
+else
+  echo "OK: environmentName resolved via platform.tiers lookup at all 3 call sites"
+fi
+if grep -qE 'iif\(eq\(parameters\.deployEnvironments' "${ROOT}/templates/dotnet/ci.yml" \
+  "${ROOT}/templates/dotnet/delivery.yml"; then
+  echo "FAIL: iif pool chain must be removed (pools come from area profile)"
+  FAILED=1
+else
+  echo "OK: no iif pool chain in ci/delivery"
 fi
 
 echo "== kubeVersion floor (derived from chart content) =="
@@ -1127,11 +1158,11 @@ else
 fi
 
 echo "== PDB only where it can protect something =="
-OUT_PDB_DEV="$(render_app --set probes=false --set-string runtime.environment=develop)"
+OUT_PDB_DEV="$(PLATFORM_ENV=develop render_app --set probes=false)"
 assert_kind_count "$OUT_PDB_DEV" PodDisruptionBudget 0 "develop (1 replica): no PDB"
 assert_not_contains "$OUT_PDB_DEV" "topologySpreadConstraints:" "develop (1 replica): no topology spread"
 
-OUT_PDB_PRD="$(render_app --set probes=false --set-string runtime.environment=production)"
+OUT_PDB_PRD="$(PLATFORM_ENV=production render_app --set probes=false)"
 assert_kind_count "$OUT_PDB_PRD" PodDisruptionBudget 1 "production (2 replicas): PDB rendered"
 assert_contains "$OUT_PDB_PRD" "unhealthyPodEvictionPolicy: AlwaysAllow" "PDB AlwaysAllow (upstream recommendation)"
 assert_contains "$OUT_PDB_PRD" "maxUnavailable: 1" "PDB maxUnavailable 1"
@@ -1145,7 +1176,7 @@ assert_contains "$OUT_PDB_PRD" "topologyKey: topology.kubernetes.io/zone" "topol
 assert_not_contains "$OUT_PDB_PRD" "whenUnsatisfiable: DoNotSchedule" "no hard DoNotSchedule (breaks single-zone clusters)"
 
 # Explicit opt-out still honoured.
-OUT_PDB_OFF="$(render_app --set probes=false --set-string runtime.environment=production --set pdb.enabled=false)"
+OUT_PDB_OFF="$(PLATFORM_ENV=production render_app --set probes=false --set pdb.enabled=false)"
 assert_kind_count "$OUT_PDB_OFF" PodDisruptionBudget 0 "pdb.enabled=false honoured"
 
 echo "== label values satisfy the Kubernetes label syntax =="
@@ -1214,9 +1245,9 @@ if ! bash "${ROOT}/tests/chart-drift.sh"; then
   FAILED=1
 fi
 
-echo "== gateway consistency =="
-if ! bash "${ROOT}/tests/gateway-consistency.sh"; then
-  echo "FAIL: gateway-consistency.sh"
+echo "== platform contract =="
+if ! bash "${ROOT}/tests/platform-contract.sh"; then
+  echo "FAIL: platform-contract.sh"
   FAILED=1
 fi
 
@@ -1227,14 +1258,21 @@ if ! bash "${ROOT}/tests/chart-conform.sh"; then
 fi
 
 echo "== helm lint =="
+pf_lint="$(mktemp -t asa-platform.XXXXXX.yaml)"
+"${ROOT}/scripts/resolve-platform-values.sh" lab develop "${pf_lint}"
 if ! helm lint "${APP_CHART}" \
+  -f "${pf_lint}" \
   --set-string image.repository=example.dkr.ecr.us-east-1.amazonaws.com/sample-api; then
   echo "FAIL: helm lint asa-application"
   FAILED=1
 else
   echo "OK: helm lint asa-application"
 fi
+rm -f "${pf_lint}"
+pf_lint="$(mktemp -t asa-platform.XXXXXX.yaml)"
+"${ROOT}/scripts/resolve-platform-values.sh" lab develop "${pf_lint}"
 if ! helm lint "${JOB_CHART}" \
+  -f "${pf_lint}" \
   --set-string image.repository=example.dkr.ecr.us-east-1.amazonaws.com/sample-job \
   --set-string schedule.expression='0 2 * * *' \
   --set-string schedule.timeZone=America/Sao_Paulo \
@@ -1245,6 +1283,7 @@ if ! helm lint "${JOB_CHART}" \
 else
   echo "OK: helm lint asa-scheduled-job"
 fi
+rm -f "${pf_lint}"
 
 echo "== examples render =="
 OUT_EX_APP="$(render_app -f "${ROOT}/examples/deploy/config/develop.yaml")"

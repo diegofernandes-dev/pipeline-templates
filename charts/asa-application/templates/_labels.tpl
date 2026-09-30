@@ -32,6 +32,8 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 app.kubernetes.io/version: {{ include "chart.versionLabel" . | quote }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 helm.sh/chart: {{ include "chart.chartLabel" . }}
+asa.platform/area: {{ required "platform.area is required (pipeline must inject via resolve-platform-values.sh)" .Values.platform.area }}
+asa.platform/tier: {{ required "platform.tier is required (pipeline must inject via resolve-platform-values.sh)" .Values.platform.tier }}
 {{- end }}
 
 {{- define "chart.podLabels" -}}

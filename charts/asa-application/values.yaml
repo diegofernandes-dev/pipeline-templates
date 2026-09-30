@@ -8,7 +8,7 @@ workload:
 # Legacy .asa.com.br hostname (web/grpc only). Default false.
 legacyDns: false
 
-# Pipeline injects image + runtime.environment
+# Pipeline injects image + platform.* (via resolve-platform-values.sh) + runtime.environment
 image:
   repository: ""
   tag: latest
@@ -30,9 +30,21 @@ deployment:
     # Ready before the old one goes away.
     maxUnavailable: 0
 
+# Label-only environment name (free string). Topology/capacity facts live under platform.*.
 runtime:
-  # develop | homolog | production — set by pipeline
-  environment: develop
+  environment: ""
+
+# Resolved by scripts/resolve-platform-values.sh from platform/areas/<area>.yml.
+# Required at render time (templates use `required`); empty defaults exist only so
+# `helm lint` against chart defaults can parse the schema.
+platform:
+  area: ""
+  tier: ""
+  gatewayName: ""
+  gatewayNamespace: ""
+  corpDnsZone: ""
+  legacyDnsZone: ""
+  defaultMinReplicas: 1
 
 # Platform always creates SA named after the release. Public: annotations only (IRSA).
 serviceAccount:
@@ -103,7 +115,7 @@ securityContext:
       - ALL
 
 # Autoscaling (CPU HPA):
-# - web/grpc: ON by default; minReplicas default 1 (develop/homolog) or 2 (production)
+# - web/grpc: ON by default; minReplicas from platform.defaultMinReplicas when omitted
 # - worker: OFF by default; set an explicit map to opt in
 # - autoscaling: false disables for any type
 autoscaling: {}

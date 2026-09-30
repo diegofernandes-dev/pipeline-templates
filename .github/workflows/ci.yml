@@ -83,23 +83,36 @@ jobs:
 
       - name: helm lint asa-application
         run: |
+          set -Eeuo pipefail
+          pf="$(mktemp -t asa-platform.XXXXXX.yaml)"
+          ./scripts/resolve-platform-values.sh lab develop "${pf}"
           helm lint charts/asa-application \
+            -f "${pf}" \
             --set-string image.repository=example.dkr.ecr.us-east-1.amazonaws.com/sample-api
+          rm -f "${pf}"
 
       - name: helm lint asa-scheduled-job
         run: |
+          set -Eeuo pipefail
+          pf="$(mktemp -t asa-platform.XXXXXX.yaml)"
+          ./scripts/resolve-platform-values.sh lab develop "${pf}"
           helm lint charts/asa-scheduled-job \
+            -f "${pf}" \
             --set-string image.repository=example.dkr.ecr.us-east-1.amazonaws.com/sample-job \
             --set-string schedule.expression='0 2 * * *' \
             --set-string schedule.timeZone=America/Sao_Paulo \
             --set execution.timeoutSeconds=1800 \
             --set-string 'execution.args[0]=--mode=job'
+          rm -f "${pf}"
 
       - name: chart-drift (+ schema parity)
         run: ./tests/chart-drift.sh
 
-      - name: gateway-consistency
-        run: ./tests/gateway-consistency.sh
+      - name: platform-contract
+        run: ./tests/platform-contract.sh
+
+      - name: chart-golden
+        run: ./tests/chart-golden.sh check
 
       - name: chart-matrix (feature interactions)
         run: ./tests/chart-matrix.sh

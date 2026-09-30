@@ -1,21 +1,25 @@
 {{/*
-Shared env → hostname / gateway maps for HTTPRoute and GRPCRoute.
+Platform-injected networking facts. The chart never maps area/tier → topology;
+scripts/resolve-platform-values.sh reads platform/areas/<area>.yml and
+passes platform.* (required, fail-closed — no silent defaults).
 */}}
 
 {{- define "chart.corpHostname" -}}
-{{- $env := .Values.runtime.environment | default "develop" -}}
-{{- $zones := dict "develop" "dev.asa.corp" "homolog" "hml.asa.corp" "production" "prd.asa.corp" -}}
-{{- printf "%s.%s" .Release.Name (index $zones $env | default "dev.asa.corp") -}}
+{{- printf "%s.%s" .Release.Name (required "platform.corpDnsZone is required (pipeline must inject via resolve-platform-values.sh)" .Values.platform.corpDnsZone) -}}
 {{- end }}
 
 {{- define "chart.legacyHostname" -}}
-{{- $env := .Values.runtime.environment | default "develop" -}}
-{{- $zones := dict "develop" "d.asa.com.br" "homolog" "h.asa.com.br" "production" "p.asa.com.br" -}}
-{{- printf "%s.%s" .Release.Name (index $zones $env | default "d.asa.com.br") -}}
+{{- $zone := .Values.platform.legacyDnsZone | default "" -}}
+{{- if not $zone -}}
+{{- fail "legacyDns=true requires platform.legacyDnsZone (cluster has no legacy DNS zone — unset legacyDns or add the zone to the area profile)" -}}
+{{- end -}}
+{{- printf "%s.%s" .Release.Name $zone -}}
 {{- end }}
 
 {{- define "chart.gatewayName" -}}
-{{- $env := .Values.runtime.environment | default "develop" -}}
-{{- $gws := dict "develop" "d-asa-com-br-internal-gateway" "homolog" "h-asa-com-br-internal-gateway" "production" "p-asa-com-br-internal-gateway" -}}
-{{- index $gws $env | default "d-asa-com-br-internal-gateway" -}}
+{{- required "platform.gatewayName is required (pipeline must inject via resolve-platform-values.sh)" .Values.platform.gatewayName -}}
+{{- end }}
+
+{{- define "chart.gatewayNamespace" -}}
+{{- required "platform.gatewayNamespace is required (pipeline must inject via resolve-platform-values.sh)" .Values.platform.gatewayNamespace -}}
 {{- end }}
