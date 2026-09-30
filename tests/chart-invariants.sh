@@ -6,6 +6,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_CHART="${ROOT}/charts/asa-application"
 JOB_CHART="${ROOT}/charts/asa-scheduled-job"
 FAILED=0
+WIF_AUD_NEG="//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/eks"
 
 echo "== toolchain =="
 # $BASH_VERSION is the interpreter actually running this script. `bash --version` reports
@@ -436,6 +437,34 @@ expect_fail "WIF expirationSeconds < 600 rejected" "expirationSeconds must be >=
     --set-string workloadIdentity.gcp.audience=//iam.googleapis.com/x \
     --set-string workloadIdentity.gcp.serviceAccountEmail=a@b.iam.gserviceaccount.com \
     --set workloadIdentity.token.expirationSeconds=60
+
+# A volumeMount path must be unique inside the container. The API server rejects a collision
+# with "must be unique", and kubeconform does NOT catch it — the constraint is not expressible
+# in the OpenAPI schema — so these have to fail at render time.
+expect_fail "WIF mountPath /tmp rejected" "must not be /tmp" -- \
+  render_app --set probes=false \
+    --set-string "workloadIdentity.gcp.audience=${WIF_AUD_NEG}" \
+    --set-string workloadIdentity.gcp.serviceAccountEmail=a@b.iam.gserviceaccount.com \
+    --set-string workloadIdentity.token.mountPath=/tmp
+
+expect_fail "WIF mountPath on the credentials dir rejected" "must not be /var/run/secrets/google" -- \
+  render_app --set probes=false \
+    --set-string "workloadIdentity.gcp.audience=${WIF_AUD_NEG}" \
+    --set-string workloadIdentity.gcp.serviceAccountEmail=a@b.iam.gserviceaccount.com \
+    --set-string workloadIdentity.token.mountPath=/var/run/secrets/google
+
+expect_fail "WIF mountPath colliding with persistence rejected" "collides with persistence.mountPath" -- \
+  render_app --set probes=false --set autoscaling=false --set replicaCount=1 \
+    --set-string persistence.mountPath=/data --set-string persistence.size=1Gi \
+    --set-string "workloadIdentity.gcp.audience=${WIF_AUD_NEG}" \
+    --set-string workloadIdentity.gcp.serviceAccountEmail=a@b.iam.gserviceaccount.com \
+    --set-string workloadIdentity.token.mountPath=/data
+
+expect_fail "job WIF mountPath /tmp rejected" "must not be /tmp" -- \
+  render_job \
+    --set-string "workloadIdentity.gcp.audience=${WIF_AUD_NEG}" \
+    --set-string workloadIdentity.gcp.serviceAccountEmail=a@b.iam.gserviceaccount.com \
+    --set-string workloadIdentity.token.mountPath=/tmp
 
 expect_fail "WIF IRSA-reserved mountPath rejected" "must not use the IRSA reserved path" -- \
   render_app --set probes=false \

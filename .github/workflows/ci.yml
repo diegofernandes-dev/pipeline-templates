@@ -101,6 +101,9 @@ jobs:
       - name: gateway-consistency
         run: ./tests/gateway-consistency.sh
 
+      - name: chart-matrix (feature interactions)
+        run: ./tests/chart-matrix.sh
+
       - name: chart-conform (kubeconform)
         run: ./tests/chart-conform.sh
 
