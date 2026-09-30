@@ -369,8 +369,9 @@ stages:
                       # Gateway presence: read parentRefs from the rendered route (what we will apply),
                       # not a parallel bash map of env → name.
                       if grep -qE '^kind: (HTTPRoute|GRPCRoute)$' "${PREFLIGHT_RENDER}"; then
-                        ROUTE_GW_NAME="$(yq -r 'select(.kind == "HTTPRoute" or .kind == "GRPCRoute") | .spec.parentRefs[0].name // ""' "${PREFLIGHT_RENDER}" | head -n1)"
-                        ROUTE_GW_NS="$(yq -r 'select(.kind == "HTTPRoute" or .kind == "GRPCRoute") | .spec.parentRefs[0].namespace // ""' "${PREFLIGHT_RENDER}" | head -n1)"
+                        # Prefer yq-only selection — `… | head -n1` under `pipefail` exits 141 (SIGPIPE).
+                        ROUTE_GW_NAME="$(yq -r '[select(.kind == "HTTPRoute" or .kind == "GRPCRoute") | .spec.parentRefs[0].name // ""] | .[0] // ""' "${PREFLIGHT_RENDER}")"
+                        ROUTE_GW_NS="$(yq -r '[select(.kind == "HTTPRoute" or .kind == "GRPCRoute") | .spec.parentRefs[0].namespace // ""] | .[0] // ""' "${PREFLIGHT_RENDER}")"
                         if [[ -z "${ROUTE_GW_NAME}" ]]; then
                           echo "##vso[task.logissue type=error]Rendered route has empty parentRefs[0].name"
                           exit 1
@@ -381,8 +382,7 @@ stages:
                         fi
                         if [[ -z "${GW_FOUND}" ]]; then
                           GW_FOUND="$(kubectl get gateway.gateway.networking.k8s.io -A -o json 2>/dev/null \
-                            | yq -r ".items[] | select(.metadata.name == \"${ROUTE_GW_NAME}\") | .metadata.name" 2>/dev/null \
-                            | head -n1 || true)"
+                            | yq -r "[.items[] | select(.metadata.name == \"${ROUTE_GW_NAME}\") | .metadata.name] | .[0] // \"\"" 2>/dev/null || true)"
                         fi
                         if [[ -z "${GW_FOUND}" ]]; then
                           echo "##vso[task.logissue type=error]Expected Gateway '${ROUTE_GW_NAME}' not found in cluster${ROUTE_GW_NS:+ (ns ${ROUTE_GW_NS})}"
