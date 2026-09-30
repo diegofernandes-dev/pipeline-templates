@@ -7,6 +7,34 @@ APP_CHART="${ROOT}/charts/asa-application"
 JOB_CHART="${ROOT}/charts/asa-scheduled-job"
 FAILED=0
 
+echo "== toolchain =="
+# $BASH_VERSION is the interpreter actually running this script. `bash --version` reports
+# whatever is first on PATH, which on macOS can say 5.x while /bin/bash 3.2 runs the script —
+# i.e. it would misreport exactly the case this line exists to expose.
+echo "bash: ${BASH_VERSION}"
+if ! command -v helm >/dev/null 2>&1; then
+  echo "FAIL: helm not found in PATH"
+  exit 1
+fi
+HELM_VER="$(helm version --short 2>/dev/null | head -1)"
+echo "helm: ${HELM_VER}"
+# Floor matches the CI pin (3.16.2). Schema message prose differs across Helm majors —
+# expect_schema_fail asserts path + shared preamble, not validator wording. Still require
+# at least 3.16 so local runs are not accidentally on something older than the platform.
+HELM_NUM="$(printf '%s' "${HELM_VER}" | sed -n 's/^[^0-9]*\([0-9][0-9]*\)\.\([0-9][0-9]*\).*/\1.\2/p')"
+HELM_MAJOR="${HELM_NUM%%.*}"
+HELM_MINOR="${HELM_NUM#*.}"
+if [[ -z "${HELM_MAJOR}" || -z "${HELM_MINOR}" ]]; then
+  echo "FAIL: could not parse helm version from: ${HELM_VER}"
+  exit 1
+fi
+if [[ "${HELM_MAJOR}" -lt 3 ]] || { [[ "${HELM_MAJOR}" -eq 3 ]] && [[ "${HELM_MINOR}" -lt 16 ]]; }; then
+  echo "FAIL: need Helm >= 3.16 (CI pins v3.16.2); got ${HELM_VER}"
+  exit 1
+fi
+echo "OK: Helm >= 3.16 (CI pins v3.16.2; schema negatives use expect_schema_fail)"
+echo
+
 assert_contains() {
   local haystack="$1" needle="$2" msg="$3"
   if ! grep -qF -- "$needle" <<<"$haystack"; then
@@ -720,6 +748,9 @@ else
     FAILED=1
   fi
 
+  # Needles below are the English Draft7 strings from the pinned jsonschema==4.23.0
+  # (see .github/workflows/ci.yml). Unlike Helm schema prose, these are library-owned —
+  # re-check all six messages if that pin is bumped.
   schema_reject() {
     local msg="$1" schema="$2" json="$3" needle="$4"
     local out
@@ -1035,6 +1066,53 @@ assert_not_contains "$OUT_PDB_PRD" "whenUnsatisfiable: DoNotSchedule" "no hard D
 # Explicit opt-out still honoured.
 OUT_PDB_OFF="$(render_app --set probes=false --set-string runtime.environment=production --set pdb.enabled=false)"
 assert_kind_count "$OUT_PDB_OFF" PodDisruptionBudget 0 "pdb.enabled=false honoured"
+
+echo "== label values satisfy the Kubernetes label syntax =="
+# kubeconform validates structure and types but NOT label value syntax, so a tag like a
+# digest (sha256:...) or semver build metadata (1.2.3+build.5) rendered straight into
+# app.kubernetes.io/version passes every schema and is then rejected by the API server with
+# "metadata.labels: Invalid value", failing the whole apply. Assert the regex here.
+# k8s rule: empty, or <=63 chars of [A-Za-z0-9._-] starting and ending alphanumeric.
+assert_labels_valid() {
+  local rendered="$1" msg="$2"
+  local bad
+  bad="$(grep -oE '^[[:space:]]+[a-zA-Z0-9./_-]+:[[:space:]]*"?[^"]*"?$' <<<"$rendered" \
+    | grep -E '(app\.kubernetes\.io/|helm\.sh/chart|^[[:space:]]+app:)' \
+    | sed 's/^[[:space:]]*//; s/"//g' \
+    | while IFS= read -r line; do
+        local key="${line%%:*}" val="${line#*: }"
+        [[ "${val}" == "${line}" ]] && val=""
+        if [[ -n "${val}" ]] && ! grep -qE '^[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$' <<<"${val}"; then
+          echo "${key}=${val}"
+        fi
+      done)"
+  if [[ -n "${bad//[[:space:]]/}" ]]; then
+    echo "FAIL: ${msg} (invalid label values)"
+    sed 's/^/    /' <<<"${bad}"
+    FAILED=1
+  else
+    echo "OK: ${msg}"
+  fi
+}
+
+# Tag forms that are realistic and previously produced an invalid label. The digest form is
+# on the path of the gitops branch, which pins images by digest.
+for TAG in "deadbeef1234" "sha256:abc123def456789" "1.2.3+build.5" "-leading.dash-"; do
+  assert_labels_valid "$(render_app --set probes=false --set-string "image.tag=${TAG}")" \
+    "app labels valid for image.tag=${TAG}"
+  assert_labels_valid "$(render_job --set-string "image.tag=${TAG}")" \
+    "job labels valid for image.tag=${TAG}"
+done
+# 70 chars must be truncated to 63, not rejected.
+LONG_TAG="$(printf 'a%.0s' $(seq 1 70))"
+LONG_OUT="$(render_app --set probes=false --set-string "image.tag=${LONG_TAG}")"
+assert_labels_valid "${LONG_OUT}" "app labels valid for a 70-char image.tag"
+if grep -qE 'app\.kubernetes\.io/version: "a{63}"' <<<"${LONG_OUT}"; then
+  echo "OK: long image.tag truncated to 63 chars"
+else
+  echo "FAIL: long image.tag not truncated to exactly 63 chars"
+  FAILED=1
+fi
 
 echo "== no magic port 50051 outside this file =="
 if grep -RIn --exclude-dir=.git --exclude='*.plan.md' --exclude='chart-invariants.sh' '50051' \

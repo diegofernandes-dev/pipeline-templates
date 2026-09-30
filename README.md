@@ -135,6 +135,8 @@ helm lint charts/asa-scheduled-job --set-string image.repository=example.dkr.ecr
 
 **TDD / guardrail para agentes:** antes de mudar `charts/**/templates/**` ou `values.schema.json`, escreva ou ajuste o assert em [`tests/chart-invariants.sh`](tests/chart-invariants.sh) que prova a propriedade; só então edite o chart. A suíte deve ficar vermelha se a propriedade sumir. Alguns negativos de “dupla trava” usam bypass temporário do `values.schema.json` para exercitar o `fail` do template (além do schema) — assim remover o `fail` “duplicado” no `.tpl` também quebra o CI.
 
+**Helm version:** o CI pina **Helm v3.16.2**. O validador de `values.schema.json` mudou de prosa entre Helm 3 e 4 para a mesma violação — não assertar o texto literal do validador. Use `expect_schema_fail` (path + preâmbulo compartilhado), que funciona em 3.x e 4.x. A suíte recusa Helm &lt; 3.16 no início.
+
 ### Premissas / docs
 
 - **Baseline de pod (platform-owned, fora do manifesto público):** `runAsNonRoot` + `runAsUser`/`runAsGroup`/`fsGroup` **1654** (= `APP_UID` de `mcr.microsoft.com/dotnet/aspnet`, verificado em 8.0/9.0/10.0 e **asseverado em build time** por [`docker/dotnet/Dockerfile`](docker/dotnet/Dockerfile) — imagem e chart não divergem em silêncio), `readOnlyRootFilesystem`, `seccompProfile: RuntimeDefault`, `drop: [ALL]`, `automountServiceAccountToken: false`, `enableServiceLinks: false`, `terminationMessagePolicy: FallbackToLogsOnError`, `/tmp` como `emptyDir` com `sizeLimit: 128Mi`.
