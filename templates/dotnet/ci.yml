@@ -47,13 +47,13 @@ parameters:
     default: []
 
   # Área de plataforma (cluster axis). Obrigatório quando deployEnvironments não está vazio.
-  # Allowlist = arquivos em platform/areas/ (exceto o valor vazio = CI-only).
+  # Allowlist = arquivos em platform/areas/ + sentinel `none` (CI-only). ADO rejects ''.
   - name: platformArea
     displayName: Área de plataforma (lab, …)
     type: string
-    default: ''
+    default: none
     values:
-      - ''
+      - none
       - lab
 
   # Path do .csproj a publicar na imagem (obrigatório quando há Container).
@@ -194,7 +194,7 @@ stages:
                 exit 1
               displayName: Fail on overflow
 
-  - ${{ if and(gt(length(parameters.deployEnvironments), 0), eq(parameters.platformArea, '')) }}:
+  - ${{ if and(gt(length(parameters.deployEnvironments), 0), eq(parameters.platformArea, 'none')) }}:
     - stage: PlatformAreaRequired
       displayName: platformArea is required
       dependsOn: CI
@@ -210,7 +210,7 @@ stages:
 
   # Delivery (DeployContract + Container + Deploy_*) is owned by the area profile so
   # compile-time lookups of pool / ADO Environment resolve from platform.tiers.
-  - ${{ if and(gt(length(parameters.deployEnvironments), 0), ne(parameters.platformArea, ''), le(length(parameters.deployEnvironments), 3)) }}:
+  - ${{ if and(gt(length(parameters.deployEnvironments), 0), ne(parameters.platformArea, 'none'), le(length(parameters.deployEnvironments), 3)) }}:
     - template: ../../platform/areas/${{ parameters.platformArea }}.yml
       parameters:
         delivery:

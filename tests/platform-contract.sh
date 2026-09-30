@@ -46,7 +46,7 @@ mapfile -t ALLOWLIST < <(yq -r '
   .parameters[]
   | select(.name == "platformArea")
   | .values[]
-  | select(. != "")
+  | select(. != "none")
 ' "${CI_YML}" | sort)
 mapfile -t ON_DISK < <(printf '%s\n' "${AREA_FILES[@]}" | xargs -n1 basename | sed 's/\.yml$//' | sort)
 if [[ "${ALLOWLIST[*]}" != "${ON_DISK[*]}" ]]; then
