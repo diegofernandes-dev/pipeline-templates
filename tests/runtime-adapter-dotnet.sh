@@ -63,17 +63,17 @@ printf '%s\n' "${out}" | grep -qx 'Kestrel__EndpointDefaults__Protocols=Http2' |
 printf '%s\n' "${out}" | grep -qx 'HostOptions__ShutdownTimeout=0:00:10' || { echo "FAIL: HostOptions 10s"; echo "${out}"; FAILED=1; }
 echo "OK: grpc mapping"
 
-echo "== reserved ASPNETCORE_URLS rejected =="
-if env -i PATH="${WORKDIR}/bin:/usr/bin:/bin" HOME=/tmp \
-     APP_DLL=App.dll APP_HOME="${WORKDIR}/app" PORT=8080 ASPNETCORE_URLS=http://bad \
-     "${ENTRY}" >/tmp/adapter-err.txt 2>&1; then
-  echo "FAIL: expected non-zero with ASPNETCORE_URLS set"
-  FAILED=1
-else
-  grep -q 'ASPNETCORE_URLS is reserved' /tmp/adapter-err.txt \
-    && echo "OK: ASPNETCORE_URLS rejected" \
-    || { echo "FAIL: wrong error"; cat /tmp/adapter-err.txt; FAILED=1; }
-fi
+echo "== base-image ASPNETCORE_HTTP_PORTS is cleared; PORT wins =="
+out="$(
+  env -i PATH="${WORKDIR}/bin:/usr/bin:/bin" HOME=/tmp \
+    APP_DLL=App.dll APP_HOME="${WORKDIR}/app" \
+    PORT=8080 APP_PROTOCOL=http SHUTDOWN_TIMEOUT_SECONDS=25 \
+    ASPNETCORE_HTTP_PORTS=9999 ASPNETCORE_URLS=http://bad \
+    "${ENTRY}"
+)" || { echo "FAIL: clear+PORT entry"; echo "${out}"; FAILED=1; out=""; }
+printf '%s\n' "${out}" | grep -qx 'ASPNETCORE_URLS=http://+:8080' || { echo "FAIL: PORT should win over base image"; echo "${out}"; FAILED=1; }
+printf '%s\n' "${out}" | grep -q 'ASPNETCORE_HTTP_PORTS=' && { echo "FAIL: HTTP_PORTS should be unset"; echo "${out}"; FAILED=1; }
+echo "OK: base-image listen envs cleared"
 
 echo "== reserved Kestrel__ rejected =="
 if env -i PATH="${WORKDIR}/bin:/usr/bin:/bin" HOME=/tmp \
