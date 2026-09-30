@@ -975,20 +975,72 @@ fi
 
 echo "== supply chain of downloaded tooling =="
 # Pinning a version does not protect the download; the bytes must be verified too.
-for tool in yq_linux_amd64 kubeconform-linux-amd64; do
-  for f in "${ROOT}/templates/dotnet/ci.yml" "${ROOT}/.github/workflows/ci.yml"; do
-    [[ -f "${f}" ]] || continue
-    name="$(basename "$(dirname "${f}")")/$(basename "${f}")"
-    if grep -q "${tool}" "${f}"; then
-      if grep -q 'sha256sum -c' "${f}"; then
-        echo "OK: ${name} verifies the ${tool} download checksum"
-      else
-        echo "FAIL: ${name} downloads ${tool} without verifying its SHA-256"
-        FAILED=1
+#
+# Checked per download, not per file: a file that verifies one tool and not another would pass
+# a file-level check, and a hand-maintained list of tool names silently fails to cover the next
+# tool someone adds.
+#
+# Two risk classes, two rules:
+#   a binary fetched with curl/wget is executed on the runner  -> require a SHA-256 check
+#   a manifest handed straight to `kubectl apply -f <url>`      -> cannot be checksummed inline,
+#     and lands on a throwaway cluster deleted minutes later, so require a pinned ref instead
+DOWNLOAD_HITS=0
+for f in "${ROOT}/templates/dotnet/ci.yml" "${ROOT}/.github/workflows/ci.yml"; do
+  [[ -f "${f}" ]] || continue
+  name="$(basename "$(dirname "${f}")")/$(basename "${f}")"
+  # A shell line continuation puts the URL on the line AFTER the curl/wget, so the awk below
+  # reports the position of the fetch itself and de-duplicates adjacent hits.
+  hits="$(awk '
+      /^[[:space:]]*#/ { next }
+      /curl|wget/ { cand = NR }
+      /releases\/download|raw\.githubusercontent/ {
+        start = (cand && NR - cand <= 2) ? cand : NR
+        if (start != last) { print start ; last = start }
+        cand = 0
+      }
+    ' "${f}" || true)"
+  for lineno in ${hits}; do
+    DOWNLOAD_HITS=$((DOWNLOAD_HITS + 1))
+    # The window reaches slightly backwards too: with a line continuation the verb
+    # (kubectl apply / curl) can sit above the line the URL was found on.
+    win_start=$(( lineno > 2 ? lineno - 2 : 1 ))
+    window="$(sed -n "${win_start},$((lineno + 6))p" "${f}")"
+    # `|| true` throughout: grep exits 1 on no match, which would abort the suite under `set -e`.
+    artifact="$(grep -oE '[A-Za-z0-9._-]+(-linux-amd64|_linux_amd64)(\.tar\.gz)?' <<<"${window}" | head -1 || true)"
+    if [[ -z "${artifact}" ]]; then
+      # Take the name from the URL on THIS line, not from the widened window, or a neighbouring
+      # download's name gets reported and the output misleads whoever is debugging.
+      url_line="$(sed -n "${lineno},$((lineno + 2))p" "${f}" | grep -oE 'https?://[^"]+' | head -1 || true)"
+      artifact="$(sed -n 's#.*github.com/\([^/]*/[^/]*\)/releases.*#\1#p' <<<"${url_line}" | head -1 || true)"
+      if [[ -z "${artifact}" ]]; then
+        artifact="$(sed -n 's#.*githubusercontent.com/\([^/]*/[^/]*\)/.*#\1#p' <<<"${url_line}" | head -1 || true)"
       fi
+    fi
+    artifact="${artifact:-<unknown>}"
+
+    if grep -q 'kubectl apply' <<<"${window}"; then
+      if grep -qE '(/main/|/master/|/latest/)' <<<"${window}"; then
+        echo "FAIL: ${name}:${lineno} applies a remote manifest from a floating ref"
+        FAILED=1
+      else
+        echo "OK: ${name}:${lineno} applies ${artifact} from a pinned ref"
+      fi
+    elif grep -q 'sha256sum -c' <<<"${window}"; then
+      echo "OK: ${name}:${lineno} verifies the ${artifact} download checksum"
+    else
+      echo "FAIL: ${name}:${lineno} downloads ${artifact} without verifying its SHA-256"
+      sed -n "${lineno}p" "${f}" | sed 's/^/    /'
+      FAILED=1
     fi
   done
 done
+# If the detector ever stops finding the downloads that exist, it is broken, not clean.
+if [[ "${DOWNLOAD_HITS}" -lt 4 ]]; then
+  echo "FAIL: supply-chain check found only ${DOWNLOAD_HITS} downloads (expected at least 4) — the detector is broken"
+  FAILED=1
+else
+  echo "OK: ${DOWNLOAD_HITS} tool/manifest download(s) inspected"
+fi
 
 # The same yq version and checksum must be used everywhere, or one path validates
 # different bytes than the other.

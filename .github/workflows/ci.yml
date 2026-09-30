@@ -111,3 +111,64 @@ jobs:
         run: |
           export PATH="${HOME}/.local/bin:${PATH}"
           ./tests/chart-invariants.sh
+
+  # Separate job: it needs a cluster, so it is slower and must not hold up the fast contract
+  # checks. This is the only layer that sees constraints Kubernetes enforces but does not
+  # express in its OpenAPI schema — label value syntax and volumeMount uniqueness both live
+  # here, and kubeconform reports manifests carrying them as valid.
+  apply-dryrun:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Setup Helm 3
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
+        with:
+          version: v3.16.2
+
+      - name: Create k3d cluster at the charts' declared kubeVersion floor
+        env:
+          # The charts declare kubeVersion >=1.27.0-0, so validate against the floor: it is the
+          # oldest cluster they claim to support, and therefore the strictest test of that claim.
+          K3S_IMAGE: rancher/k3s:v1.27.16-k3s1
+          K3D_VERSION: v5.7.4
+          # From the release's own checksums.txt (which lists the path as _dist/k3d-linux-amd64),
+          # cross-checked by downloading the asset and hashing it.
+          K3D_SHA256: 1ac1da365236736a8df8c32107b54aca208384ab1d9a06771443c85ad698a5eb
+        run: |
+          set -Eeuo pipefail
+          curl -fsSL -o /tmp/k3d "https://github.com/k3d-io/k3d/releases/download/${K3D_VERSION}/k3d-linux-amd64"
+          echo "${K3D_SHA256}  /tmp/k3d" | sha256sum -c -
+          sudo install -m 0755 /tmp/k3d /usr/local/bin/k3d
+          k3d version
+          k3d cluster create asa-ci --image "${K3S_IMAGE}" --servers 1 --agents 0 \
+            --no-lb --k3s-arg "--disable=traefik@server:0" --wait
+          kubectl config use-context k3d-asa-ci
+          kubectl get --raw /version
+
+      - name: Install the CRDs the charts apply
+        env:
+          GATEWAY_API_VERSION: v1.1.0
+          ESO_VERSION: v0.19.2
+        run: |
+          set -Eeuo pipefail
+          # GRPCRoute is only v1 from Gateway API 1.1; the charts apply
+          # gateway.networking.k8s.io/v1 and external-secrets.io/v1. Without these the dry-run
+          # would silently skip those objects and prove nothing about them.
+          kubectl apply --server-side -f \
+            "https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_API_VERSION}/standard-install.yaml"
+          kubectl apply --server-side -f \
+            "https://raw.githubusercontent.com/external-secrets/external-secrets/${ESO_VERSION}/deploy/crds/bundle.yaml"
+          for gv in gateway.networking.k8s.io/v1 external-secrets.io/v1; do
+            kubectl get --raw "/apis/${gv}" >/dev/null
+            echo "serving ${gv}"
+          done
+
+      - name: chart-apply (server-side dry-run)
+        env:
+          KUBE_CONTEXT: k3d-asa-ci
+        run: ./tests/chart-apply.sh
+
+      - name: Tear down
+        if: always()
+        run: k3d cluster delete asa-ci || true
