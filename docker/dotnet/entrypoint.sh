@@ -12,14 +12,13 @@
 # APP_DLL is baked into the image as an ENV at build time.
 set -eu
 
-# Consumer manifesto must not set runtime-owned keys (also guarded in DeployContract).
-for _k in ASPNETCORE_URLS ASPNETCORE_HTTP_PORTS ASPNETCORE_HTTPS_PORTS; do
-  eval "_v=\${${_k}-}"
-  if [ -n "${_v}" ]; then
-    echo "platform: ${_k} is reserved for the .NET runtime adapter — remove it from manifesto config" >&2
-    exit 1
-  fi
-done
+# mcr.microsoft.com/dotnet/aspnet sets ASPNETCORE_HTTP_PORTS (and sometimes URLS).
+# Those collide with PORT from the chart — clear them so the contract wins.
+# Manifesto config that sets ASPNETCORE_* / Kestrel__* is rejected earlier by
+# DeployContract (platform/runtimes/dotnet.yml reservedConfig).
+unset ASPNETCORE_URLS ASPNETCORE_HTTP_PORTS ASPNETCORE_HTTPS_PORTS || true
+
+# Kestrel__* is never set by the base image — only by a misconfigured manifesto envFrom.
 if env | grep -q '^Kestrel__'; then
   echo "platform: Kestrel__* is reserved for the .NET runtime adapter — remove it from manifesto config" >&2
   exit 1
