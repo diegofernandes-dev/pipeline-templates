@@ -100,19 +100,28 @@ ScheduledJob — CronJob-only chart.
 {{- $c := .Values.config | default dict -}}
 {{- if and (kindIs "map" $c) (gt (len $c) 0) -}}
 {{- $reservedExact := list
-  "ASPNETCORE_URLS"
-  "ASPNETCORE_HTTP_PORTS"
-  "ASPNETCORE_HTTPS_PORTS"
+  "PORT"
+  "APP_PROTOCOL"
+  "SHUTDOWN_TIMEOUT_SECONDS"
+  "CPU_REQUEST_MILLICORES"
   "GOOGLE_APPLICATION_CREDENTIALS"
 -}}
 {{- range $k, $_ := $c -}}
 {{- if has $k $reservedExact -}}
 {{- fail (printf "config.%s is platform-owned and cannot be set in the manifesto" $k) -}}
 {{- end -}}
-{{- if hasPrefix "Kestrel__" $k -}}
-{{- fail (printf "config.%s is platform-owned (Kestrel__*) and cannot be set in the manifesto" $k) -}}
 {{- end -}}
 {{- end -}}
+{{- end }}
+
+{{- define "chart.validateShutdown" -}}
+{{- $grace := .Values.terminationGracePeriodSeconds | default 0 | int -}}
+{{- $shut := .Values.shutdownTimeoutSeconds | default 0 | int -}}
+{{- if le $shut 0 -}}
+{{- fail "shutdownTimeoutSeconds must be > 0" -}}
+{{- end -}}
+{{- if ge $shut $grace -}}
+{{- fail (printf "shutdownTimeoutSeconds (%d) must be < terminationGracePeriodSeconds (%d)" $shut $grace) -}}
 {{- end -}}
 {{- end }}
 

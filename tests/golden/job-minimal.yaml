@@ -10,7 +10,7 @@ metadata:
     app.kubernetes.io/instance: golden-job
     app.kubernetes.io/version: "deadbeef"
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: asa-scheduled-job-4.1.0
+    helm.sh/chart: asa-scheduled-job-4.2.0
     asa.platform/area: lab
     asa.platform/tier: develop
 automountServiceAccountToken: false
@@ -26,7 +26,7 @@ metadata:
     app.kubernetes.io/instance: golden-job
     app.kubernetes.io/version: "deadbeef"
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: asa-scheduled-job-4.1.0
+    helm.sh/chart: asa-scheduled-job-4.2.0
     asa.platform/area: lab
     asa.platform/tier: develop
     app.kubernetes.io/component: scheduled-job
@@ -51,6 +51,7 @@ spec:
             app.kubernetes.io/component: scheduled-job
         spec:
           restartPolicy: Never
+          terminationGracePeriodSeconds: 30
           serviceAccountName: golden-job
           automountServiceAccountToken: false
           # No implicit SVC_* env vars from every Service in the namespace.
@@ -77,6 +78,16 @@ spec:
                 readOnlyRootFilesystem: true
               args:
                 - --mode=job
+              env:
+                # Runtime-agnostic contract — docker/<runtime>/entrypoint maps these.
+                - name: SHUTDOWN_TIMEOUT_SECONDS
+                  value: "25"
+                - name: CPU_REQUEST_MILLICORES
+                  valueFrom:
+                    resourceFieldRef:
+                      containerName: job
+                      resource: requests.cpu
+                      divisor: 1m
               resources:
                 limits:
                   memory: 512Mi

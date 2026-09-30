@@ -160,15 +160,45 @@ stages:
                 python3 "${TEMPLATES_DIR}/scripts/validate-manifest.py" "${schema}" "${manifest}"
                 echo "##[endgroup]"
 
+                RUNTIME_PROFILE="${TEMPLATES_DIR}/platform/runtimes/${PLATFORM_RUNTIME}.yml"
+                if [[ ! -f "${RUNTIME_PROFILE}" ]]; then
+                  echo "##vso[task.logissue type=error]Unknown runtime '${PLATFORM_RUNTIME}' — missing ${RUNTIME_PROFILE}"
+                  exit 1
+                fi
+
+                echo "##[group]${env}: reservedConfig guard (${PLATFORM_RUNTIME})"
+                while IFS= read -r key; do
+                  [[ -z "${key}" || "${key}" == "null" ]] && continue
+                  if yq -e ".config | has(\"${key}\")" "${manifest}" >/dev/null 2>&1; then
+                    echo "##vso[task.logissue type=error]${env}: config.${key} is reserved by runtime '${PLATFORM_RUNTIME}'"
+                    exit 1
+                  fi
+                done < <(yq -r '.reservedConfig.exact[]' "${RUNTIME_PROFILE}" 2>/dev/null || true)
+                while IFS= read -r prefix; do
+                  [[ -z "${prefix}" || "${prefix}" == "null" ]] && continue
+                  export RESERVED_PREFIX="${prefix}"
+                  hit="$(yq -r '.config // {} | keys[] | select(startswith(strenv(RESERVED_PREFIX)))' "${manifest}" 2>/dev/null || true)"
+                  if [[ -n "${hit}" ]]; then
+                    echo "##vso[task.logissue type=error]${env}: config keys reserved by runtime '${PLATFORM_RUNTIME}' (prefix ${prefix}): ${hit}"
+                    exit 1
+                  fi
+                done < <(yq -r '.reservedConfig.prefixes[]' "${RUNTIME_PROFILE}" 2>/dev/null || true)
+                echo "OK ${env}: no reservedConfig collisions"
+                echo "##[endgroup]"
+
                 HELM_RENDER_SET=(
                   --set-string "image.repository=validation.invalid/${APPLICATION_NAME}"
                   --set-string "image.tag=deploycontract"
                 )
                 PLATFORM_VALUES="$(mktemp -t asa-platform.XXXXXX.yaml)"
+                RUNTIME_VALUES="$(mktemp -t asa-runtime.XXXXXX.yaml)"
                 bash "${TEMPLATES_DIR}/scripts/resolve-platform-values.sh" "${PLATFORM_AREA}" "${env}" "${PLATFORM_VALUES}"
+                bash "${TEMPLATES_DIR}/scripts/resolve-runtime-values.sh" "${PLATFORM_RUNTIME}" "${RUNTIME_VALUES}"
 
                 echo "##[group]${env}: helm template (chart invariants)"
+                # Precedence: runtime defaults < manifesto < platform facts.
                 if ! helm template "${APPLICATION_NAME}" "${chart}" \
+                  -f "${RUNTIME_VALUES}" \
                   -f "${manifest}" \
                   -f "${PLATFORM_VALUES}" \
                   "${HELM_RENDER_SET[@]}" >/dev/null; then
@@ -177,13 +207,14 @@ stages:
                 fi
                 echo "##[endgroup]"
                 echo "OK ${env}: schema + chart invariants"
-                rm -f "${PLATFORM_VALUES}"
+                rm -f "${PLATFORM_VALUES}" "${RUNTIME_VALUES}"
               done
             displayName: Assert identity + public schemas + tier guards
             env:
               DEPLOY_ENVIRONMENTS_JSON: ${{ convertToJson(parameters.delivery.deployEnvironments) }}
               PLATFORM_JSON: ${{ convertToJson(parameters.platform) }}
               PLATFORM_AREA: ${{ parameters.platform.area }}
+              PLATFORM_RUNTIME: ${{ parameters.delivery.runtime }}
               APPLICATION_NAME: ${{ parameters.delivery.applicationName }}
               RUNTIME_CONFIG_PATH: ${{ parameters.delivery.runtimeConfigPath }}
 
@@ -265,6 +296,12 @@ stages:
                   echo "##vso[task.logissue type=error]Platform Dockerfile not found: ${DOCKERFILE_DIR}/Dockerfile"
                   exit 1
                 fi
+                if [[ ! -f "${DOCKERFILE_DIR}/entrypoint.sh" ]]; then
+                  echo "##vso[task.logissue type=error]Platform entrypoint not found: ${DOCKERFILE_DIR}/entrypoint.sh"
+                  exit 1
+                fi
+                # Build context is the publish output — copy the adapter into it so COPY . . picks it up.
+                cp "${DOCKERFILE_DIR}/entrypoint.sh" "${APP_CONTEXT}/entrypoint.sh"
 
                 RUNTIME_IMAGE="mcr.microsoft.com/dotnet/aspnet:${ASPNET_TAG}"
                 ECR_REPOSITORY="${APPLICATION_NAME}"
@@ -354,6 +391,7 @@ stages:
       applicationName: ${{ parameters.delivery.applicationName }}
       helmTimeout: ${{ coalesce(parameters.delivery.deployEnvironments[0].helmTimeout, parameters.delivery.helmTimeout) }}
       runtimeConfigPath: ${{ parameters.delivery.runtimeConfigPath }}
+      runtime: ${{ parameters.delivery.runtime }}
       ecrPullSecret: ${{ coalesce(variables['ECR_PULL_SECRET'], '') }}
       smokeScheduledJob: ${{ coalesce(parameters.delivery.deployEnvironments[0].smokeScheduledJob, false) }}
 
@@ -372,6 +410,7 @@ stages:
         applicationName: ${{ parameters.delivery.applicationName }}
         helmTimeout: ${{ coalesce(parameters.delivery.deployEnvironments[1].helmTimeout, parameters.delivery.helmTimeout) }}
         runtimeConfigPath: ${{ parameters.delivery.runtimeConfigPath }}
+        runtime: ${{ parameters.delivery.runtime }}
         ecrPullSecret: ${{ coalesce(variables['ECR_PULL_SECRET'], '') }}
         smokeScheduledJob: ${{ coalesce(parameters.delivery.deployEnvironments[1].smokeScheduledJob, false) }}
 
@@ -390,5 +429,6 @@ stages:
         applicationName: ${{ parameters.delivery.applicationName }}
         helmTimeout: ${{ coalesce(parameters.delivery.deployEnvironments[2].helmTimeout, parameters.delivery.helmTimeout) }}
         runtimeConfigPath: ${{ parameters.delivery.runtimeConfigPath }}
+        runtime: ${{ parameters.delivery.runtime }}
         ecrPullSecret: ${{ coalesce(variables['ECR_PULL_SECRET'], '') }}
         smokeScheduledJob: ${{ coalesce(parameters.delivery.deployEnvironments[2].smokeScheduledJob, false) }}

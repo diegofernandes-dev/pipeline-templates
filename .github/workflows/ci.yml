@@ -111,6 +111,12 @@ jobs:
       - name: platform-contract
         run: ./tests/platform-contract.sh
 
+      - name: runtime-contract
+        run: ./tests/runtime-contract.sh
+
+      - name: runtime-adapter-dotnet
+        run: ./tests/runtime-adapter-dotnet.sh
+
       - name: chart-golden
         run: ./tests/chart-golden.sh check
 

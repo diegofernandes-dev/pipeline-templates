@@ -53,12 +53,14 @@ args: root, probeName
 {{- $p := $root.Values.probes | default dict -}}
 {{- if not (kindIs "map" $p) -}}{{- $p = dict -}}{{- end -}}
 {{- $cfg := (index $p $name) | default dict -}}
-{{- $defaults := dict
+{{- /* Fallback dict keeps helm lint working when probeDefaults is omitted. */ -}}
+{{- $fallback := dict
   "startup" (dict "failureThreshold" 30 "periodSeconds" 5)
   "readiness" (dict "initialDelaySeconds" 10 "periodSeconds" 10 "timeoutSeconds" 3 "failureThreshold" 3)
   "liveness" (dict "initialDelaySeconds" 10 "periodSeconds" 10 "timeoutSeconds" 3 "failureThreshold" 3)
 -}}
-{{- $d := index $defaults $name | default dict -}}
+{{- $defaults := $root.Values.probeDefaults | default $fallback -}}
+{{- $d := index $defaults $name | default (index $fallback $name) | default dict -}}
 {{ printf "%sProbe" $name }}:
   {{- if eq $mode "http" }}
   httpGet:

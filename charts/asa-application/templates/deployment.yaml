@@ -4,6 +4,7 @@
 {{- include "chart.validateProbes" . }}
 {{- include "chart.validateExternalSecret" . }}
 {{- include "chart.validateConfig" . }}
+{{- include "chart.validateShutdown" . }}
 {{- include "chart.validateAutoscaling" . }}
 apiVersion: apps/v1
 kind: Deployment
@@ -17,6 +18,8 @@ spec:
   replicas: {{ .Values.replicaCount }}
   {{- end }}
   revisionHistoryLimit: {{ .Values.deployment.revisionHistoryLimit }}
+  # A pod flapping Ready must not count as rollout progress.
+  minReadySeconds: {{ .Values.deployment.minReadySeconds }}
   # Kept below the pipeline helmTimeout so a stalled rollout surfaces as a
   # ProgressDeadlineExceeded condition instead of a bare `helm --wait` timeout.
   progressDeadlineSeconds: {{ .Values.deployment.progressDeadlineSeconds }}
@@ -51,6 +54,7 @@ spec:
         {{- end }}
       {{- end }}
     spec:
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       serviceAccountName: {{ .Release.Name }}
       automountServiceAccountToken: false
       # No implicit SVC_* env vars from every Service in the namespace.
@@ -69,24 +73,32 @@ spec:
           terminationMessagePolicy: FallbackToLogsOnError
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
-          {{- $wifEnv := include "app.workloadIdentityEnv" . | trim -}}
-          {{- $isNetworked := eq (include "chart.hasEndpoint" .) "true" -}}
-          {{- $isGrpc := eq (include "chart.workloadType" .) "grpc" -}}
-          {{- if or $isNetworked (ne $wifEnv "") }}
+          {{- $wifEnv := include "app.workloadIdentityEnv" . | trim }}
+          {{- $isNetworked := eq (include "chart.hasEndpoint" .) "true" }}
+          {{- $isGrpc := eq (include "chart.workloadType" .) "grpc" }}
           env:
+            # Runtime-agnostic contract — docker/<runtime>/entrypoint maps these.
+            - name: SHUTDOWN_TIMEOUT_SECONDS
+              value: {{ .Values.shutdownTimeoutSeconds | quote }}
+            - name: CPU_REQUEST_MILLICORES
+              valueFrom:
+                resourceFieldRef:
+                  containerName: app
+                  resource: requests.cpu
+                  divisor: 1m
             {{- if $isNetworked }}
-            # Platform-owned listen (explicit env beats envFrom / ConfigMap).
-            - name: ASPNETCORE_URLS
-              value: "http://+:{{ include "chart.containerPort" . }}"
-            {{- end }}
-            {{- if $isGrpc }}
-            - name: Kestrel__EndpointDefaults__Protocols
-              value: Http2
+            - name: PORT
+              value: {{ include "chart.containerPort" . | quote }}
+            - name: APP_PROTOCOL
+              {{- if $isGrpc }}
+              value: "h2c"
+              {{- else }}
+              value: "http"
+              {{- end }}
             {{- end }}
             {{- if ne $wifEnv "" }}
             {{- $wifEnv | nindent 12 }}
             {{- end }}
-          {{- end }}
           {{- with include "app.envFrom" . }}
           {{- . | nindent 10 }}
           {{- end }}

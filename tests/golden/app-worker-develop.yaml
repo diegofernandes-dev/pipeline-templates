@@ -10,7 +10,7 @@ metadata:
     app.kubernetes.io/instance: golden-app
     app.kubernetes.io/version: "deadbeef"
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: asa-application-5.1.0
+    helm.sh/chart: asa-application-5.2.0
     asa.platform/area: lab
     asa.platform/tier: develop
 automountServiceAccountToken: false
@@ -26,13 +26,15 @@ metadata:
     app.kubernetes.io/instance: golden-app
     app.kubernetes.io/version: "deadbeef"
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: asa-application-5.1.0
+    helm.sh/chart: asa-application-5.2.0
     asa.platform/area: lab
     asa.platform/tier: develop
     app.kubernetes.io/component: worker
 spec:
   replicas: 1
   revisionHistoryLimit: 3
+  # A pod flapping Ready must not count as rollout progress.
+  minReadySeconds: 10
   # Kept below the pipeline helmTimeout so a stalled rollout surfaces as a
   # ProgressDeadlineExceeded condition instead of a bare `helm --wait` timeout.
   progressDeadlineSeconds: 240
@@ -54,6 +56,7 @@ spec:
         app.kubernetes.io/managed-by: Helm
         app.kubernetes.io/component: worker
     spec:
+      terminationGracePeriodSeconds: 30
       serviceAccountName: golden-app
       automountServiceAccountToken: false
       # No implicit SVC_* env vars from every Service in the namespace.
@@ -78,6 +81,16 @@ spec:
               - ALL
             privileged: false
             readOnlyRootFilesystem: true
+          env:
+            # Runtime-agnostic contract — docker/<runtime>/entrypoint maps these.
+            - name: SHUTDOWN_TIMEOUT_SECONDS
+              value: "25"
+            - name: CPU_REQUEST_MILLICORES
+              valueFrom:
+                resourceFieldRef:
+                  containerName: app
+                  resource: requests.cpu
+                  divisor: 1m
           resources:
             limits:
               memory: 512Mi

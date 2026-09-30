@@ -43,6 +43,10 @@ parameters:
     type: string
     default: 'deploy/config'
 
+  - name: runtime
+    type: string
+    default: 'dotnet'
+
   # Lab fallback: docker-registry secret name (empty = rely on node/kubelet ECR IAM).
   - name: ecrPullSecret
     type: string
@@ -98,6 +102,7 @@ stages:
                     IMAGE_REPOSITORY: $(imageRepository)
                     IMAGE_TAG: $(imageTag)
                     RUNTIME_CONFIG_PATH: ${{ parameters.runtimeConfigPath }}
+                    PLATFORM_RUNTIME: ${{ parameters.runtime }}
                     SMOKE_SCHEDULED_JOB: ${{ parameters.smokeScheduledJob }}
                     # Two sources, because neither alone covers both ways a consumer can define it:
                     #   PARAM   — compile-time. Only resolves for pipeline-level or queue-time variables,
@@ -196,6 +201,7 @@ stages:
                       # Single source of truth: platform/areas/<area>.yml via the resolver.
                       PLATFORM_VALUES="$(mktemp -t asa-platform.XXXXXX.yaml)"
                       PLATFORM_FACTS="$(mktemp -t asa-platform-facts.XXXXXX.yaml)"
+                      RUNTIME_VALUES="$(mktemp -t asa-runtime.XXXXXX.yaml)"
                       if ! bash "${TEMPLATES_DIR}/scripts/resolve-platform-values.sh" \
                            "${PLATFORM_AREA}" "${PLATFORM_TIER}" "${PLATFORM_VALUES}"; then
                         echo "##vso[task.logissue type=error]Failed to resolve platform values for '${PLATFORM_AREA}/${PLATFORM_TIER}'"
@@ -204,6 +210,11 @@ stages:
                       if ! bash "${TEMPLATES_DIR}/scripts/resolve-platform-values.sh" \
                            "${PLATFORM_AREA}" "${PLATFORM_TIER}" --facts "${PLATFORM_FACTS}"; then
                         echo "##vso[task.logissue type=error]Failed to resolve platform facts for '${PLATFORM_AREA}/${PLATFORM_TIER}'"
+                        exit 1
+                      fi
+                      if ! bash "${TEMPLATES_DIR}/scripts/resolve-runtime-values.sh" \
+                           "${PLATFORM_RUNTIME}" "${RUNTIME_VALUES}"; then
+                        echo "##vso[task.logissue type=error]Failed to resolve runtime values for '${PLATFORM_RUNTIME}'"
                         exit 1
                       fi
                       EXPECTED_KUBE_CONTEXT="$(yq -r '.cluster.expectedKubeContext // ""' "${PLATFORM_FACTS}")"
@@ -322,6 +333,7 @@ stages:
                       PREFLIGHT_RENDER="$(mktemp -t asa-preflight.XXXXXX.yaml)"
                       PREFLIGHT_CMD=(
                         helm template "${HELM_RELEASE}" "${CHART_DIR}"
+                        -f "${RUNTIME_VALUES}"
                         -f "${MANIFEST}"
                         -f "${PLATFORM_VALUES}"
                         --set-string "image.repository=${IMAGE_REPOSITORY}"
@@ -455,7 +467,12 @@ stages:
                         --set-string "image.tag=${IMAGE_TAG}"
                       )
                       # Same resolved facts the DeployContract stage injects (area/tier labels, gateway, DNS).
-                      HELM_PLATFORM_FILE=(-f "${PLATFORM_VALUES}")
+                      # Precedence: runtime defaults < manifesto < platform facts.
+                      HELM_VALUE_FILES=(
+                        -f "${RUNTIME_VALUES}"
+                        -f "${MANIFEST}"
+                        -f "${PLATFORM_VALUES}"
+                      )
 
                       if [[ -n "${ECR_PULL_SECRET:-}" ]]; then
                         echo "##[group]refresh imagePullSecret ${ECR_PULL_SECRET}"
@@ -482,8 +499,7 @@ stages:
                       helm upgrade --install "${HELM_RELEASE}" "${CHART_DIR}" \
                         --namespace "${HELM_NAMESPACE}" \
                         --reset-values \
-                        -f "${MANIFEST}" \
-                        ${HELM_PLATFORM_FILE[@]+"${HELM_PLATFORM_FILE[@]}"} \
+                        "${HELM_VALUE_FILES[@]}" \
                         "${HELM_SET[@]}" \
                         --wait \
                         --timeout "${HELM_TIMEOUT}"

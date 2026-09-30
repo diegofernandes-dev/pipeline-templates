@@ -228,8 +228,15 @@ assert_kind_count "$OUT_WEB" ServiceAccount 1 "web: ServiceAccount always"
 assert_contains "$OUT_WEB" "serviceAccountName: sample-api" "web SA name = release"
 assert_contains "$OUT_WEB" "containerPort: 8080" "web port 8080"
 assert_contains "$OUT_WEB" "port: 8080" "web Service 8080"
-assert_contains "$OUT_WEB" "name: ASPNETCORE_URLS" "web ASPNETCORE_URLS env"
-assert_contains "$OUT_WEB" 'value: "http://+:8080"' "web ASPNETCORE_URLS explicit"
+assert_contains "$OUT_WEB" "name: PORT" "web PORT env"
+assert_contains "$OUT_WEB" 'value: "8080"' "web PORT value"
+assert_contains "$OUT_WEB" "name: APP_PROTOCOL" "web APP_PROTOCOL env"
+assert_contains "$OUT_WEB" 'value: "http"' "web APP_PROTOCOL http"
+assert_contains "$OUT_WEB" "name: SHUTDOWN_TIMEOUT_SECONDS" "web SHUTDOWN_TIMEOUT_SECONDS env"
+assert_contains "$OUT_WEB" "name: CPU_REQUEST_MILLICORES" "web CPU_REQUEST_MILLICORES env"
+assert_contains "$OUT_WEB" "resourceFieldRef:" "web CPU via downward API"
+assert_not_contains "$OUT_WEB" "ASPNETCORE_URLS" "web chart has no ASPNETCORE_URLS"
+assert_not_contains "$OUT_WEB" "Kestrel__" "web chart has no Kestrel"
 assert_not_contains "$OUT_WEB" "appProtocol: kubernetes.io/h2c" "web no h2c"
 assert_not_contains "$OUT_WEB" "startupProbe:" "web probes:false no startup"
 assert_not_contains "$OUT_WEB" "readinessProbe:" "web probes:false no readiness"
@@ -259,10 +266,12 @@ assert_kind_count "$OUT_GRPC" HorizontalPodAutoscaler 1 "grpc: default HPA"
 assert_contains "$OUT_GRPC" "containerPort: 8080" "grpc port 8080"
 assert_contains "$OUT_GRPC" "port: 8080" "grpc Service 8080"
 assert_contains "$OUT_GRPC" "appProtocol: kubernetes.io/h2c" "grpc Service h2c"
-assert_contains "$OUT_GRPC" "name: Kestrel__EndpointDefaults__Protocols" "grpc Kestrel EndpointDefaults"
-assert_contains "$OUT_GRPC" "value: Http2" "grpc Kestrel Http2"
-assert_contains "$OUT_GRPC" "name: ASPNETCORE_URLS" "grpc ASPNETCORE_URLS"
-assert_contains "$OUT_GRPC" 'value: "http://+:8080"' "grpc ASPNETCORE_URLS value"
+assert_contains "$OUT_GRPC" "name: PORT" "grpc PORT env"
+assert_contains "$OUT_GRPC" "name: APP_PROTOCOL" "grpc APP_PROTOCOL env"
+assert_contains "$OUT_GRPC" 'value: "h2c"' "grpc APP_PROTOCOL h2c"
+assert_contains "$OUT_GRPC" "name: SHUTDOWN_TIMEOUT_SECONDS" "grpc SHUTDOWN_TIMEOUT_SECONDS"
+assert_not_contains "$OUT_GRPC" "ASPNETCORE_URLS" "grpc chart has no ASPNETCORE_URLS"
+assert_not_contains "$OUT_GRPC" "Kestrel__" "grpc chart has no Kestrel"
 assert_not_contains "$OUT_GRPC" "50051" "grpc render has no 50051"
 
 OUT_GRPC_P="$(render_app --set-string workload.type=grpc --set-json 'probes={"readiness":{"enabled":true}}')"
@@ -355,20 +364,27 @@ expect_fail "web with enabled rejected" "probes.<type>.enabled is for grpc only"
 expect_fail "worker with probes rejected" "probes are not supported for workload.type: worker" -- \
   render_app --set-string workload.type=worker --set-json 'probes={"readiness":{"path":"/x"}}'
 
-expect_fail "config ASPNETCORE_URLS rejected" "config.ASPNETCORE_URLS is platform-owned" -- \
-  render_app --set probes=false --set-string 'config.ASPNETCORE_URLS=http://bad'
+expect_fail "config PORT rejected" "config.PORT is platform-owned" -- \
+  render_app --set probes=false --set-string 'config.PORT=9999'
 
-expect_fail "config ASPNETCORE_HTTP_PORTS rejected" "config.ASPNETCORE_HTTP_PORTS is platform-owned" -- \
-  render_app --set probes=false --set-string 'config.ASPNETCORE_HTTP_PORTS=8080'
+expect_fail "config APP_PROTOCOL rejected" "config.APP_PROTOCOL is platform-owned" -- \
+  render_app --set probes=false --set-string 'config.APP_PROTOCOL=http'
 
-expect_fail "config ASPNETCORE_HTTPS_PORTS rejected" "config.ASPNETCORE_HTTPS_PORTS is platform-owned" -- \
-  render_app --set probes=false --set-string 'config.ASPNETCORE_HTTPS_PORTS=8443'
+expect_fail "config SHUTDOWN_TIMEOUT_SECONDS rejected" "config.SHUTDOWN_TIMEOUT_SECONDS is platform-owned" -- \
+  render_app --set probes=false --set-string 'config.SHUTDOWN_TIMEOUT_SECONDS=10'
 
-expect_fail "config Kestrel__Endpoints__X rejected" "platform-owned (Kestrel__*)" -- \
-  render_app --set probes=false --set-string 'config.Kestrel__Endpoints__Http__Url=http://+:8080'
+expect_fail "config CPU_REQUEST_MILLICORES rejected" "config.CPU_REQUEST_MILLICORES is platform-owned" -- \
+  render_app --set probes=false --set-string 'config.CPU_REQUEST_MILLICORES=100'
 
 expect_fail "config GOOGLE_APPLICATION_CREDENTIALS rejected" "config.GOOGLE_APPLICATION_CREDENTIALS is platform-owned" -- \
   render_app --set probes=false --set-string 'config.GOOGLE_APPLICATION_CREDENTIALS=/tmp/x'
+
+expect_fail "shutdownTimeoutSeconds >= grace rejected" "shutdownTimeoutSeconds (30) must be < terminationGracePeriodSeconds (30)" -- \
+  render_app --set probes=false --set shutdownTimeoutSeconds=30 --set terminationGracePeriodSeconds=30
+
+OUT_PROBE_DEF="$(render_app --set-json 'probes={"readiness":{"path":"/h"}}' \
+  --set-json 'probeDefaults={"readiness":{"periodSeconds":7,"initialDelaySeconds":1,"timeoutSeconds":2,"failureThreshold":2}}')"
+assert_contains "$OUT_PROBE_DEF" "periodSeconds: 7" "probeDefaults override readiness periodSeconds"
 
 # Missing timeZone / timeoutSeconds — call helm directly so helper defaults do not apply.
 expect_schema_fail "missing timeZone fails" "schedule.timeZone" -- \
@@ -546,8 +562,8 @@ expect_schema_fail "ScheduledJob history.failed < 0 rejected" "history.failed" -
 expect_schema_fail "ScheduledJob startingDeadlineSeconds < 0 rejected" "schedule.startingDeadlineSeconds" -- \
   render_job --set schedule.startingDeadlineSeconds=-1
 
-expect_fail "ScheduledJob config reserved key rejected" "config.ASPNETCORE_URLS is platform-owned" -- \
-  render_job --set-string 'config.ASPNETCORE_URLS=http://bad'
+expect_fail "ScheduledJob config reserved key rejected" "config.PORT is platform-owned" -- \
+  render_job --set-string 'config.PORT=9999'
 
 # Platform-internal podSecurityContext on chart values still renders; public schema tested below.
 OUT_JOB_PSC="$(render_job)"
@@ -592,7 +608,7 @@ assert_contains "$OUT_ES" 'key: "prod/db"' "externalSecret remoteRef.key"
 OUT_LABELS="$(render_app --set probes=false)"
 assert_contains "$OUT_LABELS" 'app.kubernetes.io/version: "deadbeef"' "resource labels include image tag version"
 assert_contains "$OUT_LABELS" "app.kubernetes.io/managed-by: Helm" "resource labels include managed-by"
-assert_contains "$OUT_LABELS" "helm.sh/chart: asa-application-5.1.0" "resource metadata has helm.sh/chart"
+assert_contains "$OUT_LABELS" "helm.sh/chart: asa-application-5.2.0" "resource metadata has helm.sh/chart"
 # helm.sh/chart must NOT appear on the pod template (would force rollout on chart bump).
 POD_LABELS="$(python3 -c '
 import sys, yaml
@@ -615,7 +631,7 @@ assert_contains "$SELECTOR" "app: sample-api" "selector keeps app"
 assert_not_contains "$SELECTOR" "app.kubernetes.io/" "selector has no k8s recommended labels"
 
 OUT_JOB_LABELS="$(render_job)"
-assert_contains "$OUT_JOB_LABELS" "helm.sh/chart: asa-scheduled-job-4.1.0" "job resource has helm.sh/chart"
+assert_contains "$OUT_JOB_LABELS" "helm.sh/chart: asa-scheduled-job-4.2.0" "job resource has helm.sh/chart"
 assert_contains "$OUT_JOB_LABELS" 'sizeLimit: "128Mi"' "job tmp emptyDir sizeLimit"
 # helm.sh/chart must NOT appear on the CronJob pod template (would force Job recreation on chart bump).
 JOB_POD_LABELS="$(python3 -c '
@@ -986,8 +1002,9 @@ assert_contains "$OUT_HARD" "progressDeadlineSeconds: 240" "app progressDeadline
 assert_contains "$OUT_HARD" "enableServiceLinks: false" "app enableServiceLinks disabled"
 assert_contains "$OUT_HARD" "terminationMessagePolicy: FallbackToLogsOnError" "app terminationMessagePolicy"
 assert_contains "$OUT_HARD" "maxUnavailable: 0" "app rollingUpdate maxUnavailable 0"
-assert_contains "$OUT_HARD" "runAsUser: 1654" "app runAsUser pinned to image APP_UID"
-assert_contains "$OUT_HARD" "fsGroup: 1654" "app fsGroup pinned to image APP_UID"
+assert_contains "$OUT_HARD" "runAsUser: 1654" "app runAsUser pinned to platform UID"
+assert_contains "$OUT_HARD" "fsGroup: 1654" "app fsGroup pinned to platform UID"
+assert_contains "$OUT_HARD" "name: SHUTDOWN_TIMEOUT_SECONDS" "app exposes SHUTDOWN_TIMEOUT_SECONDS"
 
 # Recreate (RWO PVC) must not carry a rollingUpdate block.
 OUT_RECREATE="$(render_app --set probes=false --set autoscaling=false \
@@ -998,14 +1015,14 @@ assert_not_contains "$OUT_RECREATE" "rollingUpdate:" "Recreate has no rollingUpd
 OUT_JOB_HARD="$(render_job)"
 assert_contains "$OUT_JOB_HARD" "enableServiceLinks: false" "job enableServiceLinks disabled"
 assert_contains "$OUT_JOB_HARD" "terminationMessagePolicy: FallbackToLogsOnError" "job terminationMessagePolicy"
-assert_contains "$OUT_JOB_HARD" "runAsUser: 1654" "job runAsUser pinned to image APP_UID"
+assert_contains "$OUT_JOB_HARD" "runAsUser: 1654" "job runAsUser pinned to platform UID"
 
-# The chart pins runAsUser; the platform Dockerfile must assert the same UID at build time.
-if ! grep -q 'EXPECTED_APP_UID' "${ROOT}/docker/dotnet/Dockerfile"; then
-  echo "FAIL: docker/dotnet/Dockerfile must assert APP_UID matches the chart runAsUser"
+# The chart pins runAsUser; every docker/<runtime>/ Dockerfile must assert the same UID at build time.
+if ! grep -q 'PLATFORM_UID' "${ROOT}/docker/dotnet/Dockerfile"; then
+  echo "FAIL: docker/dotnet/Dockerfile must assert APP_UID matches PLATFORM_UID / chart runAsUser"
   FAILED=1
 else
-  echo "OK: Dockerfile asserts APP_UID against the chart runAsUser"
+  echo "OK: Dockerfile asserts APP_UID against PLATFORM_UID"
 fi
 
 echo "== supply chain of downloaded tooling =="
@@ -1178,6 +1195,54 @@ assert_not_contains "$OUT_PDB_PRD" "whenUnsatisfiable: DoNotSchedule" "no hard D
 # Explicit opt-out still honoured.
 OUT_PDB_OFF="$(PLATFORM_ENV=production render_app --set probes=false --set pdb.enabled=false)"
 assert_kind_count "$OUT_PDB_OFF" PodDisruptionBudget 0 "pdb.enabled=false honoured"
+
+echo "== rollout stability and termination window =="
+# Both fields are plain Kubernetes workload settings — no runtime and no cluster knowledge —
+# so they carry no coupling to .NET or to any area profile.
+#
+# minReadySeconds: without it a pod that passes readiness once and then crashes still counts as
+# progress, so the rollout keeps replacing healthy pods. It must exceed one readiness period
+# (the chart's default is periodSeconds 10) for a full period of stability to be required.
+#
+# terminationGracePeriodSeconds is set explicitly rather than left at Kubernetes' implicit 30:
+# it is the value a preStop drain must fit inside once the gateway window is known, and it has
+# to stay aligned with whatever shutdown timeout the application runtime uses.
+OUT_TERM="$(render_app --set-string workload.type=web --set-json 'probes={"readiness":{"path":"/h"}}')"
+assert_contains "$OUT_TERM" "minReadySeconds: 10" "Deployment sets minReadySeconds"
+assert_contains "$OUT_TERM" "terminationGracePeriodSeconds: 30" "pod sets terminationGracePeriodSeconds"
+assert_contains "$OUT_TERM" 'name: SHUTDOWN_TIMEOUT_SECONDS' "pod exposes SHUTDOWN_TIMEOUT_SECONDS"
+assert_contains "$OUT_TERM" 'value: "25"' "default shutdownTimeoutSeconds is 25"
+
+# minReadySeconds is pointless if it is shorter than a readiness period: the pod would be
+# declared available before a single probe could fail it.
+READY_PERIOD="$(yq -r -N 'select(.kind == "Deployment") | .spec.template.spec.containers[0].readinessProbe.periodSeconds // 0' <<<"$OUT_TERM" | awk 'NF{print; exit}')"
+MIN_READY="$(yq -r -N 'select(.kind == "Deployment") | .spec.minReadySeconds // 0' <<<"$OUT_TERM" | awk 'NF{print; exit}')"
+if [[ "${MIN_READY:-0}" -ge "${READY_PERIOD:-0}" ]]; then
+  echo "OK: minReadySeconds (${MIN_READY}) >= readiness periodSeconds (${READY_PERIOD})"
+else
+  echo "FAIL: minReadySeconds (${MIN_READY}) must be >= readiness periodSeconds (${READY_PERIOD})"
+  FAILED=1
+fi
+
+# The worker has no probes, so it must still get both fields.
+OUT_TERM_W="$(render_app --set-string workload.type=worker)"
+assert_contains "$OUT_TERM_W" "minReadySeconds:" "worker also sets minReadySeconds"
+assert_contains "$OUT_TERM_W" "terminationGracePeriodSeconds: 30" "worker sets terminationGracePeriodSeconds"
+
+# A Job pod is not rolled out, so minReadySeconds is meaningless there; the termination window
+# still matters because a CronJob pod also receives SIGTERM on deletion.
+OUT_TERM_J="$(render_job)"
+assert_not_contains "$OUT_TERM_J" "minReadySeconds" "ScheduledJob has no minReadySeconds"
+assert_contains "$OUT_TERM_J" "terminationGracePeriodSeconds: 30" "ScheduledJob sets terminationGracePeriodSeconds"
+
+# Once preStop lands, the grace period must still contain it. Guard the ordering now so the
+# relationship cannot be broken silently later.
+if grep -q 'preStop' "${APP_CHART}/templates/deployment.yaml"; then
+  echo "FAIL: preStop landed without a guard asserting it fits inside terminationGracePeriodSeconds"
+  FAILED=1
+else
+  echo "OK: no preStop yet (drain window is an unresolved platform fact)"
+fi
 
 echo "== hostname composition =="
 # The hostname list is composed from two inputs of different origin: legacyDns is consumer

@@ -11,12 +11,13 @@ Templates YAML reutilizáveis para Azure DevOps (GitHub → `extends`).
 | [`templates/dotnet/helm-deploy.yml`](templates/dotnet/helm-deploy.yml) | Stage Helm por tier (`kind` → chart) |
 | [`platform/areas/`](platform/areas/) | Fonte única área × tier → pool / ADO Environment / gateway / contas |
 | [`platform/areas.schema.json`](platform/areas.schema.json) | Schema do objeto `platform` em cada area profile |
-| [`docker/dotnet/Dockerfile`](docker/dotnet/Dockerfile) | Dockerfile plataforma (.NET; listen 8080) |
+| [`platform/runtimes/`](platform/runtimes/) | Defaults Kubernetes por runtime (probes/resources/tmp/grace) |
+| [`docker/dotnet/`](docker/dotnet/) | Imagem + entrypoint .NET (traduz o contrato da plataforma) |
 | [`charts/asa-application`](charts/asa-application) | `kind: Application` — web \| grpc \| worker |
 | [`charts/asa-scheduled-job`](charts/asa-scheduled-job) | `kind: ScheduledJob` — CronJob |
 | [`schemas/`](schemas/) | Schema **público** (`additionalProperties: false`) |
-| [`scripts/`](scripts/) | Resolver de plataforma, `jsonschema`, identidade cross-env, descoberta |
-| [`tests/`](tests/) | Render invariants + drift + platform-contract + kubeconform + golden |
+| [`scripts/`](scripts/) | Resolver de plataforma/runtime, `jsonschema`, identidade cross-env |
+| [`tests/`](tests/) | Render invariants + drift + platform/runtime-contract + kubeconform + golden |
 | [`.github/workflows/ci.yml`](.github/workflows/ci.yml) | CI obrigatório do repositório |
 
 ## Consumo
@@ -78,7 +79,24 @@ Porta networked = **8080**. `workload.port` não existe.
 
 **ServiceAccount público:** só `annotations` (IRSA). Plataforma cria SA = release name, `automountServiceAccountToken: false`.
 
-**config:** mapa livre de strings; use `ConnectionStrings__Default` (hierarquia .NET). Reservados rejeitados: `ASPNETCORE_URLS`, `ASPNETCORE_HTTP_PORTS`, `ASPNETCORE_HTTPS_PORTS`, `GOOGLE_APPLICATION_CREDENTIALS`, `Kestrel__*`.
+**config:** mapa livre de strings (`ConnectionStrings__Default`). Reservados do chart: `PORT`, `APP_PROTOCOL`, `SHUTDOWN_TIMEOUT_SECONDS`, `CPU_REQUEST_MILLICORES`, `GOOGLE_APPLICATION_CREDENTIALS`. Chaves de runtime (ex.: `ASPNETCORE_*`, `Kestrel__*`) são rejeitadas pelo profile em [`platform/runtimes/`](platform/runtimes/) no DeployContract.
+
+### Contrato de runtime (charts agnósticos)
+
+Os charts **não** conhecem .NET nem Java. Há dois canais:
+
+1. **Env (chart → imagem)** — vocabulário de mercado:
+   - `PORT` — porta de listen (8080; só web/grpc)
+   - `APP_PROTOCOL` — `http` \| `h2c` (espelha `Service.appProtocol`)
+   - `SHUTDOWN_TIMEOUT_SECONDS` — orçamento de drain do app (`< terminationGracePeriodSeconds`)
+   - `CPU_REQUEST_MILLICORES` — downward API do request de CPU (exposto; adapter .NET ainda não consome)
+2. **Perfil** [`platform/runtimes/<runtime>.yml`](platform/runtimes/) — defaults Kubernetes que dependem do runtime (`probeDefaults`, `resources`, `tmp`, grace/shutdown), injetados pelo pipeline **antes** do manifesto. O manifesto ainda pode sobrescrever `resources`/probes; os fatos de área vencem por último.
+
+Cada `docker/<runtime>/entrypoint.sh` traduz as env para o runtime (ex.: .NET → `ASPNETCORE_URLS`, `Kestrel__EndpointDefaults__Protocols`, `HostOptions__ShutdownTimeout`) e faz `exec` do processo como PID 1.
+
+**Atenção:** `execution.command` no ScheduledJob **substitui** o ENTRYPOINT da imagem — o adapter (e o mapeamento) é pulado. Prefira `execution.args` para jobs .NET.
+
+**.NET 10 / SIGTERM:** o runtime deixou de instalar handler default de SIGTERM para apps console sem generic host. Apps ASP.NET com generic host continuam cobertas; entrypoints de console precisam registrar o handler — isso é responsabilidade da aplicação, não do chart.
 
 **WIF + IRSA:** token GCP em `/var/run/secrets/gcp/serviceaccount` (não colide com IRSA).
 
@@ -155,6 +173,8 @@ helm lint charts/asa-scheduled-job \
   --set-string 'execution.args[0]=x'
 ./tests/chart-drift.sh            # primitivas compartilhadas + paridade dos schemas
 ./tests/platform-contract.sh      # area profiles × chart (resolve + render + allowlist)
+./tests/runtime-contract.sh       # runtime profiles × chart + reservedConfig
+./tests/runtime-adapter-dotnet.sh # entrypoint.sh mapeia PORT/APP_PROTOCOL/SHUTDOWN
 ./tests/chart-golden.sh check     # snapshots de render (gate de refatoração)
 ./tests/chart-conform.sh          # kubeconform -strict nos manifests renderizados
 ./tests/chart-invariants.sh       # suíte completa (chama drift/contract/conform)
@@ -166,7 +186,7 @@ helm lint charts/asa-scheduled-job \
 
 ### Premissas / docs
 
-- **Baseline de pod (platform-owned, fora do manifesto público):** `runAsNonRoot` + `runAsUser`/`runAsGroup`/`fsGroup` **1654** (= `APP_UID` de `mcr.microsoft.com/dotnet/aspnet`, verificado em 8.0/9.0/10.0 e **asseverado em build time** por [`docker/dotnet/Dockerfile`](docker/dotnet/Dockerfile) — imagem e chart não divergem em silêncio), `readOnlyRootFilesystem`, `seccompProfile: RuntimeDefault`, `drop: [ALL]`, `automountServiceAccountToken: false`, `enableServiceLinks: false`, `terminationMessagePolicy: FallbackToLogsOnError`, `/tmp` como `emptyDir` com `sizeLimit: 128Mi`.
+- **Baseline de pod (platform-owned, fora do manifesto público):** `runAsNonRoot` + `runAsUser`/`runAsGroup`/`fsGroup` **1654** (UID da plataforma — todo `docker/<runtime>/` deve criar ou assegurar esse UID; o Dockerfile .NET falha no build se `APP_UID` divergir), `readOnlyRootFilesystem`, `seccompProfile: RuntimeDefault`, `drop: [ALL]`, `automountServiceAccountToken: false`, `enableServiceLinks: false`, `terminationMessagePolicy: FallbackToLogsOnError`, `/tmp` como `emptyDir` com `sizeLimit: 128Mi`, `minReadySeconds: 10`, `terminationGracePeriodSeconds: 30` + `shutdownTimeoutSeconds: 25` (este último vira `SHUTDOWN_TIMEOUT_SECONDS` no container).
 - **Labels:** `app.kubernetes.io/{name,instance,version,managed-by}` + `helm.sh/chart` + `asa.platform/{area,tier}` no metadata dos recursos. `helm.sh/chart` e `asa.platform/*` **não** vão no pod template (bump de chart/área não força rollout). `spec.selector.matchLabels` permanece só `app: <release>` (campo imutável).
 - **Rollout:** `revisionHistoryLimit: 3`; `progressDeadlineSeconds: 240` — mantenha **abaixo** do `helmTimeout` (default `5m`) para que rollout travado apareça como `ProgressDeadlineExceeded` em vez de timeout opaco do `helm --wait`. `maxUnavailable: 0` preserva capacidade; com PVC RWO a strategy vira `Recreate`.
 - **Data Protection:** `readOnlyRootFilesystem` + múltiplas réplicas pode exigir key ring externo na aplicação — não resolvido pelo chart.
@@ -186,4 +206,4 @@ helm lint charts/asa-scheduled-job \
 | `v3.1.2` | correção da `v3.1.1` + hardening: `expectedKubeContext` ligado ao mapping autoritativo, invariantes de chart validadas **antes** do push de imagem, preflight por apiVersion exata, baseline de pod endurecido (`runAsUser` 1654, `enableServiceLinks: false`, `revisionHistoryLimit`, `progressDeadlineSeconds`), guardas de drift de gateway e de schema |
 | `v3.2.0` | kubeconform nos manifests renderizados; `expect_fail` com asserção de mensagem; `validateAutoscaling` (min≤max); `remoteRef.key` required; `image.repository` minLength; `/tmp` `emptyDir.sizeLimit`; labels padrão (`version`/`managed-by`/`helm.sh/chart`); gate de bump de versão no CI |
 | `v4.0.0` | Desacoplamento env→topology via `resolve-platform-values.sh` + `platform.*` no chart; asa-application 4.x |
-| `v5.0.0` | Cluster axis: `platform/areas/<area>.yml` (pool/Environment em compile-time + facts em runtime); `platformArea`; ECR registry compartilhado; labels `asa.platform/area|tier`; `platform.dnsZone` (+ `legacyDnsZone`); asa-application 5.1.0 / asa-scheduled-job 4.1.0 |
+| `v5.0.0` | Cluster axis + runtime-agnostic charts: `platform/areas` + `platform/runtimes`; env `PORT`/`APP_PROTOCOL`/`SHUTDOWN_TIMEOUT_SECONDS`; asa-application 5.2.0 / asa-scheduled-job 4.2.0 |

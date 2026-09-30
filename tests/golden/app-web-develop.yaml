@@ -10,7 +10,7 @@ metadata:
     app.kubernetes.io/instance: golden-app
     app.kubernetes.io/version: "deadbeef"
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: asa-application-5.1.0
+    helm.sh/chart: asa-application-5.2.0
     asa.platform/area: lab
     asa.platform/tier: develop
 automountServiceAccountToken: false
@@ -26,7 +26,7 @@ metadata:
     app.kubernetes.io/instance: golden-app
     app.kubernetes.io/version: "deadbeef"
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: asa-application-5.1.0
+    helm.sh/chart: asa-application-5.2.0
     asa.platform/area: lab
     asa.platform/tier: develop
 spec:
@@ -49,12 +49,14 @@ metadata:
     app.kubernetes.io/instance: golden-app
     app.kubernetes.io/version: "deadbeef"
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: asa-application-5.1.0
+    helm.sh/chart: asa-application-5.2.0
     asa.platform/area: lab
     asa.platform/tier: develop
     app.kubernetes.io/component: web
 spec:
   revisionHistoryLimit: 3
+  # A pod flapping Ready must not count as rollout progress.
+  minReadySeconds: 10
   # Kept below the pipeline helmTimeout so a stalled rollout surfaces as a
   # ProgressDeadlineExceeded condition instead of a bare `helm --wait` timeout.
   progressDeadlineSeconds: 240
@@ -76,6 +78,7 @@ spec:
         app.kubernetes.io/managed-by: Helm
         app.kubernetes.io/component: web
     spec:
+      terminationGracePeriodSeconds: 30
       serviceAccountName: golden-app
       automountServiceAccountToken: false
       # No implicit SVC_* env vars from every Service in the namespace.
@@ -101,9 +104,19 @@ spec:
             privileged: false
             readOnlyRootFilesystem: true
           env:
-            # Platform-owned listen (explicit env beats envFrom / ConfigMap).
-            - name: ASPNETCORE_URLS
-              value: "http://+:8080"
+            # Runtime-agnostic contract — docker/<runtime>/entrypoint maps these.
+            - name: SHUTDOWN_TIMEOUT_SECONDS
+              value: "25"
+            - name: CPU_REQUEST_MILLICORES
+              valueFrom:
+                resourceFieldRef:
+                  containerName: app
+                  resource: requests.cpu
+                  divisor: 1m
+            - name: PORT
+              value: "8080"
+            - name: APP_PROTOCOL
+              value: "http"
           ports:
             - name: http
               containerPort: 8080
@@ -134,7 +147,7 @@ metadata:
     app.kubernetes.io/instance: golden-app
     app.kubernetes.io/version: "deadbeef"
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: asa-application-5.1.0
+    helm.sh/chart: asa-application-5.2.0
     asa.platform/area: lab
     asa.platform/tier: develop
 spec:
@@ -163,7 +176,7 @@ metadata:
     app.kubernetes.io/instance: golden-app
     app.kubernetes.io/version: "deadbeef"
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: asa-application-5.1.0
+    helm.sh/chart: asa-application-5.2.0
     asa.platform/area: lab
     asa.platform/tier: develop
 spec:

@@ -2,6 +2,7 @@
 {{- include "chart.validateWorkloadIdentity" . }}
 {{- include "chart.validateExternalSecret" . }}
 {{- include "chart.validateConfig" . }}
+{{- include "chart.validateShutdown" . }}
 {{- $sched := .Values.schedule -}}
 {{- $ex := .Values.execution | default dict -}}
 {{- $hist := .Values.history | default dict -}}
@@ -47,6 +48,7 @@ spec:
           {{- end }}
         spec:
           restartPolicy: Never
+          terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
           serviceAccountName: {{ .Release.Name }}
           automountServiceAccountToken: false
           # No implicit SVC_* env vars from every Service in the namespace.
@@ -73,11 +75,20 @@ spec:
               args:
                 {{- toYaml . | nindent 16 }}
               {{- end }}
-              {{- $wifEnv := include "app.workloadIdentityEnv" . | trim -}}
-              {{- if ne $wifEnv "" }}
+              {{- $wifEnv := include "app.workloadIdentityEnv" . | trim }}
               env:
+                # Runtime-agnostic contract — docker/<runtime>/entrypoint maps these.
+                - name: SHUTDOWN_TIMEOUT_SECONDS
+                  value: {{ .Values.shutdownTimeoutSeconds | quote }}
+                - name: CPU_REQUEST_MILLICORES
+                  valueFrom:
+                    resourceFieldRef:
+                      containerName: job
+                      resource: requests.cpu
+                      divisor: 1m
+                {{- if ne $wifEnv "" }}
                 {{- $wifEnv | nindent 16 }}
-              {{- end }}
+                {{- end }}
               {{- with include "app.envFrom" . }}
               {{- . | nindent 14 }}
               {{- end }}
