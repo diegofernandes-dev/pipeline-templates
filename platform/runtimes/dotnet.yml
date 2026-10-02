@@ -1,34 +1,41 @@
 # Runtime profile: dotnet
-# Injected by the .NET pipeline as Helm values (chart:) before the consumer manifesto.
-# reservedConfig is enforced by DeployContract — not by the chart (charts stay runtime-agnostic).
+# Injected by the .NET pipeline as Helm values before the consumer manifesto.
+# reservedConfig is enforced by DeployContract — not by the chart.
 #
-# Values match chart defaults today so enabling the profile is a no-op for render shape
-# (aside from the runtime-agnostic env contract the chart already emits).
+# Merge: chart.defaults ← chart.workloads.<tipo>
+#   tipo ∈ web | grpc | worker | scheduledJob  (derived from manifesto kind/workload.type)
+# Empty workloads.* entries mean "defaults only" — render matches chart defaults today.
 chart:
-  probeDefaults:
-    startup:
-      failureThreshold: 30
-      periodSeconds: 5
-    readiness:
-      initialDelaySeconds: 10
-      periodSeconds: 10
-      timeoutSeconds: 3
-      failureThreshold: 3
-    liveness:
-      initialDelaySeconds: 10
-      periodSeconds: 10
-      timeoutSeconds: 3
-      failureThreshold: 3
-  resources:
-    requests:
-      cpu: 150m
-      memory: 256Mi
-    limits:
-      memory: 512Mi
-  tmp:
-    sizeLimit: 128Mi
-  terminationGracePeriodSeconds: 30
-  shutdownTimeoutSeconds: 25
+  defaults:
+    probeDefaults:
+      startup:
+        failureThreshold: 30
+        periodSeconds: 5
+      readiness:
+        initialDelaySeconds: 10
+        periodSeconds: 10
+        timeoutSeconds: 3
+        failureThreshold: 3
+      liveness:
+        initialDelaySeconds: 10
+        periodSeconds: 10
+        timeoutSeconds: 3
+        failureThreshold: 3
+    resources:
+      requests:
+        cpu: 150m
+        memory: 256Mi
+      limits:
+        memory: 512Mi
+    tmp:
+      sizeLimit: 128Mi
+    terminationGracePeriodSeconds: 30
+    shutdownTimeoutSeconds: 25
+  workloads:
+    web: {}
+    grpc: {}
+    worker: {}
+    scheduledJob: {}
 
 reservedConfig:
   exact:

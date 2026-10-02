@@ -90,7 +90,20 @@ Os charts **não** conhecem .NET nem Java. Há dois canais:
    - `APP_PROTOCOL` — `http` \| `h2c` (espelha `Service.appProtocol`)
    - `SHUTDOWN_TIMEOUT_SECONDS` — orçamento de drain do app (`< terminationGracePeriodSeconds`)
    - `CPU_REQUEST_MILLICORES` — downward API do request de CPU (exposto; adapter .NET ainda não consome)
-2. **Perfil** [`platform/runtimes/<runtime>.yml`](platform/runtimes/) — defaults Kubernetes que dependem do runtime (`probeDefaults`, `resources`, `tmp`, grace/shutdown), injetados pelo pipeline **antes** do manifesto. O manifesto ainda pode sobrescrever `resources`/probes; os fatos de área vencem por último.
+2. **Perfil** [`platform/runtimes/<runtime>.yml`](platform/runtimes/) — defaults Kubernetes que dependem do runtime, injetados pelo pipeline **antes** do manifesto. Shape:
+
+   ```yaml
+   chart:
+     defaults: { resources, tmp, probeDefaults, grace, shutdown, … }
+     workloads:
+       web: {}          # merge sobre defaults
+       grpc: {}
+       worker: {}
+       scheduledJob: {}
+   reservedConfig: …   # guard no DeployContract
+   ```
+
+   Merge: `defaults ← workloads.<tipo>`. O tipo vem do manifesto (`Application` + `workload.type` → `web|grpc|worker`; `ScheduledJob` → `scheduledJob`). O consumer declara só `runtime: dotnet`. O manifesto ainda pode sobrescrever `resources`/probes; os fatos de área vencem por último.
 
 Cada `docker/<runtime>/entrypoint.sh` traduz as env para o runtime (ex.: .NET → `ASPNETCORE_URLS`, `Kestrel__EndpointDefaults__Protocols`, `HostOptions__ShutdownTimeout`) e faz `exec` do processo como PID 1.
 

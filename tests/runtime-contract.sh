@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runtime profile contract: schema + resolve + render + reservedConfig isolation.
+# Runtime profile contract: schema + resolve(workload) + render + reservedConfig isolation.
 set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -8,6 +8,7 @@ SCHEMA="${ROOT}/platform/runtimes.schema.json"
 APP_CHART="${ROOT}/charts/asa-application"
 JOB_CHART="${ROOT}/charts/asa-scheduled-job"
 FAILED=0
+WORKLOADS=(web grpc worker scheduledJob)
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "FAIL: missing $1"; exit 1; }; }
 need yq
@@ -37,6 +38,11 @@ for rt in "${RUNTIMES[@]}"; do
     FAILED=1
     continue
   fi
+  if ! yq -e '.chart.defaults | type == "!!map"' "${profile}" >/dev/null 2>&1; then
+    echo "FAIL: ${rt} missing chart.defaults"
+    FAILED=1
+    continue
+  fi
   echo "OK: ${rt} schema"
 
   echo "== reservedConfig must not collide with chart contract (${rt}) =="
@@ -60,50 +66,70 @@ for rt in "${RUNTIMES[@]}"; do
   done < <(yq -r '.reservedConfig.prefixes[]' "${profile}" 2>/dev/null || true)
   echo "OK: ${rt} reservedConfig isolated from chart contract"
 
-  echo "== resolve + render ${rt} =="
-  rf="$(mktemp -t asa-runtime.XXXXXX.yaml)"
+  echo "== resolve + render ${rt} × workloads =="
   pf="$(mktemp -t asa-platform.XXXXXX.yaml)"
-  if ! bash "${ROOT}/scripts/resolve-runtime-values.sh" "${rt}" "${rf}"; then
-    echo "FAIL: resolve-runtime-values.sh ${rt}"
-    FAILED=1
-    rm -f "${rf}" "${pf}"
-    continue
-  fi
   bash "${ROOT}/scripts/resolve-platform-values.sh" lab develop "${pf}"
-  if ! helm template sample "${APP_CHART}" \
-      -f "${rf}" -f "${pf}" \
-      --set-string image.repository=example.invalid/sample \
-      --set-string image.tag=deadbeef \
-      --set probes=false >/dev/null; then
-    echo "FAIL: ${rt} + app chart render"
-    FAILED=1
-  else
-    echo "OK: ${rt} + app chart render"
-  fi
-  if ! helm template sample-job "${JOB_CHART}" \
-      -f "${rf}" -f "${pf}" \
-      --set-string image.repository=example.invalid/sample-job \
-      --set-string image.tag=deadbeef \
-      --set-string schedule.expression='0 2 * * *' \
-      --set-string schedule.timeZone=UTC \
-      --set execution.timeoutSeconds=60 \
-      --set-string 'execution.args[0]=--mode=job' >/dev/null; then
-    echo "FAIL: ${rt} + job chart render"
-    FAILED=1
-  else
-    echo "OK: ${rt} + job chart render"
-  fi
-  rm -f "${rf}" "${pf}"
+  for wl in "${WORKLOADS[@]}"; do
+    rf="$(mktemp -t asa-runtime.XXXXXX.yaml)"
+    if ! bash "${ROOT}/scripts/resolve-runtime-values.sh" "${rt}" "${wl}" "${rf}"; then
+      echo "FAIL: resolve-runtime-values.sh ${rt} ${wl}"
+      FAILED=1
+      rm -f "${rf}"
+      continue
+    fi
+    if [[ "${wl}" == "scheduledJob" ]]; then
+      if ! helm template sample-job "${JOB_CHART}" \
+          -f "${rf}" -f "${pf}" \
+          --set-string image.repository=example.invalid/sample-job \
+          --set-string image.tag=deadbeef \
+          --set-string schedule.expression='0 2 * * *' \
+          --set-string schedule.timeZone=UTC \
+          --set execution.timeoutSeconds=60 \
+          --set-string 'execution.args[0]=--mode=job' >/dev/null; then
+        echo "FAIL: ${rt}/${wl} + job chart render"
+        FAILED=1
+      else
+        echo "OK: ${rt}/${wl} + job chart render"
+      fi
+    else
+      WT_SET=(--set-string "workload.type=${wl}")
+      [[ "${wl}" == "worker" ]] || WT_SET+=(--set probes=false)
+      if ! helm template sample "${APP_CHART}" \
+          -f "${rf}" -f "${pf}" \
+          --set-string image.repository=example.invalid/sample \
+          --set-string image.tag=deadbeef \
+          "${WT_SET[@]}" >/dev/null; then
+        echo "FAIL: ${rt}/${wl} + app chart render"
+        FAILED=1
+      else
+        echo "OK: ${rt}/${wl} + app chart render"
+      fi
+    fi
+    rm -f "${rf}"
+  done
+  rm -f "${pf}"
 done
 
-echo "== fictional runtime via PLATFORM_RUNTIMES_DIR =="
+echo "== invalid workload rejected =="
+if bash "${ROOT}/scripts/resolve-runtime-values.sh" dotnet bogus >/dev/null 2>&1; then
+  echo "FAIL: expected non-zero for workload=bogus"
+  FAILED=1
+else
+  echo "OK: invalid workload rejected"
+fi
+
+echo "== workload override wins over defaults =="
 FIXTURE="$(mktemp -d -t asa-runtimes.XXXXXX)"
 cat > "${FIXTURE}/preview.yml" <<'EOF'
 chart:
-  shutdownTimeoutSeconds: 20
-  terminationGracePeriodSeconds: 40
-  tmp:
-    sizeLimit: 64Mi
+  defaults:
+    shutdownTimeoutSeconds: 25
+    terminationGracePeriodSeconds: 40
+    tmp:
+      sizeLimit: 64Mi
+  workloads:
+    web:
+      shutdownTimeoutSeconds: 15
 reservedConfig:
   exact:
     - PREVIEW_RESERVED
@@ -112,14 +138,30 @@ EOF
 export PLATFORM_RUNTIMES_DIR="${FIXTURE}"
 rf="$(mktemp -t asa-runtime.XXXXXX.yaml)"
 pf="$(mktemp -t asa-platform.XXXXXX.yaml)"
-bash "${ROOT}/scripts/resolve-runtime-values.sh" preview "${rf}"
+bash "${ROOT}/scripts/resolve-runtime-values.sh" preview web "${rf}"
 bash "${ROOT}/scripts/resolve-platform-values.sh" lab develop "${pf}"
+got="$(yq -r '.shutdownTimeoutSeconds' "${rf}")"
+if [[ "${got}" == "15" ]]; then
+  echo "OK: workloads.web.shutdownTimeoutSeconds overrides defaults (15)"
+else
+  echo "FAIL: expected shutdownTimeoutSeconds=15 after merge (got '${got}')"
+  FAILED=1
+fi
+# grpc has no override → defaults
+bash "${ROOT}/scripts/resolve-runtime-values.sh" preview grpc "${rf}"
+got="$(yq -r '.shutdownTimeoutSeconds' "${rf}")"
+if [[ "${got}" == "25" ]]; then
+  echo "OK: missing workloads.grpc falls back to defaults (25)"
+else
+  echo "FAIL: expected defaults shutdownTimeoutSeconds=25 for grpc (got '${got}')"
+  FAILED=1
+fi
 out="$(helm template sample "${APP_CHART}" -f "${rf}" -f "${pf}" \
   --set-string image.repository=x --set-string image.tag=y --set probes=false)"
-if printf '%s' "${out}" | grep -q 'value: "20"'; then
-  echo "OK: fictional runtime preview overrides shutdownTimeoutSeconds"
+if printf '%s' "${out}" | grep -q 'value: "25"'; then
+  echo "OK: fictional runtime preview renders shutdownTimeoutSeconds"
 else
-  echo "FAIL: fictional runtime override not applied"
+  echo "FAIL: fictional runtime override not applied in render"
   FAILED=1
 fi
 rm -rf "${FIXTURE}" "${rf}" "${pf}"
@@ -128,8 +170,7 @@ unset PLATFORM_RUNTIMES_DIR
 echo "== charts must stay free of runtime tokens =="
 if grep -RInE 'ASPNETCORE|Kestrel|DOTNET_|JAVA_|SPRING_|dotnet' "${ROOT}/charts" \
     --include='*.yaml' --include='*.yml' --include='*.tpl' --include='*.json' \
-    | grep -viE 'dnsZone|legacyDns|scheduled-job|Application' >/tmp/runtime-hits.txt; then
-  # Allow false positives carefully — fail on real runtime tokens only.
+    | grep -viE 'dnsZone|legacyDns|scheduled-job|Application' >/tmp/runtime-hits.txt 2>/dev/null; then
   if grep -E 'ASPNETCORE|Kestrel__|DOTNET_|JAVA_|SPRING_' /tmp/runtime-hits.txt >/dev/null; then
     echo "FAIL: runtime-specific tokens found under charts/:"
     grep -E 'ASPNETCORE|Kestrel__|DOTNET_|JAVA_|SPRING_' /tmp/runtime-hits.txt || true
@@ -157,4 +198,4 @@ if [[ "${FAILED}" -ne 0 ]]; then
   echo "Runtime contract FAILED"
   exit 1
 fi
-echo "Runtime contract ok (${#RUNTIMES[@]} runtimes)"
+echo "Runtime contract ok (${#RUNTIMES[@]} runtimes × ${#WORKLOADS[@]} workloads)"

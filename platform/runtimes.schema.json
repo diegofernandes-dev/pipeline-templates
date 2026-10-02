@@ -5,8 +5,8 @@
   "type": "object",
   "additionalProperties": false,
   "required": ["chart", "reservedConfig"],
-  "properties": {
-    "chart": {
+  "$defs": {
+    "chartValues": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -72,6 +72,26 @@
         "shutdownTimeoutSeconds": {
           "type": "integer",
           "minimum": 1
+        }
+      }
+    }
+  },
+  "properties": {
+    "chart": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["defaults"],
+      "properties": {
+        "defaults": { "$ref": "#/$defs/chartValues" },
+        "workloads": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "web": { "$ref": "#/$defs/chartValues" },
+            "grpc": { "$ref": "#/$defs/chartValues" },
+            "worker": { "$ref": "#/$defs/chartValues" },
+            "scheduledJob": { "$ref": "#/$defs/chartValues" }
+          }
         }
       }
     },

@@ -212,9 +212,35 @@ stages:
                         echo "##vso[task.logissue type=error]Failed to resolve platform facts for '${PLATFORM_AREA}/${PLATFORM_TIER}'"
                         exit 1
                       fi
+
+                      KIND="$(yq -r '.kind // ""' "${MANIFEST}")"
+                      case "${KIND}" in
+                        Application)
+                          CHART_DIR="${TEMPLATES_DIR}/charts/asa-application"
+                          PUBLIC_SCHEMA="${TEMPLATES_DIR}/schemas/application.manifest.schema.json"
+                          WT="$(yq -r '.workload.type // ""' "${MANIFEST}")"
+                          case "${WT}" in
+                            web|grpc|worker) RUNTIME_WORKLOAD="${WT}" ;;
+                            *)
+                              echo "##vso[task.logissue type=error]Application requires workload.type web|grpc|worker (got '${WT}')"
+                              exit 1
+                              ;;
+                          esac
+                          ;;
+                        ScheduledJob)
+                          CHART_DIR="${TEMPLATES_DIR}/charts/asa-scheduled-job"
+                          PUBLIC_SCHEMA="${TEMPLATES_DIR}/schemas/scheduled-job.manifest.schema.json"
+                          RUNTIME_WORKLOAD=scheduledJob
+                          ;;
+                        *)
+                          echo "##vso[task.logissue type=error]Unsupported kind '${KIND}' in ${MANIFEST}"
+                          exit 1
+                          ;;
+                      esac
+
                       if ! bash "${TEMPLATES_DIR}/scripts/resolve-runtime-values.sh" \
-                           "${PLATFORM_RUNTIME}" "${RUNTIME_VALUES}"; then
-                        echo "##vso[task.logissue type=error]Failed to resolve runtime values for '${PLATFORM_RUNTIME}'"
+                           "${PLATFORM_RUNTIME}" "${RUNTIME_WORKLOAD}" "${RUNTIME_VALUES}"; then
+                        echo "##vso[task.logissue type=error]Failed to resolve runtime values for '${PLATFORM_RUNTIME}/${RUNTIME_WORKLOAD}'"
                         exit 1
                       fi
                       EXPECTED_KUBE_CONTEXT="$(yq -r '.cluster.expectedKubeContext // ""' "${PLATFORM_FACTS}")"
@@ -236,22 +262,6 @@ stages:
                       else
                         echo "##[warning]EXTERNAL BLOCKER: expectedKubeContext for ${PLATFORM_AREA}/${PLATFORM_TIER} is null — cluster identity is NOT asserted for this deploy"
                       fi
-
-                      KIND="$(yq -r '.kind // ""' "${MANIFEST}")"
-                      case "${KIND}" in
-                        Application)
-                          CHART_DIR="${TEMPLATES_DIR}/charts/asa-application"
-                          PUBLIC_SCHEMA="${TEMPLATES_DIR}/schemas/application.manifest.schema.json"
-                          ;;
-                        ScheduledJob)
-                          CHART_DIR="${TEMPLATES_DIR}/charts/asa-scheduled-job"
-                          PUBLIC_SCHEMA="${TEMPLATES_DIR}/schemas/scheduled-job.manifest.schema.json"
-                          ;;
-                        *)
-                          echo "##vso[task.logissue type=error]Unsupported or missing kind '${KIND}'"
-                          exit 1
-                          ;;
-                      esac
 
                       if [[ ! -f "${CHART_DIR}/Chart.yaml" ]]; then
                         echo "##vso[task.logissue type=error]Chart not found: ${CHART_DIR}"

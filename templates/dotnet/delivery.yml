@@ -130,10 +130,19 @@ stages:
                   Application)
                     schema="${TEMPLATES_DIR}/schemas/application.manifest.schema.json"
                     chart="${TEMPLATES_DIR}/charts/asa-application"
+                    WT="$(yq -r '.workload.type // ""' "${manifest}")"
+                    case "${WT}" in
+                      web|grpc|worker) RUNTIME_WORKLOAD="${WT}" ;;
+                      *)
+                        echo "##vso[task.logissue type=error]${env}: Application requires workload.type web|grpc|worker (got '${WT}')"
+                        exit 1
+                        ;;
+                    esac
                     ;;
                   ScheduledJob)
                     schema="${TEMPLATES_DIR}/schemas/scheduled-job.manifest.schema.json"
                     chart="${TEMPLATES_DIR}/charts/asa-scheduled-job"
+                    RUNTIME_WORKLOAD=scheduledJob
                     ;;
                   *) echo "##vso[task.logissue type=error]Unsupported kind ${kind}"; exit 1 ;;
                 esac
@@ -193,7 +202,7 @@ stages:
                 PLATFORM_VALUES="$(mktemp -t asa-platform.XXXXXX.yaml)"
                 RUNTIME_VALUES="$(mktemp -t asa-runtime.XXXXXX.yaml)"
                 bash "${TEMPLATES_DIR}/scripts/resolve-platform-values.sh" "${PLATFORM_AREA}" "${env}" "${PLATFORM_VALUES}"
-                bash "${TEMPLATES_DIR}/scripts/resolve-runtime-values.sh" "${PLATFORM_RUNTIME}" "${RUNTIME_VALUES}"
+                bash "${TEMPLATES_DIR}/scripts/resolve-runtime-values.sh" "${PLATFORM_RUNTIME}" "${RUNTIME_WORKLOAD}" "${RUNTIME_VALUES}"
 
                 echo "##[group]${env}: helm template (chart invariants)"
                 # Precedence: runtime defaults < manifesto < platform facts.
