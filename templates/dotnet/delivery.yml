@@ -57,7 +57,7 @@ stages:
               fi
 
               if [[ -z "${APPLICATION_NAME}" ]]; then
-                echo "##vso[task.logissue type=error]applicationName is required when deployEnvironments is set"
+                echo "##vso[task.logissue type=error]applicationName is required when platformArea is not none"
                 exit 1
               fi
               if [[ -z "${PLATFORM_AREA}" ]]; then
@@ -65,51 +65,50 @@ stages:
                 exit 1
               fi
 
-              mapfile -t ENVS < <(printf '%s' "${DEPLOY_ENVIRONMENTS_JSON}" | yq -r '.[].name')
+              # Authoritative promotion chain from platform.promotion (not consumer-controlled).
+              mapfile -t ENVS < <(printf '%s' "${PLATFORM_JSON}" | yq -r '.promotion[]')
               if [[ "${#ENVS[@]}" -eq 0 ]]; then
-                echo "##vso[task.logissue type=error]deployEnvironments produced an empty name list"
+                echo "##vso[task.logissue type=error]platform.promotion is empty for area '${PLATFORM_AREA}' — deployable areas require a non-empty promotion chain"
                 exit 1
               fi
-
-              MAX_ENVS="$(printf '%s' "${PLATFORM_JSON}" | yq -r '.tiers | keys | length')"
-              if [[ "${#ENVS[@]}" -gt "${MAX_ENVS}" ]]; then
-                echo "##vso[task.logissue type=error]At most ${MAX_ENVS} deployEnvironments supported for area '${PLATFORM_AREA}' (got ${#ENVS[@]})"
+              if [[ "${#ENVS[@]}" -gt 3 ]]; then
+                echo "##vso[task.logissue type=error]At most 3 promotion tiers supported (got ${#ENVS[@]} for area '${PLATFORM_AREA}')"
                 exit 1
               fi
 
               uniq_count="$(printf '%s\n' "${ENVS[@]}" | sort -u | wc -l | tr -d ' ')"
               if [[ "${uniq_count}" -ne "${#ENVS[@]}" ]]; then
-                echo "##vso[task.logissue type=error]Duplicate tier names in deployEnvironments"
+                echo "##vso[task.logissue type=error]Duplicate tier names in platform.promotion"
                 exit 1
               fi
 
-              # Canonical promotion order = tiers.*.order (subset OK, never inverted).
-              mapfile -t PROMO < <(printf '%s' "${PLATFORM_JSON}" | yq -r '.tiers | to_entries | sort_by(.value.order) | .[].key')
+              # promotion order must respect tiers.*.order (never inverted).
+              mapfile -t ORDERED < <(printf '%s' "${PLATFORM_JSON}" | yq -r '.tiers | to_entries | sort_by(.value.order) | .[].key')
               declare -A RANK=()
-              for i in "${!PROMO[@]}"; do
-                RANK["${PROMO[$i]}"]=$((i + 1))
+              for i in "${!ORDERED[@]}"; do
+                RANK["${ORDERED[$i]}"]=$((i + 1))
               done
               prev=0
               for env in "${ENVS[@]}"; do
                 if [[ "$(printf '%s' "${PLATFORM_JSON}" | yq -r ".tiers | has(\"${env}\")")" != "true" ]]; then
-                  echo "##vso[task.logissue type=error]Unknown tier '${env}' for area '${PLATFORM_AREA}' — add it under platform.tiers in platform/areas/${PLATFORM_AREA}.yml"
+                  echo "##vso[task.logissue type=error]Unknown promotion tier '${env}' for area '${PLATFORM_AREA}' — add it under platform.tiers in platform/areas/${PLATFORM_AREA}.yml"
                   exit 1
                 fi
                 r="${RANK[$env]}"
                 if (( r < prev )); then
-                  echo "##vso[task.logissue type=error]deployEnvironments order must follow platform.tiers.*.order (got inverted: ${ENVS[*]})"
+                  echo "##vso[task.logissue type=error]platform.promotion order must follow platform.tiers.*.order (got inverted: ${ENVS[*]})"
                   exit 1
                 fi
                 prev=$r
 
                 pool="$(printf '%s' "${PLATFORM_JSON}" | yq -r ".tiers.\"${env}\".deployPool // \"null\"")"
                 if [[ "${pool}" == "null" || -z "${pool}" ]]; then
-                  echo "##vso[task.logissue type=error]EXTERNAL BLOCKER: no deployPool for '${PLATFORM_AREA}/${env}' — fill platform.tiers.${env}.deployPool before deploying"
+                  echo "##vso[task.logissue type=error]EXTERNAL BLOCKER: no deployPool for promotion tier '${PLATFORM_AREA}/${env}' — fill platform.tiers.${env}.deployPool or remove it from platform.promotion"
                   exit 1
                 fi
                 ctx="$(printf '%s' "${PLATFORM_JSON}" | yq -r ".tiers.\"${env}\".expectedKubeContext // \"null\"")"
                 acct="$(printf '%s' "${PLATFORM_JSON}" | yq -r ".tiers.\"${env}\".awsAccountId // \"null\"")"
-                # Deployable tiers require complete identity mapping (fail-closed).
+                # Promotion tiers require complete identity mapping (fail-closed).
                 # Actual cluster/STS are asserted at deploy time; here we refuse null profile fields.
                 if ! bash "${TEMPLATES_DIR}/scripts/preflight-deploy-target.sh" identity \
                      --area "${PLATFORM_AREA}" --tier "${env}" \
@@ -119,7 +118,7 @@ stages:
                   exit 1
                 fi
               done
-              echo "Tiers OK (${PLATFORM_AREA}): ${ENVS[*]}"
+              echo "Promotion OK (${PLATFORM_AREA}): ${ENVS[*]}"
 
               pip3 install --user "pyyaml==${PYYAML_VERSION}" "jsonschema==${JSONSCHEMA_VERSION}" >/dev/null
               export PATH="${HOME}/.local/bin:${PATH}"
@@ -223,7 +222,6 @@ stages:
               done
             displayName: Assert identity + public schemas + tier guards
             env:
-              DEPLOY_ENVIRONMENTS_JSON: ${{ convertToJson(parameters.delivery.deployEnvironments) }}
               PLATFORM_JSON: ${{ convertToJson(parameters.platform) }}
               PLATFORM_AREA: ${{ parameters.platform.area }}
               PLATFORM_RUNTIME: ${{ parameters.delivery.runtime }}
@@ -276,7 +274,7 @@ stages:
                 export PATH="/opt/tenv3/container-build-tools/bin:${PATH}"
 
                 if [[ -z "${APPLICATION_NAME:-}" ]]; then
-                  echo "##vso[task.logissue type=error]applicationName is required when deployEnvironments is set"
+                  echo "##vso[task.logissue type=error]applicationName is required when platformArea is not none"
                   exit 1
                 fi
 
@@ -390,57 +388,49 @@ stages:
                 echo "##vso[task.setvariable variable=imageTag;isOutput=true]${IMAGE_TAG}"
                 echo "##vso[task.setvariable variable=imageRepository;isOutput=true]${IMAGE_REPOSITORY}"
 
+  # Compile-time slots from platform.promotion (max 3). Consumer cannot reorder/skip/add.
   - template: helm-deploy.yml
     parameters:
-      tier: ${{ parameters.delivery.deployEnvironments[0].name }}
-      environmentName: ${{ parameters.platform.tiers[parameters.delivery.deployEnvironments[0].name].environmentName }}
-      containerPool: ${{ parameters.platform.tiers[parameters.delivery.deployEnvironments[0].name].deployPool }}
+      tier: ${{ parameters.platform.promotion[0] }}
+      environmentName: ${{ parameters.platform.tiers[parameters.platform.promotion[0]].environmentName }}
+      containerPool: ${{ parameters.platform.tiers[parameters.platform.promotion[0]].deployPool }}
       platformArea: ${{ parameters.platform.area }}
-      awsRegion: ${{ parameters.platform.tiers[parameters.delivery.deployEnvironments[0].name].awsRegion }}
-      variableGroups: ${{ parameters.delivery.deployEnvironments[0].variableGroups }}
+      awsRegion: ${{ parameters.platform.tiers[parameters.platform.promotion[0]].awsRegion }}
+      scheduledJobSmokeEnabled: ${{ parameters.platform.tiers[parameters.platform.promotion[0]].scheduledJobSmoke.enabled }}
       dependsOn:
         - Container
       applicationName: ${{ parameters.delivery.applicationName }}
-      helmTimeout: ${{ coalesce(parameters.delivery.deployEnvironments[0].helmTimeout, parameters.delivery.helmTimeout) }}
       runtimeConfigPath: ${{ parameters.delivery.runtimeConfigPath }}
       runtime: ${{ parameters.delivery.runtime }}
-      ecrPullSecret: ${{ coalesce(variables['ECR_PULL_SECRET'], '') }}
-      smokeScheduledJob: ${{ coalesce(parameters.delivery.deployEnvironments[0].smokeScheduledJob, false) }}
 
-  - ${{ if gt(length(parameters.delivery.deployEnvironments), 1) }}:
+  - ${{ if gt(length(parameters.platform.promotion), 1) }}:
     - template: helm-deploy.yml
       parameters:
-        tier: ${{ parameters.delivery.deployEnvironments[1].name }}
-        environmentName: ${{ parameters.platform.tiers[parameters.delivery.deployEnvironments[1].name].environmentName }}
-        containerPool: ${{ parameters.platform.tiers[parameters.delivery.deployEnvironments[1].name].deployPool }}
+        tier: ${{ parameters.platform.promotion[1] }}
+        environmentName: ${{ parameters.platform.tiers[parameters.platform.promotion[1]].environmentName }}
+        containerPool: ${{ parameters.platform.tiers[parameters.platform.promotion[1]].deployPool }}
         platformArea: ${{ parameters.platform.area }}
-        awsRegion: ${{ parameters.platform.tiers[parameters.delivery.deployEnvironments[1].name].awsRegion }}
-        variableGroups: ${{ parameters.delivery.deployEnvironments[1].variableGroups }}
+        awsRegion: ${{ parameters.platform.tiers[parameters.platform.promotion[1]].awsRegion }}
+        scheduledJobSmokeEnabled: ${{ parameters.platform.tiers[parameters.platform.promotion[1]].scheduledJobSmoke.enabled }}
         dependsOn:
           - Container
-          - Deploy_${{ parameters.delivery.deployEnvironments[0].name }}
+          - Deploy_${{ parameters.platform.promotion[0] }}
         applicationName: ${{ parameters.delivery.applicationName }}
-        helmTimeout: ${{ coalesce(parameters.delivery.deployEnvironments[1].helmTimeout, parameters.delivery.helmTimeout) }}
         runtimeConfigPath: ${{ parameters.delivery.runtimeConfigPath }}
         runtime: ${{ parameters.delivery.runtime }}
-        ecrPullSecret: ${{ coalesce(variables['ECR_PULL_SECRET'], '') }}
-        smokeScheduledJob: ${{ coalesce(parameters.delivery.deployEnvironments[1].smokeScheduledJob, false) }}
 
-  - ${{ if gt(length(parameters.delivery.deployEnvironments), 2) }}:
+  - ${{ if gt(length(parameters.platform.promotion), 2) }}:
     - template: helm-deploy.yml
       parameters:
-        tier: ${{ parameters.delivery.deployEnvironments[2].name }}
-        environmentName: ${{ parameters.platform.tiers[parameters.delivery.deployEnvironments[2].name].environmentName }}
-        containerPool: ${{ parameters.platform.tiers[parameters.delivery.deployEnvironments[2].name].deployPool }}
+        tier: ${{ parameters.platform.promotion[2] }}
+        environmentName: ${{ parameters.platform.tiers[parameters.platform.promotion[2]].environmentName }}
+        containerPool: ${{ parameters.platform.tiers[parameters.platform.promotion[2]].deployPool }}
         platformArea: ${{ parameters.platform.area }}
-        awsRegion: ${{ parameters.platform.tiers[parameters.delivery.deployEnvironments[2].name].awsRegion }}
-        variableGroups: ${{ parameters.delivery.deployEnvironments[2].variableGroups }}
+        awsRegion: ${{ parameters.platform.tiers[parameters.platform.promotion[2]].awsRegion }}
+        scheduledJobSmokeEnabled: ${{ parameters.platform.tiers[parameters.platform.promotion[2]].scheduledJobSmoke.enabled }}
         dependsOn:
           - Container
-          - Deploy_${{ parameters.delivery.deployEnvironments[1].name }}
+          - Deploy_${{ parameters.platform.promotion[1] }}
         applicationName: ${{ parameters.delivery.applicationName }}
-        helmTimeout: ${{ coalesce(parameters.delivery.deployEnvironments[2].helmTimeout, parameters.delivery.helmTimeout) }}
         runtimeConfigPath: ${{ parameters.delivery.runtimeConfigPath }}
         runtime: ${{ parameters.delivery.runtime }}
-        ecrPullSecret: ${{ coalesce(variables['ECR_PULL_SECRET'], '') }}
-        smokeScheduledJob: ${{ coalesce(parameters.delivery.deployEnvironments[2].smokeScheduledJob, false) }}

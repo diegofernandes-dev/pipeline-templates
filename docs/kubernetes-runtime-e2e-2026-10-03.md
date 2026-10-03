@@ -479,3 +479,17 @@ tag target: a801d363974391d53ba2345608ae87995b6b11e0
 ```
 
 Includes: target identity fail-closed, render-driven capability preflight, default StorageClass ambiguity fail-closed, CSI NotFound vs RBAC diagnostics. Chart versions unchanged (template/script release only). Tag is immutable and points at the qualified code SHA (not this docs commit).
+
+---
+
+## Addendum — delivery API (post v5.3.2)
+
+```text
+delivery API changed: YES (platform-owned promotion; v6.0.0 candidate)
+delivery policy changed: YES (scheduledJobSmoke.enabled; default false)
+charts/runtime unchanged: YES
+ADO compile: PASS — docs/ado-compile-v6-candidate.md (templates ref bbcf29f5bd427833cbbc4e819e0202d0c13aed38)
+runtime matrix not rerun: YES
+```
+
+Evidence above remains valid for HPA/PVC/CronJob/gRPC/PDB/TopologySpread/PSA/Helm recovery/identity/capability preflight. The v6 change relocates promotion ownership to `platform.promotion`, removes Variable Groups / `ECR_PULL_SECRET`, and replaces former smoke knobs with explicit `scheduledJobSmoke.enabled` (safe default: off).

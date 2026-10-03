@@ -1,17 +1,25 @@
-# Example Application manifesto (copy to deploy/config/develop.yaml).
-# Pipeline selects chart from kind (asa-application). Ports are platform-owned (8080).
+# Example Application manifesto (copy to deploy/config/<tier>.yaml).
+# Public contract: kind + workload.type. Networked ports are platform-owned (8080).
+# Pipeline selects chart from kind (asa-application). Schema: schemas/application.manifest.schema.json
 
 kind: Application
 
 workload:
   type: web
+  # port is NOT part of the public contract — schema rejects workload.port
 
+# DNS publication intent (web/grpc). Route acceptance is independent:
+# when platform.legacyDnsZone is set, HTTPRoute/GRPCRoute always accept corp + legacy.
+# This flag only authorizes ExternalDNS to publish the legacy hostname.
+# false = publish .corp only. Removed key legacyDns is rejected by schema.
 dns:
   publishLegacyHostname: false
 
-# Required for web/grpc: probes: false OR explicit per-type probes (no global path).
+# Required for web/grpc: probes: false OR explicit probes.<type> (no global path).
 probes: false
 
+# Object form renders HPA → deploy preflight requires metrics.k8s.io.
+# Use autoscaling: false to skip HPA (and the metrics check).
 autoscaling:
   minReplicas: 1
   maxReplicas: 3
@@ -37,9 +45,13 @@ autoscaling:
 # persistence:
 #   mountPath: /data
 #   size: 1Gi
+#   storageClassName: gp2   # preferred; omit only if cluster has exactly one default SC
 # # requires autoscaling: false and replicaCount: 1
+# # PVC in render → preflight checks StorageClass + CSI (NotFound ≠ RBAC/API error)
 
-# Use __ for .NET hierarchical config (not ':' as ConfigMap keys).
+# Free-form string map → ConfigMap. Nested .NET keys use __ (not ':').
+# Reserved platform keys rejected: PORT, APP_PROTOCOL, SHUTDOWN_TIMEOUT_SECONDS,
+# CPU_REQUEST_MILLICORES, GOOGLE_APPLICATION_CREDENTIALS (+ runtime-reserved keys).
 config:
   API_URL: https://api.dev.example
   FEATURE_FLAG: "true"

@@ -2,8 +2,8 @@
 # Compile-time source for pool / ADO Environment; runtime source for chart facts
 # (scripts/resolve-platform-values.sh reads the `platform` parameter default below).
 #
-# production has no deployPool yet (EXTERNAL BLOCKER) — selecting it in
-# deployEnvironments fails closed at ADO expansion (empty pool) and in DeployContract.
+# platform.promotion is the authoritative delivery chain (order + membership).
+# production exists under tiers but is NOT in promotion until deployPool is real.
 parameters:
   - name: delivery
     type: object
@@ -16,6 +16,10 @@ parameters:
         # Lab ECR (same account the PG-AWS-EKS agents push to today).
         awsAccountId: "448003890252"
         awsRegion: us-east-1
+      # Active promotion chain (platform-owned). Not every known tier participates.
+      promotion:
+        - develop
+        - homolog
       tiers:
         develop:
           order: 1
@@ -30,7 +34,9 @@ parameters:
           dnsZone: dev.asa.corp
           legacyDnsZone: d.asa.com.br
           defaultMinReplicas: 1
-          smokeAllowed: true
+          # Explicit platform policy — false by default (no auto CronJob after deploy).
+          scheduledJobSmoke:
+            enabled: false
           podSecurity:
             enforce: null
             enforceVersion: null
@@ -47,7 +53,8 @@ parameters:
           dnsZone: hml.asa.corp
           legacyDnsZone: h.asa.com.br
           defaultMinReplicas: 1
-          smokeAllowed: false
+          scheduledJobSmoke:
+            enabled: false
           podSecurity:
             enforce: null
             enforceVersion: null
@@ -64,7 +71,8 @@ parameters:
           dnsZone: prd.asa.corp
           legacyDnsZone: p.asa.com.br
           defaultMinReplicas: 2
-          smokeAllowed: false
+          scheduledJobSmoke:
+            enabled: false
           podSecurity:
             enforce: null
             enforceVersion: null

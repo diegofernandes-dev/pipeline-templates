@@ -886,13 +886,26 @@ else
 fi
 
 echo "== static checks (ADO / helm) =="
-if ! grep -q 'convertToJson(parameters.delivery.deployEnvironments)' "${ROOT}/templates/dotnet/delivery.yml"; then
-  echo "FAIL: convertToJson(delivery.deployEnvironments) missing in delivery.yml"
+if ! grep -q 'convertToJson(parameters.platform)' "${ROOT}/templates/dotnet/delivery.yml"; then
+  echo "FAIL: convertToJson(parameters.platform) missing in delivery.yml"
   FAILED=1
 else
-  echo "OK: convertToJson present"
+  echo "OK: convertToJson(platform) present"
 fi
-if grep -n 'each env in parameters.deployEnvironments' "${ROOT}/templates/dotnet/ci.yml" \
+if grep -nE 'deployEnvironments|variableGroups|ecrPullSecret|ECR_PULL_SECRET|smokeScheduledJob' \
+     "${ROOT}/templates/dotnet/ci.yml" \
+     "${ROOT}/templates/dotnet/delivery.yml" \
+     "${ROOT}/templates/dotnet/helm-deploy.yml" | grep -q .; then
+  echo "FAIL: removed delivery API still present in templates/dotnet"
+  grep -nE 'deployEnvironments|variableGroups|ecrPullSecret|ECR_PULL_SECRET|smokeScheduledJob' \
+    "${ROOT}/templates/dotnet/ci.yml" \
+    "${ROOT}/templates/dotnet/delivery.yml" \
+    "${ROOT}/templates/dotnet/helm-deploy.yml" || true
+  FAILED=1
+else
+  echo "OK: no deployEnvironments/variableGroups/ECR_PULL_SECRET/smokeScheduledJob in templates"
+fi
+if grep -n 'each env in parameters' "${ROOT}/templates/dotnet/ci.yml" \
      "${ROOT}/templates/dotnet/delivery.yml" | grep -q .; then
   echo "FAIL: invalid each-env DeployContract loop still present"
   FAILED=1
@@ -906,15 +919,17 @@ if grep -q 'helm uninstall' <<<"$RECOVERY_BLOCK"; then
 else
   echo "OK: pending-upgrade block has no helm uninstall"
 fi
-# ECR_PULL_SECRET: compile-time parameter ecrPullSecret (deployment jobs drop runtime $(VAR))
-if ! grep -q 'ecrPullSecret' "${ROOT}/templates/dotnet/helm-deploy.yml"; then
-  echo "FAIL: ecrPullSecret parameter missing in helm-deploy.yml"
-  FAILED=1
-elif ! grep -qF "variables['ECR_PULL_SECRET']" "${ROOT}/templates/dotnet/delivery.yml"; then
-  echo "FAIL: delivery.yml must pass variables['ECR_PULL_SECRET'] into ecrPullSecret"
+if grep -q 'create secret docker-registry' "${ROOT}/templates/dotnet/helm-deploy.yml"; then
+  echo "FAIL: pipeline must not create docker-registry imagePullSecrets"
   FAILED=1
 else
-  echo "OK: ECR_PULL_SECRET wired via ecrPullSecret parameter"
+  echo "OK: no pipeline-created docker-registry secret"
+fi
+if grep -q 'imagePullSecrets\[' "${ROOT}/templates/dotnet/helm-deploy.yml"; then
+  echo "FAIL: pipeline must not inject imagePullSecrets via Helm --set"
+  FAILED=1
+else
+  echo "OK: no imagePullSecrets injection in helm-deploy"
 fi
 if grep -E -- '--atomic' "${ROOT}/templates/dotnet/helm-deploy.yml" | grep -q .; then
   echo "FAIL: --atomic still present in helm-deploy"
@@ -928,6 +943,12 @@ if ! grep -q 'helm_has_deployed_revision' "${ROOT}/templates/dotnet/helm-deploy.
 else
   echo "OK: deployed-revision guard present"
 fi
+if ! grep -q 'helm_rollback_to_last_deployed' "${ROOT}/templates/dotnet/helm-deploy.yml"; then
+  echo "FAIL: helm_rollback_to_last_deployed missing"
+  FAILED=1
+else
+  echo "OK: helm_rollback_to_last_deployed present"
+fi
 if grep -qE '\| last \|' "${ROOT}/templates/dotnet/helm-deploy.yml"; then
   echo "FAIL: jq-style yq 'last' still present (use .[-1] for mikefarah/yq)"
   FAILED=1
@@ -937,12 +958,6 @@ elif ! grep -q '\[\.\[-1\]\.revision' "${ROOT}/templates/dotnet/helm-deploy.yml"
   FAILED=1
 else
   echo "OK: rollback uses mikefarah/yq .[-1].revision"
-fi
-if ! grep -q 'create secret docker-registry' "${ROOT}/templates/dotnet/helm-deploy.yml"; then
-  echo "FAIL: ECR_PULL_SECRET refresh (create secret docker-registry) missing"
-  FAILED=1
-else
-  echo "OK: ECR_PULL_SECRET refresh present"
 fi
 if ! grep -q 'Accepted' "${ROOT}/templates/dotnet/helm-deploy.yml"; then
   echo "FAIL: Route Accepted check missing"
@@ -1167,38 +1182,28 @@ else
   echo "OK: all GitHub actions pinned to commit SHAs"
 fi
 
-# ECR_PULL_SECRET must survive both ways a consumer can define it.
-for v in ECR_PULL_SECRET_PARAM ECR_PULL_SECRET_RUNTIME; do
-  if ! grep -q "${v}" "${ROOT}/templates/dotnet/helm-deploy.yml"; then
-    echo "FAIL: helm-deploy.yml must read ${v} (compile-time param and runtime macro cover different sources)"
-    FAILED=1
-  else
-    echo "OK: helm-deploy.yml reads ${v}"
-  fi
-done
-if ! grep -qF "== '\$('*" "${ROOT}/templates/dotnet/helm-deploy.yml"; then
-  echo "FAIL: helm-deploy.yml must treat an unexpanded \$(NAME) macro as absent"
-  FAILED=1
-else
-  echo "OK: unexpanded ADO macro treated as absent"
-fi
-
-echo "== deploy pool: platform.tiers lookup at all 3 call sites =="
-LOOKUP_OK=$(grep -c 'parameters.platform.tiers\[parameters.delivery.deployEnvironments\[[0-2]\].name\].deployPool' \
+echo "== promotion: platform.promotion lookup at all 3 call sites =="
+LOOKUP_OK=$(grep -c 'parameters.platform.tiers\[parameters.platform.promotion\[[0-2]\]\].deployPool' \
   "${ROOT}/templates/dotnet/delivery.yml" || true)
 if [[ "${LOOKUP_OK}" -ne 3 ]]; then
-  echo "FAIL: delivery.yml must resolve deployPool via platform.tiers[...] at all 3 call sites (found ${LOOKUP_OK}/3)"
+  echo "FAIL: delivery.yml must resolve deployPool via platform.promotion at all 3 call sites (found ${LOOKUP_OK}/3)"
   FAILED=1
 else
-  echo "OK: deployPool resolved via platform.tiers lookup at all 3 call sites"
+  echo "OK: deployPool resolved via platform.promotion at all 3 call sites"
 fi
-ENV_LOOKUP_OK=$(grep -c 'parameters.platform.tiers\[parameters.delivery.deployEnvironments\[[0-2]\].name\].environmentName' \
+ENV_LOOKUP_OK=$(grep -c 'parameters.platform.tiers\[parameters.platform.promotion\[[0-2]\]\].environmentName' \
   "${ROOT}/templates/dotnet/delivery.yml" || true)
 if [[ "${ENV_LOOKUP_OK}" -ne 3 ]]; then
-  echo "FAIL: delivery.yml must resolve environmentName via platform.tiers[...] at all 3 call sites (found ${ENV_LOOKUP_OK}/3)"
+  echo "FAIL: delivery.yml must resolve environmentName via platform.promotion at all 3 call sites (found ${ENV_LOOKUP_OK}/3)"
   FAILED=1
 else
-  echo "OK: environmentName resolved via platform.tiers lookup at all 3 call sites"
+  echo "OK: environmentName resolved via platform.promotion at all 3 call sites"
+fi
+if ! grep -q 'ne(parameters.platformArea, '\''none'\'')' "${ROOT}/templates/dotnet/ci.yml"; then
+  echo "FAIL: ci.yml must gate delivery on platformArea != none"
+  FAILED=1
+else
+  echo "OK: platformArea none ⇒ CI-only gate present"
 fi
 if grep -qE 'iif\(eq\(parameters\.deployEnvironments' "${ROOT}/templates/dotnet/ci.yml" \
   "${ROOT}/templates/dotnet/delivery.yml"; then
@@ -1207,6 +1212,29 @@ if grep -qE 'iif\(eq\(parameters\.deployEnvironments' "${ROOT}/templates/dotnet/
 else
   echo "OK: no iif pool chain in ci/delivery"
 fi
+# Build once: Container stage exactly once; all Deploy_* consume Container outputs.
+CONTAINER_STAGES=$(grep -cE '^[[:space:]]*- stage: Container$' "${ROOT}/templates/dotnet/delivery.yml" || true)
+if [[ "${CONTAINER_STAGES}" -ne 1 ]]; then
+  echo "FAIL: expected exactly one Container stage in delivery.yml (found ${CONTAINER_STAGES})"
+  FAILED=1
+else
+  echo "OK: Container stage exactly once"
+fi
+if ! grep -q "stageDependencies.Container.DockerBuildPush.outputs\['dockerBuildPush.imageRepository'\]" \
+  "${ROOT}/templates/dotnet/helm-deploy.yml"; then
+  echo "FAIL: Deploy stages must consume Container imageRepository output"
+  FAILED=1
+else
+  echo "OK: Deploy stages use Container imageRepository"
+fi
+if ! grep -q "stageDependencies.Container.DockerBuildPush.outputs\['dockerBuildPush.imageTag'\]" \
+  "${ROOT}/templates/dotnet/helm-deploy.yml"; then
+  echo "FAIL: Deploy stages must consume Container imageTag output"
+  FAILED=1
+else
+  echo "OK: Deploy stages use Container imageTag"
+fi
+
 
 echo "== kubeVersion floor (derived from chart content) =="
 for ch in "${APP_CHART}" "${JOB_CHART}"; do
