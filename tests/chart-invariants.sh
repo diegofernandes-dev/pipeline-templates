@@ -1237,8 +1237,8 @@ assert_contains "$OUT_TERM" 'value: "25"' "default shutdownTimeoutSeconds is 25"
 # Capture yq output fully before awk exits early — under pipefail, yq|awk-exit is SIGPIPE (141).
 READY_PERIOD_LINES="$(yq -r -N 'select(.kind == "Deployment") | .spec.template.spec.containers[0].readinessProbe.periodSeconds // 0' <<<"$OUT_TERM")"
 MIN_READY_LINES="$(yq -r -N 'select(.kind == "Deployment") | .spec.minReadySeconds // 0' <<<"$OUT_TERM")"
-READY_PERIOD="$(printf '%s\n' "${READY_PERIOD_LINES}" | awk 'NF{print; exit}')"
-MIN_READY="$(printf '%s\n' "${MIN_READY_LINES}" | awk 'NF{print; exit}')"
+READY_PERIOD="$(awk 'NF{print; exit}' <<< "${READY_PERIOD_LINES}")"
+MIN_READY="$(awk 'NF{print; exit}' <<< "${MIN_READY_LINES}")"
 if [[ "${MIN_READY:-0}" -ge "${READY_PERIOD:-0}" ]]; then
   echo "OK: minReadySeconds (${MIN_READY}) >= readiness periodSeconds (${READY_PERIOD})"
 else

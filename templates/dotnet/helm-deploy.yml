@@ -395,8 +395,8 @@ stages:
                         # Capture yq fully before awk exits — yq|awk-exit under pipefail is SIGPIPE (141).
                         ROUTE_GW_NAME_LINES="$(yq ea -r 'select(.kind == "HTTPRoute" or .kind == "GRPCRoute") | .spec.parentRefs[0].name // ""' "${PREFLIGHT_RENDER}")"
                         ROUTE_GW_NS_LINES="$(yq ea -r 'select(.kind == "HTTPRoute" or .kind == "GRPCRoute") | .spec.parentRefs[0].namespace // ""' "${PREFLIGHT_RENDER}")"
-                        ROUTE_GW_NAME="$(printf '%s\n' "${ROUTE_GW_NAME_LINES}" | awk 'NF{print; exit}')"
-                        ROUTE_GW_NS="$(printf '%s\n' "${ROUTE_GW_NS_LINES}" | awk 'NF{print; exit}')"
+                        ROUTE_GW_NAME="$(awk 'NF{print; exit}' <<< "${ROUTE_GW_NAME_LINES}")"
+                        ROUTE_GW_NS="$(awk 'NF{print; exit}' <<< "${ROUTE_GW_NS_LINES}")"
                         if [[ -z "${ROUTE_GW_NAME}" ]]; then
                           echo "##vso[task.logissue type=error]Rendered route has empty parentRefs[0].name"
                           exit 1

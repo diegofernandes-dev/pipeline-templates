@@ -128,11 +128,12 @@ print('OK: ${area} schema')
 
       # eval-all (ea) + first non-empty line: on a multi-doc render plain `yq` emits document
       # separators and blank lines for the documents that `select` filters out, so the value
-      # arrives buried in them. Capture yq fully before awk exits — yq|awk-exit under pipefail is SIGPIPE.
+      # arrives buried in them. Capture yq fully, then select without a pipe (avoids SIGPIPE under pipefail).
+      # Do not mask yq failures with `|| true` — parser/runtime errors must fail the suite.
       pick() {
         local lines
-        lines="$(printf '%s' "${rendered}" | yq ea -r "$1" 2>/dev/null || true)"
-        printf '%s\n' "${lines}" | awk 'NF{print; exit}'
+        lines="$(printf '%s' "${rendered}" | yq ea -r "$1")"
+        awk 'NF { print; exit }' <<< "${lines}"
       }
       got_name="$(pick "select(.kind == \"${kind}\") | .spec.parentRefs[0].name // \"\"")"
       got_ns="$(pick "select(.kind == \"${kind}\") | .spec.parentRefs[0].namespace // \"\"")"
@@ -255,6 +256,19 @@ if [[ -n "${LEAK_HITS}" ]]; then
   fi
 else
   echo "OK: no pool/account literals in delivery templates"
+fi
+
+echo "== yq fail-fast (no || true mask on mandatory parse) =="
+# Regression guard: invalid yq must fail closed, not become empty success.
+set +e
+_yq_out="$(printf 'kind: Service\n' | yq ea -r '[[[[invalid' 2>/dev/null)"
+_yq_rc=$?
+set -e
+if [[ ${_yq_rc} -eq 0 ]]; then
+  echo "FAIL: expected yq invalid expression to exit non-zero (got rc=0, out='${_yq_out}')"
+  FAILED=1
+else
+  echo "OK: yq invalid expression fails closed (rc=${_yq_rc})"
 fi
 
 if [[ "${FAILED}" -ne 0 ]]; then
