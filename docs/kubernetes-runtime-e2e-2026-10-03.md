@@ -442,6 +442,33 @@ Performed after evidence capture:
 
 ---
 
+## Addendum — target identity fail-closed + capability preflight
+
+```text
+Date: post lab teardown (EKS sample-template-pg destroyed)
+Product: scripts/preflight-deploy-target.sh + helm-deploy/delivery wiring
+Chart semantics: unchanged
+
+Target identity:
+  missing expectedKubeContext → FAIL (DeployContract + deploy)
+  missing awsAccountId → FAIL
+  mismatch → FAIL
+  exact match → PASS
+  Regression: null warn-and-continue removed
+
+Capability preflight (render-driven):
+  HPA rendered + metrics.k8s.io absent → FAIL before helm upgrade
+  PVC rendered + SC/CSI missing → FAIL before helm upgrade
+  No HPA/PVC in render → checks skipped
+  AWS EBS migration: kubernetes.io/aws-ebs → require CSIDriver ebs.csi.aws.com
+
+Harness: tests/deploy-target-preflight.sh (fake kubectl) GREEN
+ADO canary: EXTERNAL BLOCKER — proving-ground EKS no longer present
+Prior ADO evidence (builds 310/311) remains valid for mismatch fail-closed + recovery
+```
+
+---
+
 ## Release
 
 ```text

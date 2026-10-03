@@ -950,8 +950,8 @@ if ! grep -q 'Accepted' "${ROOT}/templates/dotnet/helm-deploy.yml"; then
 else
   echo "OK: Route Accepted check present"
 fi
-if ! grep -q 'metrics.k8s.io' "${ROOT}/templates/dotnet/helm-deploy.yml"; then
-  echo "FAIL: metrics.k8s.io preflight missing"
+if ! grep -q 'metrics.k8s.io' "${ROOT}/scripts/preflight-deploy-target.sh"; then
+  echo "FAIL: metrics.k8s.io preflight missing from preflight-deploy-target.sh"
   FAILED=1
 else
   echo "OK: metrics.k8s.io preflight present"
@@ -990,6 +990,39 @@ if ! grep -q "EXPECTED_KUBE_CONTEXT=\"\$(yq -r '.cluster.expectedKubeContext" "$
   FAILED=1
 else
   echo "OK: expectedKubeContext read from platform facts"
+fi
+# Target identity must be fail-closed (null → refuse), never warn-and-continue.
+if grep -qE 'EXTERNAL BLOCKER: expectedKubeContext.*null|cluster identity is NOT asserted|account identity is NOT asserted' \
+     "${ROOT}/templates/dotnet/helm-deploy.yml" "${ROOT}/templates/dotnet/delivery.yml"; then
+  echo "FAIL: null target identity must fail closed — found warn-and-continue EXTERNAL BLOCKER language"
+  FAILED=1
+else
+  echo "OK: no warn-and-continue null identity in deploy path"
+fi
+if ! grep -q 'preflight-deploy-target.sh" identity' "${ROOT}/templates/dotnet/helm-deploy.yml"; then
+  echo "FAIL: helm-deploy.yml must call preflight-deploy-target.sh identity"
+  FAILED=1
+else
+  echo "OK: helm-deploy wires identity preflight script"
+fi
+if ! grep -q 'preflight-deploy-target.sh" identity' "${ROOT}/templates/dotnet/delivery.yml"; then
+  echo "FAIL: delivery.yml DeployContract must call preflight-deploy-target.sh identity"
+  FAILED=1
+else
+  echo "OK: DeployContract wires identity preflight script"
+fi
+if ! grep -q 'preflight-deploy-target.sh" capabilities' "${ROOT}/templates/dotnet/helm-deploy.yml"; then
+  echo "FAIL: helm-deploy.yml must call preflight-deploy-target.sh capabilities before helm upgrade"
+  FAILED=1
+else
+  echo "OK: helm-deploy wires capability preflight script"
+fi
+if ! grep -qE 'PersistentVolumeClaim|storageClass|CSIDriver|ebs.csi.aws.com' \
+     "${ROOT}/scripts/preflight-deploy-target.sh"; then
+  echo "FAIL: preflight-deploy-target.sh must validate PVC StorageClass/CSI capabilities"
+  FAILED=1
+else
+  echo "OK: storage capability preflight present in script"
 fi
 
 # Chart invariants must run BEFORE the image push, not only at deploy time.

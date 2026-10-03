@@ -108,12 +108,15 @@ stages:
                   exit 1
                 fi
                 ctx="$(printf '%s' "${PLATFORM_JSON}" | yq -r ".tiers.\"${env}\".expectedKubeContext // \"null\"")"
-                if [[ "${ctx}" == "null" || -z "${ctx}" ]]; then
-                  echo "##[warning]EXTERNAL BLOCKER: expectedKubeContext for '${PLATFORM_AREA}/${env}' not mapped — deploy will skip exact context assert until filled"
-                fi
                 acct="$(printf '%s' "${PLATFORM_JSON}" | yq -r ".tiers.\"${env}\".awsAccountId // \"null\"")"
-                if [[ "${acct}" == "null" || -z "${acct}" ]]; then
-                  echo "##[warning]EXTERNAL BLOCKER: awsAccountId for '${PLATFORM_AREA}/${env}' not mapped — deploy will skip sts account assert until filled"
+                # Deployable tiers require complete identity mapping (fail-closed).
+                # Actual cluster/STS are asserted at deploy time; here we refuse null profile fields.
+                if ! bash "${TEMPLATES_DIR}/scripts/preflight-deploy-target.sh" identity \
+                     --area "${PLATFORM_AREA}" --tier "${env}" \
+                     --expected-context "${ctx}" --actual-context "${ctx}" \
+                     --expected-account "${acct}" --actual-account "${acct}"; then
+                  echo "##vso[task.logissue type=error]Target identity incomplete for '${PLATFORM_AREA}/${env}' — fill expectedKubeContext and awsAccountId before deploying"
+                  exit 1
                 fi
               done
               echo "Tiers OK (${PLATFORM_AREA}): ${ENVS[*]}"

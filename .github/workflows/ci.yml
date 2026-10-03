@@ -117,6 +117,9 @@ jobs:
       - name: runtime-adapter-dotnet
         run: ./tests/runtime-adapter-dotnet.sh
 
+      - name: deploy-target-preflight
+        run: ./tests/deploy-target-preflight.sh
+
       - name: chart-golden
         run: ./tests/chart-golden.sh check
 

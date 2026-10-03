@@ -202,6 +202,12 @@ stages:
                       PLATFORM_VALUES="$(mktemp -t asa-platform.XXXXXX.yaml)"
                       PLATFORM_FACTS="$(mktemp -t asa-platform-facts.XXXXXX.yaml)"
                       RUNTIME_VALUES="$(mktemp -t asa-runtime.XXXXXX.yaml)"
+                      PREFLIGHT_RENDER=""
+                      cleanup_deploy_temps() {
+                        rm -f "${PLATFORM_VALUES}" "${PLATFORM_FACTS}" "${RUNTIME_VALUES}" \
+                          ${PREFLIGHT_RENDER:+"${PREFLIGHT_RENDER}" "${PREFLIGHT_RENDER}.err"}
+                      }
+                      trap cleanup_deploy_temps EXIT
                       if ! bash "${TEMPLATES_DIR}/scripts/resolve-platform-values.sh" \
                            "${PLATFORM_AREA}" "${PLATFORM_TIER}" "${PLATFORM_VALUES}"; then
                         echo "##vso[task.logissue type=error]Failed to resolve platform values for '${PLATFORM_AREA}/${PLATFORM_TIER}'"
@@ -251,18 +257,6 @@ stages:
                       REGISTRY_ACCOUNT="$(yq -r '.registry.awsAccountId // ""' "${PLATFORM_FACTS}")"
                       REGISTRY_REGION="$(yq -r '.registry.awsRegion // ""' "${PLATFORM_FACTS}")"
 
-                      CTX="$(kubectl config current-context 2>/dev/null || true)"
-                      echo "kubectl context: ${CTX}"
-                      if [[ -n "${EXPECTED_KUBE_CONTEXT}" && "${EXPECTED_KUBE_CONTEXT}" != "null" ]]; then
-                        if [[ "${CTX}" != "${EXPECTED_KUBE_CONTEXT}" ]]; then
-                          echo "##vso[task.logissue type=error]kubectl context must equal expectedKubeContext '${EXPECTED_KUBE_CONTEXT}' for ${PLATFORM_AREA}/${PLATFORM_TIER} (got '${CTX}') — exact match, no substring"
-                          exit 1
-                        fi
-                        echo "kubectl context matches expectedKubeContext for ${PLATFORM_AREA}/${PLATFORM_TIER}"
-                      else
-                        echo "##[warning]EXTERNAL BLOCKER: expectedKubeContext for ${PLATFORM_AREA}/${PLATFORM_TIER} is null — cluster identity is NOT asserted for this deploy"
-                      fi
-
                       if [[ ! -f "${CHART_DIR}/Chart.yaml" ]]; then
                         echo "##vso[task.logissue type=error]Chart not found: ${CHART_DIR}"
                         exit 1
@@ -272,6 +266,22 @@ stages:
                         echo "##vso[task.logissue type=error]imageRepository/imageTag missing from Container stage"
                         exit 1
                       fi
+
+                      echo "##[group]target identity (fail-closed)"
+                      CTX="$(kubectl config current-context 2>/dev/null || true)"
+                      echo "kubectl context: ${CTX}"
+                      CALLER_ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"
+                      aws sts get-caller-identity
+                      if ! bash "${TEMPLATES_DIR}/scripts/preflight-deploy-target.sh" identity \
+                           --area "${PLATFORM_AREA}" --tier "${PLATFORM_TIER}" \
+                           --expected-context "${EXPECTED_KUBE_CONTEXT}" \
+                           --actual-context "${CTX}" \
+                           --expected-account "${CLUSTER_AWS_ACCOUNT}" \
+                           --actual-account "${CALLER_ACCOUNT}"; then
+                        echo "##vso[task.logissue type=error]Target identity validation failed for ${PLATFORM_AREA}/${PLATFORM_TIER} — deployment refused"
+                        exit 1
+                      fi
+                      echo "##[endgroup]"
 
                       echo "##[group]validate public manifesto schema"
                       python3 "${TEMPLATES_DIR}/scripts/validate-manifest.py" "${PUBLIC_SCHEMA}" "${MANIFEST}"
@@ -306,20 +316,6 @@ stages:
                         echo "##[warning]podSecurity.enforce for ${PLATFORM_AREA}/${PLATFORM_TIER} is null — namespace is NOT Pod-Security labelled"
                       fi
                       echo "##[endgroup]"
-
-                      echo "##[group]aws caller identity"
-                      CALLER_ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"
-                      aws sts get-caller-identity
-                      echo "##[endgroup]"
-                      if [[ -n "${CLUSTER_AWS_ACCOUNT}" && "${CLUSTER_AWS_ACCOUNT}" != "null" ]]; then
-                        if [[ "${CALLER_ACCOUNT}" != "${CLUSTER_AWS_ACCOUNT}" ]]; then
-                          echo "##vso[task.logissue type=error]sts account ${CALLER_ACCOUNT} != cluster awsAccountId ${CLUSTER_AWS_ACCOUNT} for ${PLATFORM_AREA}/${PLATFORM_TIER} — refusing deploy to the wrong account"
-                          exit 1
-                        fi
-                        echo "sts account matches cluster awsAccountId ${CLUSTER_AWS_ACCOUNT}"
-                      else
-                        echo "##[warning]EXTERNAL BLOCKER: awsAccountId for ${PLATFORM_AREA}/${PLATFORM_TIER} is null — account identity is NOT asserted for this deploy"
-                      fi
 
                       WT=""
 
@@ -382,10 +378,11 @@ stages:
                       if grep -qx 'kind: ExternalSecret' "${PREFLIGHT_RENDER}"; then
                         require_api external-secrets.io/v1 externalsecrets "ExternalSecret"
                       fi
-                      if grep -qx 'kind: HorizontalPodAutoscaler' "${PREFLIGHT_RENDER}"; then
-                        kubectl get --raw /apis/metrics.k8s.io/v1beta1 >/dev/null 2>&1 \
-                          || { echo "##vso[task.logissue type=error]metrics.k8s.io unavailable but HPA will be rendered"; exit 1; }
-                        echo "metrics.k8s.io available (HPA present in render)"
+                      # HPA → metrics.k8s.io; PVC → StorageClass + CSI (render-driven).
+                      if ! bash "${TEMPLATES_DIR}/scripts/preflight-deploy-target.sh" capabilities \
+                           --render "${PREFLIGHT_RENDER}"; then
+                        echo "##vso[task.logissue type=error]Cluster capability preflight failed — deployment refused before helm upgrade"
+                        exit 1
                       fi
 
                       # Gateway presence: read parentRefs from the rendered route (what we will apply),
@@ -420,6 +417,7 @@ stages:
                         WT="$(yq -r '.workload.type // ""' "${MANIFEST}")"
                       fi
                       rm -f "${PREFLIGHT_RENDER}" "${PREFLIGHT_RENDER}.err"
+                      PREFLIGHT_RENDER=""
                       echo "##[endgroup]"
 
                       helm_has_deployed_revision() {
