@@ -97,35 +97,52 @@ metrics_api_available() {
   [[ -n "${raw}" ]]
 }
 
-# Resolve StorageClass name for a PVC: explicit field or cluster default.
+# Resolve StorageClass name for a PVC: explicit field or exactly one cluster default.
 resolve_storage_class_for_pvc() {
   local sc_name="$1"
   if [[ -n "${sc_name}" && "${sc_name}" != "null" ]]; then
     printf '%s' "${sc_name}"
     return 0
   fi
-  local defaults
-  if ! defaults="$(kubectl get storageclass -o json 2>/dev/null)"; then
+  local sc_list names count joined
+  if ! sc_list="$(kubectl get storageclass -o json 2>/dev/null)"; then
     die "preflight cannot verify required capability due to RBAC or API error (get storageclasses)"
   fi
-  local def
-  def="$(printf '%s' "${defaults}" | yq -r '[.items[] | select(.metadata.annotations["storageclass.kubernetes.io/is-default-class"] == "true") | .metadata.name] | .[0] // ""')"
-  if [[ -z "${def}" ]]; then
-    die "Persistence requested but no storageClassName was specified and cluster has no default StorageClass"
+  # Sorted for deterministic error messages / tests.
+  names="$(printf '%s' "${sc_list}" | yq -r '[.items[] | select(.metadata.annotations["storageclass.kubernetes.io/is-default-class"] == "true") | .metadata.name] | sort | .[]')"
+  count=0
+  if [[ -n "${names}" ]]; then
+    count="$(printf '%s\n' "${names}" | grep -c .)"
   fi
-  printf '%s' "${def}"
+  case "${count}" in
+    0)
+      die "Persistence requested but no storageClassName was specified and cluster has no default StorageClass"
+      ;;
+    1)
+      printf '%s' "${names}"
+      ;;
+    *)
+      joined="$(printf '%s\n' "${names}" | paste -sd, -)"
+      die "Persistence requested without storageClassName but cluster has multiple default StorageClasses: ${joined}
+deployment refused"
+      ;;
+  esac
 }
 
 require_csidriver() {
   local driver="$1"
   local out
-  if ! out="$(kubectl get csidriver "${driver}" -o jsonpath='{.metadata.name}' 2>/dev/null)"; then
-    die "preflight cannot verify required capability due to RBAC or API error (get csidriver ${driver})"
+  if out="$(kubectl get csidriver "${driver}" -o jsonpath='{.metadata.name}' 2>/dev/null)" \
+     && [[ "${out}" == "${driver}" ]]; then
+    echo "CSIDriver ${driver} present"
+    return 0
   fi
-  if [[ "${out}" != "${driver}" ]]; then
-    die "CSIDriver '${driver}' is not registered (required by StorageClass provisioner capability)"
+  # Distinguish NotFound (can list drivers) from RBAC/API failure (cannot verify).
+  if kubectl get csidriver >/dev/null 2>&1; then
+    die "CSIDriver '${driver}' is not registered (required by StorageClass provisioner capability)
+deployment refused"
   fi
-  echo "CSIDriver ${driver} present"
+  die "preflight cannot verify required capability due to RBAC or API error (get csidriver ${driver})"
 }
 
 # AWS-only: in-tree kubernetes.io/aws-ebs migrates to ebs.csi.aws.com.

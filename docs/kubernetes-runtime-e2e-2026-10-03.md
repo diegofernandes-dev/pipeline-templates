@@ -472,7 +472,9 @@ Prior ADO evidence (builds 310/311) remains valid for mismatch fail-closed + rec
 ## Release
 
 ```text
-release required: NO
-new tag created: NO
-v5.3.1 unchanged
+release required: YES
+candidate: v5.3.2
+tag created: NO
 ```
+
+Includes: target identity fail-closed, render-driven capability preflight, default StorageClass ambiguity fail-closed, CSI NotFound vs RBAC diagnostics. Chart versions unchanged (template/script release only).
