@@ -25,11 +25,13 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
+  qualify:
     runs-on: ubuntu-latest
     permissions:
       actions: read
-      contents: write
+      contents: read
+    outputs:
+      candidate_sha: ${{ steps.qualify.outputs.candidate_sha }}
     steps:
       - name: Checkout full history
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -37,7 +39,8 @@ jobs:
           fetch-depth: 0
           ref: main
 
-      - name: Qualify and optionally create tag
+      - name: Qualify candidate
+        id: qualify
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ inputs.version }}
@@ -117,9 +120,44 @@ jobs:
           echo "asa-scheduled-job=${JOB_CHART:-unknown}"
           echo "dryRun=${DRY_RUN}"
 
+          echo "candidate_sha=${SHA}" >> "${GITHUB_OUTPUT}"
+
           if [[ "${DRY_RUN}" == "true" ]]; then
-            echo "DRY RUN: would create annotated tag ${VERSION} → ${SHA} (no tag created)"
-            exit 0
+            echo "DRY RUN: qualification passed for ${VERSION} → ${SHA}; create-tag job has no write token and will be skipped"
+          else
+            echo "QUALIFIED: create-tag job may create ${VERSION} → ${SHA}"
+          fi
+
+  create-tag:
+    needs: qualify
+    if: ${{ inputs.dryRun == false }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Create immutable annotated tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          SHA: ${{ needs.qualify.outputs.candidate_sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -Eeuo pipefail
+
+          echo "==== tag creation ===="
+          echo "version=${VERSION}"
+          echo "candidate=${SHA}"
+
+          # Re-check at the write boundary to close the qualification→creation race.
+          if gh api "repos/${REPO}/git/ref/tags/${VERSION}" >/dev/null 2>&1; then
+            echo "::error::tag ${VERSION} already exists — immutable; refuse create/update"
+            exit 1
           fi
 
           git config user.name "github-actions[bot]"
