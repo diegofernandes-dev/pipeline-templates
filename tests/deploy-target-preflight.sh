@@ -18,7 +18,7 @@ mkdir -p "${WORKDIR}/bin" "${WORKDIR}/renders"
 
 # Fake helm — must never be invoked by the preflight script.
 cat > "${WORKDIR}/bin/helm" <<'EOF'
-#!/bin/sh
+#!/usr/bin/env bash
 echo "UNEXPECTED_HELM_CALL $*" >&2
 touch "${HELM_MARKER:-/tmp/asa-helm-touched}"
 exit 99
@@ -28,8 +28,9 @@ export HELM_MARKER="${WORKDIR}/helm-touched"
 
 # Configurable fake kubectl via env files written per case.
 cat > "${WORKDIR}/bin/kubectl" <<'EOF'
-#!/bin/sh
-set -eu
+#!/usr/bin/env bash
+# Must be bash: Ubuntu /bin/sh is dash and rejects [[ ]].
+set -euo pipefail
 STATE="${KUBECTL_STATE_DIR:?}"
 # Log every invocation for assertions.
 printf '%s\n' "$*" >> "${STATE}/calls.log"
@@ -66,11 +67,10 @@ case "${cmd}" in
         fi
         # kubectl get storageclass NAME -o json
         if [[ -f "${STATE}/sc/${name}.json" ]]; then
-          # skip -o json args
           cat "${STATE}/sc/${name}.json"
           exit 0
         fi
-        if [[ -f "${STATE}/sc-list-ok" ]] && [[ ! -f "${STATE}/sc/${name}.json" ]]; then
+        if [[ -f "${STATE}/sc-list-ok" && ! -f "${STATE}/sc/${name}.json" ]]; then
           echo "Error from server (NotFound): storageclasses.storage.k8s.io \"${name}\" not found" >&2
           exit 1
         fi
@@ -80,7 +80,6 @@ case "${cmd}" in
       csidriver|csidrivers)
         name="${2:-}"
         if [[ -f "${STATE}/csi/${name}" ]]; then
-          # jsonpath echo name
           if printf '%s' "$*" | grep -q jsonpath; then
             printf '%s' "${name}"
           else
