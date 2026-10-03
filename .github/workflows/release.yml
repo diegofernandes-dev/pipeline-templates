@@ -1,0 +1,130 @@
+# Official path to create immutable annotated release tags.
+# Manual `git tag` / `git push` is not the supported process (see README).
+# GitHub tag rulesets (EXTERNAL GOVERNANCE) are still required to technically block bypass.
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Tag to create (vMAJOR.MINOR.PATCH)'
+        required: true
+        type: string
+      sha:
+        description: 'Candidate commit SHA (must be on main with green platform-ci)'
+        required: true
+        type: string
+      dryRun:
+        description: 'Validate only; do not create or push a tag'
+        required: true
+        type: boolean
+        default: true
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Qualify and optionally create tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          CANDIDATE_IN: ${{ inputs.sha }}
+          DRY_RUN: ${{ inputs.dryRun }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -Eeuo pipefail
+
+          echo "==== inputs ===="
+          echo "version=${VERSION}"
+          echo "sha_input=${CANDIDATE_IN}"
+          echo "dryRun=${DRY_RUN}"
+
+          if [[ ! "${VERSION}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::version must match ^v[0-9]+\\.[0-9]+\\.[0-9]+$ (got '${VERSION}')"
+            exit 1
+          fi
+
+          SHA="$(gh api "repos/${REPO}/commits/${CANDIDATE_IN}" --jq .sha)"
+          echo "candidate=${SHA}"
+
+          git fetch -q origin main
+          MAIN_SHA="$(git rev-parse origin/main)"
+          echo "main_sha=${MAIN_SHA}"
+          if ! git merge-base --is-ancestor "${SHA}" origin/main; then
+            echo "::error::candidate ${SHA} is not an ancestor of origin/main (${MAIN_SHA})"
+            exit 1
+          fi
+
+          # Exact platform-ci success on this SHA (not cancelled; not an arbitrary list pick).
+          RUN_JSON="$(gh api "repos/${REPO}/actions/runs?head_sha=${SHA}&status=completed&per_page=50")"
+          RUN_ID="$(printf '%s' "${RUN_JSON}" | jq -r \
+            '[.workflow_runs[] | select(.name == "platform-ci" and .conclusion == "success") | .id] | .[0] // empty')"
+          if [[ -z "${RUN_ID}" ]]; then
+            echo "::error::No completed platform-ci with conclusion=success for head_sha=${SHA}"
+            printf '%s' "${RUN_JSON}" | jq -r \
+              '.workflow_runs[] | select(.name=="platform-ci") | "run \(.id) status=\(.status) conclusion=\(.conclusion)"' \
+              || true
+            exit 1
+          fi
+          echo "platform-ci_run=${RUN_ID}"
+          echo "platform-ci_url=https://github.com/${REPO}/actions/runs/${RUN_ID}"
+
+          JOBS_JSON="$(gh api "repos/${REPO}/actions/runs/${RUN_ID}/jobs?per_page=50")"
+          job_ok() {
+            local name="$1"
+            local c
+            c="$(printf '%s' "${JOBS_JSON}" | jq -r \
+              --arg n "${name}" \
+              '[.jobs[] | select(.name == $n) | .conclusion] | .[0] // "missing"')"
+            echo "${name}=${c}"
+            [[ "${c}" == "success" ]]
+          }
+          job_ok contracts
+          job_ok apply-dryrun
+
+          # Tag must not already exist (even if same SHA). Immutable — no update/overwrite.
+          if gh api "repos/${REPO}/git/ref/tags/${VERSION}" >/dev/null 2>&1; then
+            echo "::error::tag ${VERSION} already exists — immutable; refuse create/update"
+            exit 1
+          fi
+
+          APP_CHART_YAML="$(git show "${SHA}:charts/asa-application/Chart.yaml")"
+          JOB_CHART_YAML="$(git show "${SHA}:charts/asa-scheduled-job/Chart.yaml")"
+          APP_CHART="$(awk '/^version:/{print $2; exit}' <<< "${APP_CHART_YAML}")"
+          JOB_CHART="$(awk '/^version:/{print $2; exit}' <<< "${JOB_CHART_YAML}")"
+
+          echo "==== qualification summary ===="
+          echo "version=${VERSION}"
+          echo "candidate=${SHA}"
+          echo "main_sha=${MAIN_SHA}"
+          echo "platform-ci_run=${RUN_ID}"
+          echo "contracts=success"
+          echo "apply-dryrun=success"
+          echo "asa-application=${APP_CHART:-unknown}"
+          echo "asa-scheduled-job=${JOB_CHART:-unknown}"
+          echo "dryRun=${DRY_RUN}"
+
+          if [[ "${DRY_RUN}" == "true" ]]; then
+            echo "DRY RUN: would create annotated tag ${VERSION} → ${SHA} (no tag created)"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          MSG="$(printf 'pipeline-templates %s\n\nQualified by platform-ci on %s.\n' "${VERSION}" "${SHA}")"
+          git tag -a "${VERSION}" "${SHA}" -m "${MSG}"
+          git push origin "refs/tags/${VERSION}"
+          echo "CREATED annotated tag ${VERSION} → ${SHA}"

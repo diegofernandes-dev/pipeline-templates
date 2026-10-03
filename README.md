@@ -222,7 +222,21 @@ helm lint charts/asa-scheduled-job \
 | `v3.2.0` | kubeconform nos manifests renderizados; `expect_fail` com asserção de mensagem; `validateAutoscaling` (min≤max); `remoteRef.key` required; `image.repository` minLength; `/tmp` `emptyDir.sizeLimit`; labels padrão (`version`/`managed-by`/`helm.sh/chart`); gate de bump de versão no CI |
 | `v4.0.0` | Desacoplamento env→topology via `resolve-platform-values.sh` + `platform.*` no chart; asa-application 4.x |
 | `v5.0.0` | Cluster axis + runtime-agnostic charts: `platform/areas` + `platform/runtimes`; env `PORT`/`APP_PROTOCOL`/`SHUTDOWN_TIMEOUT_SECONDS`; asa-application 5.2.0 / asa-scheduled-job 4.2.0 |
-| `v5.3.1` | **Recomendada.** Corretiva após `platform-ci` verde: SIGPIPE/exit 141 no harness, docs ExternalDNS, higiene de release. Runtime DNS inalterado vs lab E2E.
-| `v5.3.0` | **RETIRADA — não usar.** Tag criada em `fa1aa5d` antes dos gates completos do repositório (`contracts` falhava com exit 141 / SIGPIPE no harness). O comportamento DNS (`dns.publishLegacyHostname`) e a evidência E2E em [`docs/lab-e2e-validation-2026-10-02.md`](docs/lab-e2e-validation-2026-10-02.md) permanecem válidos; o problema é **qualificação de release**, não o runtime. Tag imutável — não mover. Próxima corretiva candidata: `v5.3.1` **somente** após `platform-ci` verde no SHA exato. |
+| `v5.3.1` | **Recomendada.** Corretiva após `platform-ci` verde: SIGPIPE/exit 141 no harness, docs ExternalDNS, higiene de release. Runtime DNS inalterado vs lab E2E. |
+| `v5.3.0` | **RETIRADA — não usar.** Criada antes da conclusão dos gates do repositório (`contracts` falhava com exit 141 / SIGPIPE no harness). O problema foi de **qualificação de release / test harness**, não do runtime DNS (`dns.publishLegacyHostname` e E2E em [`docs/lab-e2e-validation-2026-10-02.md`](docs/lab-e2e-validation-2026-10-02.md) permanecem válidos). Substituída por `v5.3.1`. Tag imutável — não mover. |
 
-**Release (fluxo alvo):** candidate SHA → `platform-ci` concluído com `conclusion=success` em **todos** os jobs obrigatórios (`contracts`, `apply-dryrun`) no **mesmo** SHA (execução cancelada por concurrency **não** qualifica) → evidência de integração já registada ou revalidada se houver mudança runtime → tag imutável → consumers passam a apontar para essa tag. Nunca: merge → tag → descobrir depois se o CI passou.
+**Release (caminho oficial):** use o workflow GitHub Actions [`release`](.github/workflows/release.yml) (`workflow_dispatch` com `version`, `sha`, `dryRun`).
+
+```text
+candidate SHA
+      ↓
+platform-ci green (head_sha == candidate)
+      ↓
+run release workflow(version, sha)  # dryRun=true first
+      ↓
+workflow validates version + ancestry on main + required jobs
+      ↓
+dryRun=false → annotated immutable tag (never moved/overwritten)
+```
+
+Requisitos do workflow: `version` = `vMAJOR.MINOR.PATCH`; SHA resolvido via API; candidato ancestral de `main`; `platform-ci` com `status=completed` e `conclusion=success` no SHA exato; jobs `contracts` e `apply-dryrun` com `conclusion=success`; tag inexistente. Execução cancelada **não** qualifica. Não criar tags com `git tag` / `git push` manual — esse não é o processo suportado. (Ruleset/proteção de tag no GitHub ainda é necessária para bloquear bypass técnico por quem tem write.)
