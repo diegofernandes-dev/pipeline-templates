@@ -29,8 +29,8 @@ resources:
       type: github
       name: diegofernandes-dev/pipeline-templates
       endpoint: github-diegofernandes-dev
-      # v6.0.0 candidate — pin exact commit SHA until the tag exists (v5.3.2 uses old API)
-      ref: refs/heads/main
+      # v6.0.0 candidate — pin exact commit SHA until refs/tags/v6.0.0 exists (≠ v5.3.2 API)
+      ref: bbcf29f5bd427833cbbc4e819e0202d0c13aed38
 
 extends:
   template: templates/dotnet/ci.yml@templates
@@ -287,7 +287,8 @@ helm lint charts/asa-scheduled-job \
 | `v5.3.1` | Corretiva após `platform-ci` verde: SIGPIPE/exit 141 no harness, docs ExternalDNS, higiene de release. Runtime DNS inalterado vs lab E2E. |
 | `v5.3.0` | **RETIRADA — não usar.** Criada antes da conclusão dos gates do repositório (`contracts` falhava com exit 141 / SIGPIPE no harness). O problema foi de **qualificação de release / test harness**, não do runtime DNS (`dns.publishLegacyHostname` e E2E em [`docs/lab-e2e-validation-2026-10-02.md`](docs/lab-e2e-validation-2026-10-02.md) permanecem válidos). Substituída por `v5.3.1`. Tag imutável — não mover. |
 
-**Pending major (não pinada até a tag existir):** candidata `v6.0.0` — platform-owned `promotion`, remoção de `deployEnvironments` / Variable Groups / `ECR_PULL_SECRET` do caminho de deploy. Charts inalterados. Ver [`docs/adr-platform-owned-promotion.md`](docs/adr-platform-owned-promotion.md).
+**Pending major (não pinada até a tag existir):** candidata `v6.0.0` — platform-owned `promotion`, remoção de `deployEnvironments` / Variable Groups / `ECR_PULL_SECRET` do caminho de deploy. Charts inalterados. Candidate SHA (ADO compile PASS): `bbcf29f5bd427833cbbc4e819e0202d0c13aed38`. Ver [`docs/adr-platform-owned-promotion.md`](docs/adr-platform-owned-promotion.md) e [`docs/ado-compile-v6-candidate.md`](docs/ado-compile-v6-candidate.md).
+
 
 
 **Release (caminho oficial):** use o workflow GitHub Actions [`release`](.github/workflows/release.yml) (`workflow_dispatch` com `version`, `sha`, `dryRun`).

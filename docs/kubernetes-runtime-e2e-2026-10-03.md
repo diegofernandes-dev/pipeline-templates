@@ -488,7 +488,7 @@ Includes: target identity fail-closed, render-driven capability preflight, defau
 delivery API changed: YES (platform-owned promotion; v6.0.0 candidate)
 delivery policy changed: YES (scheduledJobSmoke.enabled; default false)
 charts/runtime unchanged: YES
-ADO compile: see PR #12 evidence
+ADO compile: PASS — docs/ado-compile-v6-candidate.md (templates ref bbcf29f5bd427833cbbc4e819e0202d0c13aed38)
 runtime matrix not rerun: YES
 ```
 
