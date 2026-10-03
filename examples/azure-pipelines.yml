@@ -7,7 +7,7 @@ resources:
       type: github
       name: diegofernandes-dev/pipeline-templates
       endpoint: github-diegofernandes-dev
-      ref: refs/tags/v5.3.1   # current recommended; v5.3.0 is RETIRADA
+      ref: refs/tags/v5.3.2   # current recommended; v5.3.0 is RETIRADA
 
 extends:
   template: templates/dotnet/ci.yml@templates

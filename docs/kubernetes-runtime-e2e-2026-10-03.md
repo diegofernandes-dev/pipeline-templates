@@ -474,7 +474,8 @@ Prior ADO evidence (builds 310/311) remains valid for mismatch fail-closed + rec
 ```text
 release required: YES
 candidate: v5.3.2
-tag created: NO
+tag created: YES
+tag target: a801d363974391d53ba2345608ae87995b6b11e0
 ```
 
-Includes: target identity fail-closed, render-driven capability preflight, default StorageClass ambiguity fail-closed, CSI NotFound vs RBAC diagnostics. Chart versions unchanged (template/script release only).
+Includes: target identity fail-closed, render-driven capability preflight, default StorageClass ambiguity fail-closed, CSI NotFound vs RBAC diagnostics. Chart versions unchanged (template/script release only). Tag is immutable and points at the qualified code SHA (not this docs commit).
