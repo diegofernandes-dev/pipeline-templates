@@ -4,20 +4,23 @@ Focused runtime proof of the platform Kubernetes core on EKS proving-ground `sam
 
 | Field | Value |
 |-------|-------|
-| tested repository SHA | `4a9deca9653391797ef796711974c49922f5d910` |
+| tested repository SHA (initial) | `4a9deca9653391797ef796711974c49922f5d910` |
+| tested repository SHA (retest) | `0a3c77a94780f30d43c4c2fdab1a28be26e4c4a6` (docs-only delta since `4a9deca`; no chart/template/script changes) |
 | asa-application | `5.3.1` |
 | asa-scheduled-job | `4.3.0` |
 | cluster | `sample-template-pg` (us-east-1, account `448003890252`) |
 | Kubernetes | server `v1.36.3-eks-cb19647` / nodes `v1.36.4-eks-3b4a6ca` |
 | date (UTC) | `2026-10-03` |
-| platform-ci | contracts **PASS** + apply-dryrun **PASS** on SHA ([run 37091256700](https://github.com/diegofernandes-dev/pipeline-templates/actions/runs/37091256700)) |
+| platform-ci | contracts **PASS** + apply-dryrun **PASS** on retest SHA ([run 37094118354](https://github.com/diegofernandes-dev/pipeline-templates/actions/runs/37094118354)) |
 | Product changes | **NONE** |
 
-Namespaces used: `asa-runtime-e2e`, `asa-psa-e2e`. Temporary NGINX Gateway Fabric release `ngf-e2e` in `asa-infra-nginx-gateway` (installed only for gRPC; removed at teardown).
+Namespaces used: `asa-runtime-e2e`, `asa-psa-e2e` (initial); `asa-hpa-pvc-e2e` (HPA/PVC retest). Temporary NGINX Gateway Fabric release `ngf-e2e` in `asa-infra-nginx-gateway` (gRPC only; removed). ADO canary pipeline `helm-rec-ado-e2e` (id 20) on `pt-v3-scenarios` branch `e2e/helm-recovery-ado`.
 
 ---
 
 ## Environment
+
+### Initial (morning)
 
 ```text
 Repository SHA: 4a9deca9653391797ef796711974c49922f5d910
@@ -33,61 +36,144 @@ CSI: efs.csi.aws.com present; aws-ebs-csi-driver ABSENT (EKS addon missing)
 Gateway implementation: NGINX Gateway Fabric 1.6.2 (temporary install for this round) + Gateway API CRDs v1.1.0
 ```
 
+### Remediation (afternoon retest) — infrastructure only
+
+```text
+metrics-server:
+  mechanism: EKS managed addon
+  version: v0.9.0-eksbuild.11
+  namespace: kube-system
+  source: aws eks create-addon (compatible version from describe-addon-versions for k8s 1.36)
+  insecure TLS flags: NONE
+
+aws-ebs-csi-driver:
+  mechanism: EKS managed addon
+  version: v1.66.0-eksbuild.1
+  identity: IRSA
+  IAM role: arn:aws:iam::448003890252:role/AmazonEKS_EBS_CSI_DriverRole_sample-template-pg
+  IAM policy: arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy
+  SA annotation: kube-system/ebs-csi-controller-sa → role above
+
+StorageClass: gp2 marked default (annotation storageclass.kubernetes.io/is-default-class=true)
+CSIDriver: ebs.csi.aws.com + efs.csi.aws.com
+Metrics API: /apis/metrics.k8s.io/v1beta1 OK; kubectl top nodes/pods OK
+```
+
+Addons **left installed** on proving-ground (legitimate platform prerequisites).
+
 ---
 
 ## Final matrix
 
 ```text
-HPA             ENVIRONMENT BLOCKER
-PVC             ENVIRONMENT BLOCKER
-CronJob         GREEN
-gRPC            GREEN
-PDB             GREEN
-TopologySpread  GREEN
-PSA restricted  GREEN
-Helm recovery   GREEN
+HPA                     GREEN
+PVC                     GREEN
+CronJob                 GREEN
+gRPC                    GREEN
+PDB                     GREEN
+TopologySpread          GREEN
+PSA restricted          GREEN
+Helm recovery algorithm GREEN
+Helm recovery pipeline  ENVIRONMENT BLOCKER
 ```
 
 ---
 
 ## HPA
 
+### Initial result
+
 ```text
 Status: ENVIRONMENT BLOCKER
+metrics.k8s.io unavailable; HPA cpu <unknown>
+```
 
-CPU request: 150m (from chart resources.requests.cpu on web-e2e pods)
-min: 2
-max: 3
-target: 50
+### HPA retest (after metrics-server)
 
-Before: HPA object rendered and applied (AbleToScale/SucceededGetScale True) but cpu metric <unknown>
-Peak / After / Scale-up / Scale-down: NOT OBSERVED — metrics.k8s.io unavailable
+```text
+metrics-server:
+version: v0.9.0-eksbuild.11
 
-Evidence:
-- kubectl get --raw /apis/metrics.k8s.io/v1beta1 → NotFound
-- kubectl top nodes → Metrics API not available
-- metrics-server EKS addon absent
-- HPA web-e2e exists with target CPU 50% but cannot scale without metrics
+metrics API: GREEN
+  kubectl get --raw /apis/metrics.k8s.io/v1beta1 → APIResourceList
+  kubectl top nodes → data
+  kubectl top pods → data
+  no --kubelet-insecure-tls
+
+Chart canary: asa-application release hpa-e2e in asa-hpa-pvc-e2e
+  workload.type=web
+  autoscaling minReplicas=1 maxReplicas=3 cpu.target=50
+  CPU request (pod): 150m
+
+Before load:
+CPU: 0% (1m) / 50%
+currentReplicas: 1
+desiredReplicas: 1
+AbleToScale: True (ReadyForNewScale)
+ScalingActive: True (ValidMetricFound)
+ScalingLimited: True (TooFewReplicas — below-min recommendation clamped)
+
+Under load (in-pod busy loops via live kubectl exec session):
+CPU: 433% (650m) / 50%
+currentReplicas: 3
+desiredReplicas: 3
+Deployment ready: 3/3
+Event: SuccessfulRescale New size: 3; reason: cpu resource utilization above target
+
+After load removed (~331s including HPA scale-down stabilization window):
+CPU: 0% (1m) / 50%
+currentReplicas: 1
+desiredReplicas: 1
+Events: New size: 2 → New size: 1; reason: All metrics below target
+
+Scale-up: PASS (1 → 3)
+Scale-down: PASS (3 → 1)
+
+Final status: GREEN
 ```
 
 ---
 
 ## PVC
 
+### Initial result
+
 ```text
 Status: ENVIRONMENT BLOCKER
+aws-ebs-csi-driver absent; PVC Pending waiting for ebs.csi.aws.com
+```
 
+### PVC retest (after EBS CSI)
+
+```text
+aws-ebs-csi-driver:
+version: v1.66.0-eksbuild.1
+identity: IRSA (AmazonEKS_EBS_CSI_DriverRole_sample-template-pg + AmazonEBSCSIDriverPolicy)
+
+Chart canary: asa-application release pvc-e2e
+  persistence.mountPath=/data size=1Gi storageClassName=gp2
+  autoscaling: false
+  replicaCount: 1
+Confirmed: strategy Recreate; HPA absent; RWO
+
+PVC: pvc-e2e-data
+PV: pvc-d3bd9005-6f82-4ac0-8428-947ae132b45c
 StorageClass: gp2
-Provisioner: kubernetes.io/aws-ebs (events show external provisioner ebs.csi.aws.com via CSIMigration)
-Binding mode: WaitForFirstConsumer
+capacity: 1Gi
+accessMode: ReadWriteOnce
+zone: us-east-1a
 
-PVC probe (pvc-probe-e2e + consumer pod):
-- selected-node assigned
-- ExternalProvisioning: Waiting for volume from ebs.csi.aws.com
-- CSIDriver ebs.csi.aws.com: missing (only efs.csi.aws.com installed)
-- STATUS remained Pending — no Bound, no mount/write/recreate proof possible
+Bound: PASS
+Mounted: PASS (/dev/nvme1n1 on /data)
+Write marker: PASS (asa-pvc-e2e-20261003041040-0a3c77a)
+Pod replacement: PASS
+  old: pvc-e2e-84b8694889-p27pc uid=229711e9-2751-4c6b-8fa9-838d222a9137
+  new: pvc-e2e-84b8694889-qj9jh uid=8b33c0a6-dbee-4a56-9043-c0e59335488c
+Read persisted marker: PASS (exact match)
+Recreate rollout (annotation patch): PASS; no Multi-Attach / FailedAttachVolume errors; marker survived
+resource-policy keep: PASS (helm uninstall retained PVC; then manual PVC delete removed PV/EBS — no orphan volumes)
 
-Recreate strategy / resource-policy keep: chart contract unchanged (not exercised live)
+Final status: GREEN
 ```
 
 ---
@@ -208,8 +294,10 @@ Admission errors: none (no FailedCreate / PSA deny events)
 
 ## Helm recovery
 
+### Algorithm (initial round — still valid)
+
 ```text
-Status: GREEN
+Status: GREEN (algorithm)
 
 Healthy revision: 1 (deployed, image …:86cc2ec7f0cbd8a44650ca15204f36abd4be1c5e)
 Failed revision: 2 (failed — nonexistent tag does-not-exist-e2e-recovery; ImagePullBackOff)
@@ -228,38 +316,56 @@ Operation exit: failure (script/pipeline semantics exit 1 after recovery)
 Uninstall executed: NO
 ```
 
+### Helm recovery integration retest (ADO / real helm-deploy)
+
+```text
+Execution path:
+  ADO pipeline helm-rec-ado-e2e (definition id 20)
+  → extends templates/dotnet/ci.yml@templates ref refs/tags/v5.3.1
+  → Deploy develop → templates/dotnet/helm-deploy.yml
+  consumer: pt-v3-scenarios branch e2e/helm-recovery-ado
+  applicationName: helm-rec-ado-e2e (worker; isolated namespace asa-helm-rec-ado-e2e)
+  build: 309 (20261003.1)
+
+Healthy revision: NOT REACHED
+Failed revision: N/A (preflight identity gate)
+
+Failed upgrade observed: NO — deploy aborted before helm upgrade
+Automatic rollback observed: NO
+Workload restored: N/A
+Pipeline result: FAILED
+Uninstall executed: N/A
+
+Blocker evidence (helm upgrade --install task log):
+  kubectl context: tenv3-local
+  error: kubectl context must equal expectedKubeContext 'sample-template-pg'
+         for lab/develop (got 'tenv3-local') — exact match, no substring
+
+Contrast: successful pt-v3-web builds today used templates ref lab/cluster-axis where
+expectedKubeContext for lab/develop is null (warning only), so they deploy with
+agent context tenv3-local. Current v5.3.1/main correctly fail-closed.
+
+Algorithm: GREEN
+Pipeline integration: ENVIRONMENT BLOCKER
+  (PG-AWS-EKS agent online = tenv3-local-agent; kube context ≠ sample-template-pg)
+```
+
 ---
 
 ## Findings
 
-### Finding 1 — metrics-server missing
+### Finding 1 — metrics-server missing — RESOLVED
 
 ```text
-Finding: metrics.k8s.io unavailable on proving-ground
-Component: HPA (environment)
-Severity: blocks scale proof only
-Expected: metrics API for CPU HPA
-Observed: NotFound; HPA cpu <unknown>
-Evidence: kubectl get --raw /apis/metrics.k8s.io/v1beta1; missing metrics-server addon
-Root cause: cluster addon not installed after prior lab teardown
-Product / Infrastructure / Test workload: Infrastructure
-Fix required: install metrics-server (EKS addon) on sample-template-pg
-Retest required: HPA scale-up + scale-down only
+Remediation: EKS addon metrics-server v0.9.0-eksbuild.11 installed
+Retest: HPA scale-up + scale-down GREEN
 ```
 
-### Finding 2 — EBS CSI missing
+### Finding 2 — EBS CSI missing — RESOLVED
 
 ```text
-Finding: gp2 volumes cannot provision (ebs.csi.aws.com absent)
-Component: PVC (environment)
-Severity: blocks persistence proof
-Expected: PVC Bound via gp2
-Observed: Pending / ExternalProvisioning waiting for ebs.csi.aws.com
-Evidence: PVC events; CSIDriver list shows only efs.csi.aws.com; aws-ebs-csi-driver addon missing
-Root cause: EBS CSI driver not installed
-Product / Infrastructure / Test workload: Infrastructure
-Fix required: install aws-ebs-csi-driver (+ node IAM for EC2 volumes)
-Retest required: PVC Bound→write→recreate→read only
+Remediation: EKS addon aws-ebs-csi-driver v1.66.0-eksbuild.1 + IRSA
+Retest: PVC Bound→persist GREEN; EBS volume cleaned after PVC delete
 ```
 
 ### Finding 3 — pt-v3-grpc image is not gRPC
@@ -277,16 +383,32 @@ Fix required: none in pipeline-templates; fix consumer image separately if still
 Retest required: none for platform (GREEN achieved with ephemeral runtime-e2e-grpc)
 ```
 
+### Finding 4 — ADO agent kube context mismatch — OPEN (EXTERNAL)
+
+```text
+Finding: PG-AWS-EKS agent cannot satisfy expectedKubeContext for lab/develop
+Component: Helm recovery pipeline integration (environment / agent)
+Severity: blocks ADO path against sample-template-pg with v5.3.1/main
+Expected: agent kubectl context == sample-template-pg
+Observed: tenv3-local; helm-deploy fail-closed before upgrade
+Evidence: ADO build 309 task log; contrast with pt-v3-web on lab/cluster-axis (null expectedKubeContext)
+Root cause: proving-ground agent kubeconfig not pointed at sample-template-pg
+Product / Infrastructure / Test workload: Infrastructure (agent)
+Fix required: configure PG-AWS-EKS agent(s) with context sample-template-pg (or dedicated pool)
+Retest required: helm-rec-ado-e2e healthy deploy → failed upgrade → automatic rollback → pipeline FAILED
+```
+
 ---
 
 ## Teardown
 
 Performed after evidence capture:
 
-- Helm uninstall: `web-e2e`, `grpc-e2e`, `cron-e2e`, `helm-rec-e2e`, `psa-web-e2e`, `psa-job-e2e`, `ngf-e2e`
-- Delete namespaces `asa-runtime-e2e`, `asa-psa-e2e`
-- Delete Gateway `d-asa-com-br-internal-gateway` and namespace `asa-infra-nginx-gateway` contents from this round
-- Preserved: EKS cluster, nodes, StorageClasses, EFS CSI, Gateway API CRDs already on cluster
+**Initial round:** Helm uninstall `web-e2e`, `grpc-e2e`, `cron-e2e`, `helm-rec-e2e`, `psa-web-e2e`, `psa-job-e2e`, `ngf-e2e`; delete namespaces `asa-runtime-e2e`, `asa-psa-e2e`, Gateway + `asa-infra-nginx-gateway`.
+
+**Retest round:** Helm uninstall `hpa-e2e`, `pvc-e2e`; delete PVC `pvc-e2e-data` (PV/EBS removed); delete namespace `asa-hpa-pvc-e2e`. No orphan EBS volumes remaining.
+
+**Preserved on proving-ground:** EKS cluster; metrics-server addon; aws-ebs-csi-driver addon + IRSA role; gp2 StorageClass (now default); EFS CSI; Gateway API CRDs.
 
 ---
 
