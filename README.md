@@ -29,7 +29,8 @@ resources:
       type: github
       name: diegofernandes-dev/pipeline-templates
       endpoint: github-diegofernandes-dev
-      ref: refs/tags/v6.0.0   # after release; until then pin v5.3.2 (old API)
+      # v6.0.0 candidate — pin exact commit SHA until the tag exists (v5.3.2 uses old API)
+      ref: refs/heads/main
 
 extends:
   template: templates/dotnet/ci.yml@templates
@@ -67,11 +68,13 @@ ScheduledJob sem `command`/`args`). Sem a segunda camada essas regras só aparec
 | Owner | Responsabilidade |
 |-------|------------------|
 | **Application repository** | `applicationName`, inputs de build, `deploy/config/<tier>.yaml` |
-| **Platform area** | `promotion`, deploy pools, ADO Environments, AWS account/region, `expectedKubeContext`, Gateway/DNS, deploy policy (`smokeAllowed`, …) |
+| **Platform area** | `promotion`, deploy pools, ADO Environments, AWS account/region, `expectedKubeContext`, Gateway/DNS, deploy policy (`scheduledJobSmoke.enabled`, …) |
 | **Infrastructure** | EKS, node/kubelet ECR pull, repository policies, metrics-server, EBS CSI, Gateway controller, ESO, ClusterSecretStore, WIF/IAM trust |
 | **Secret system** | valores runtime via ExternalSecret → Secrets Manager |
 
 Azure DevOps Variable Groups **não** fazem parte do contrato de deploy: config versionada fica no manifesto; secrets vêm de ExternalSecret; fatos de plataforma vêm do area profile.
+
+**ScheduledJob smoke:** desabilitado por padrão. Só `platform.tiers.<tier>.scheduledJobSmoke.enabled: true` autoriza um Job one-off após o deploy. `smokeAllowed` / consumer `smokeScheduledJob` foram removidos na v6.
 
 ### Artifact promotion (build once)
 

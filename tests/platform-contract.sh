@@ -251,7 +251,8 @@ parameters:
           dnsZone: preview.asa.corp
           legacyDnsZone: preview.asa.com.br
           defaultMinReplicas: 1
-          smokeAllowed: true
+          scheduledJobSmoke:
+            enabled: false
           podSecurity:
             enforce: null
             enforceVersion: null

@@ -114,6 +114,9 @@ jobs:
       - name: promotion-contract
         run: ./tests/promotion-contract.sh
 
+      - name: scheduled-job-smoke
+        run: ./tests/scheduled-job-smoke.sh
+
       - name: runtime-contract
         run: ./tests/runtime-contract.sh
 

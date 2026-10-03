@@ -396,6 +396,7 @@ stages:
       containerPool: ${{ parameters.platform.tiers[parameters.platform.promotion[0]].deployPool }}
       platformArea: ${{ parameters.platform.area }}
       awsRegion: ${{ parameters.platform.tiers[parameters.platform.promotion[0]].awsRegion }}
+      scheduledJobSmokeEnabled: ${{ parameters.platform.tiers[parameters.platform.promotion[0]].scheduledJobSmoke.enabled }}
       dependsOn:
         - Container
       applicationName: ${{ parameters.delivery.applicationName }}
@@ -410,6 +411,7 @@ stages:
         containerPool: ${{ parameters.platform.tiers[parameters.platform.promotion[1]].deployPool }}
         platformArea: ${{ parameters.platform.area }}
         awsRegion: ${{ parameters.platform.tiers[parameters.platform.promotion[1]].awsRegion }}
+        scheduledJobSmokeEnabled: ${{ parameters.platform.tiers[parameters.platform.promotion[1]].scheduledJobSmoke.enabled }}
         dependsOn:
           - Container
           - Deploy_${{ parameters.platform.promotion[0] }}
@@ -425,6 +427,7 @@ stages:
         containerPool: ${{ parameters.platform.tiers[parameters.platform.promotion[2]].deployPool }}
         platformArea: ${{ parameters.platform.area }}
         awsRegion: ${{ parameters.platform.tiers[parameters.platform.promotion[2]].awsRegion }}
+        scheduledJobSmokeEnabled: ${{ parameters.platform.tiers[parameters.platform.promotion[2]].scheduledJobSmoke.enabled }}
         dependsOn:
           - Container
           - Deploy_${{ parameters.platform.promotion[1] }}

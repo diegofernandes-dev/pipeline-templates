@@ -12,7 +12,8 @@ resources:
       type: github
       name: diegofernandes-dev/pipeline-templates
       endpoint: github-diegofernandes-dev
-      ref: refs/tags/v6.0.0   # after release; until then use a commit SHA on main (v6 API ≠ v5.3.2)
+      # v6.0.0 candidate — pin exact commit SHA until the tag exists (≠ v5.3.2 API)
+      ref: refs/heads/main
 
 extends:
   template: templates/dotnet/ci.yml@templates

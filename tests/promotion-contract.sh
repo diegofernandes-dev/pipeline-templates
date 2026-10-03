@@ -138,7 +138,8 @@ BASE='{
     "order":1,"deployPool":"D","environmentName":"develop",
     "awsAccountId":"111111111111","awsRegion":"us-east-1",
     "expectedKubeContext":"ctx","gatewayName":"g","gatewayNamespace":"ns",
-    "dnsZone":"dev.example","defaultMinReplicas":1,"smokeAllowed":false,
+    "dnsZone":"dev.example","defaultMinReplicas":1,
+    "scheduledJobSmoke":{"enabled":false},
     "podSecurity":{"enforce":null,"enforceVersion":null}
   }}
 }'

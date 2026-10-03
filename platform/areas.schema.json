@@ -53,7 +53,7 @@
           "gatewayNamespace",
           "dnsZone",
           "defaultMinReplicas",
-          "smokeAllowed",
+          "scheduledJobSmoke",
           "podSecurity"
         ],
         "additionalProperties": false,
@@ -99,8 +99,15 @@
             "type": "integer",
             "minimum": 1
           },
-          "smokeAllowed": {
-            "type": "boolean"
+          "scheduledJobSmoke": {
+            "type": "object",
+            "required": ["enabled"],
+            "additionalProperties": false,
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              }
+            }
           },
           "podSecurity": {
             "type": "object",

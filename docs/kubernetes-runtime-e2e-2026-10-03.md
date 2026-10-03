@@ -486,8 +486,10 @@ Includes: target identity fail-closed, render-driven capability preflight, defau
 
 ```text
 delivery API changed: YES (platform-owned promotion; v6.0.0 candidate)
+delivery policy changed: YES (scheduledJobSmoke.enabled; default false)
 charts/runtime unchanged: YES
+ADO compile: see PR #12 evidence
 runtime matrix not rerun: YES
 ```
 
-Evidence above remains valid for HPA/PVC/CronJob/gRPC/PDB/TopologySpread/PSA/Helm recovery/identity/capability preflight. The v6 change only relocates promotion ownership from consumer `deployEnvironments` to `platform.promotion` and removes Variable Groups / `ECR_PULL_SECRET` from the deploy path.
+Evidence above remains valid for HPA/PVC/CronJob/gRPC/PDB/TopologySpread/PSA/Helm recovery/identity/capability preflight. The v6 change relocates promotion ownership to `platform.promotion`, removes Variable Groups / `ECR_PULL_SECRET`, and replaces former smoke knobs with explicit `scheduledJobSmoke.enabled` (safe default: off).
