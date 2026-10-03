@@ -145,14 +145,27 @@ em runtime (gateway, DNS, `defaultMinReplicas`, guards).
 
 | Área | Tier | Deploy pool | ADO Environment | expectedKubeContext | awsAccountId |
 |------|------|-------------|-----------------|---------------------|--------------|
-| lab | develop | `PG-AWS-EKS` | `develop` | **EXTERNAL BLOCKER** | **EXTERNAL BLOCKER** |
-| lab | homolog | `PG-AWS-EKS-HML` | `homolog` | **EXTERNAL BLOCKER** | **EXTERNAL BLOCKER** |
-| lab | production | **EXTERNAL BLOCKER** (`null`) | `production` | **EXTERNAL BLOCKER** | **EXTERNAL BLOCKER** |
+| lab | develop | `PG-AWS-EKS` | `develop` | `sample-template-pg` | `448003890252` |
+| lab | homolog | `PG-AWS-EKS-HML` | `homolog` | `sample-template-pg` | `448003890252` |
+| lab | production | **EXTERNAL BLOCKER** (`null`) | `production` | `sample-template-pg` | `448003890252` |
 
-- Contexto kubectl e conta STS: match **exato** quando mapeados. Enquanto `null`, o deploy emite warning e não valida identidade.
+- Destinos **deployáveis** (`deployPool` preenchido) exigem identity mapping completo: `expectedKubeContext` e `awsAccountId` não podem ser `null`. Ausência ou mismatch → **FAIL** (fail-closed); nunca warning + continue.
+- Contexto kubectl e conta STS do agent de deploy: match **exato** com o tier (não substring). Conta do registry ECR é independente (cross-account esperado).
 - Registry ECR compartilhado: `platform.registry` no profile (conta/região). A **repository policy** de pull cross-account é pré-provisionada pela infra; o pipeline só cria o repositório com `--registry-id`.
 - Manifestos da app continuam em `deploy/config/<tier>.yaml`. O stage chama-se `Deploy_<tier>`; o Environment ADO pode diferir (`environmentName` no profile).
 
+#### Cluster capabilities (preflight)
+
+Capabilities são do cluster — o manifesto público **não** declara addons. O deploy deriva o que checar do **render Helm** e falha antes do `helm upgrade` se faltar:
+
+| Feature no render | Capability exigida |
+|-------------------|--------------------|
+| `HorizontalPodAutoscaler` | `metrics.k8s.io/v1beta1` |
+| `PersistentVolumeClaim` | StorageClass (explícita ou default) + CSI (`ebs.csi.aws.com` para `kubernetes.io/aws-ebs` / `ebs.csi.aws.com`) |
+| `HTTPRoute` / `GRPCRoute` | `gateway.networking.k8s.io/v1` + Gateway do `parentRefs` |
+| `ExternalSecret` | `external-secrets.io/v1` |
+
+Sem o recurso no render, o check correspondente é ignorado (ex.: PVC com `autoscaling: false` não exige metrics-server).
 #### Ownership (delivery vs infra)
 
 | Recurso | Owner | Quem provisiona |
@@ -190,6 +203,7 @@ helm lint charts/asa-scheduled-job \
 ./tests/platform-contract.sh      # area profiles × chart (resolve + render + allowlist)
 ./tests/runtime-contract.sh       # runtime profiles × chart + reservedConfig
 ./tests/runtime-adapter-dotnet.sh # entrypoint.sh mapeia PORT/APP_PROTOCOL/SHUTDOWN
+./tests/deploy-target-preflight.sh # identity fail-closed + HPA/PVC capability harness
 ./tests/chart-golden.sh check     # snapshots de render (gate de refatoração)
 ./tests/chart-conform.sh          # kubeconform -strict nos manifests renderizados
 ./tests/chart-invariants.sh       # suíte completa (chama drift/contract/conform)

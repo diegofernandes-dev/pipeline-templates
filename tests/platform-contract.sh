@@ -224,6 +224,16 @@ if PLATFORM_AREAS_DIR="${FIXTURE_DIR}" "${RESOLVE}" preview develop "${pf}"; the
     echo "FAIL: fictional area rendered values rejected by chart"
     FAILED=1
   fi
+  # Chart path may resolve with null identity; deployable identity must still fail closed.
+  if bash "${ROOT}/scripts/preflight-deploy-target.sh" identity \
+       --area preview --tier develop \
+       --expected-context null --actual-context null \
+       --expected-account 888888888888 --actual-account 888888888888 2>/dev/null; then
+    echo "FAIL: null expectedKubeContext must fail closed for deployable identity"
+    FAILED=1
+  else
+    echo "OK: null expectedKubeContext fails closed (fictional deployable tier)"
+  fi
 else
   echo "FAIL: fictional area did not resolve via PLATFORM_AREAS_DIR"
   FAILED=1
