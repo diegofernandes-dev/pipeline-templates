@@ -5,7 +5,8 @@ Focused runtime proof of the platform Kubernetes core on EKS proving-ground `sam
 | Field | Value |
 |-------|-------|
 | tested repository SHA (initial) | `4a9deca9653391797ef796711974c49922f5d910` |
-| tested repository SHA (retest) | `0a3c77a94780f30d43c4c2fdab1a28be26e4c4a6` (docs-only delta since `4a9deca`; no chart/template/script changes) |
+| tested repository SHA (HPA/PVC retest) | `0a3c77a94780f30d43c4c2fdab1a28be26e4c4a6` (docs-only delta since `4a9deca`; no chart/template/script changes) |
+| tested templates ref (ADO recovery) | `refs/tags/v5.3.1` (product unchanged; infra agent bootstrap only) |
 | asa-application | `5.3.1` |
 | asa-scheduled-job | `4.3.0` |
 | cluster | `sample-template-pg` (us-east-1, account `448003890252`) |
@@ -13,8 +14,23 @@ Focused runtime proof of the platform Kubernetes core on EKS proving-ground `sam
 | date (UTC) | `2026-10-03` |
 | platform-ci | contracts **PASS** + apply-dryrun **PASS** on retest SHA ([run 37094118354](https://github.com/diegofernandes-dev/pipeline-templates/actions/runs/37094118354)) |
 | Product changes | **NONE** |
+| Final verdict | **ALL GREEN** (algorithm + ADO helm-deploy recovery path) |
 
-Namespaces used: `asa-runtime-e2e`, `asa-psa-e2e` (initial); `asa-hpa-pvc-e2e` (HPA/PVC retest). Temporary NGINX Gateway Fabric release `ngf-e2e` in `asa-infra-nginx-gateway` (gRPC only; removed). ADO canary pipeline `helm-rec-ado-e2e` (id 20) on `pt-v3-scenarios` branch `e2e/helm-recovery-ado`.
+Namespaces used: `asa-runtime-e2e`, `asa-psa-e2e` (initial); `asa-hpa-pvc-e2e` (HPA/PVC retest); `asa-helm-rec-ado-e2e` (ADO recovery). Temporary NGINX Gateway Fabric release `ngf-e2e` in `asa-infra-nginx-gateway` (gRPC only; removed). ADO canary pipeline `helm-rec-ado-e2e` (id 20) on `pt-v3-scenarios` branch `e2e/helm-recovery-ado`.
+
+### Test inventory
+
+| # | Capability | Method | Result |
+|---|------------|--------|--------|
+| R1 | HPA scale-up / scale-down | Chart canary `hpa-e2e` + live CPU burn after metrics-server addon | GREEN |
+| R2 | PVC persist across pod replace | Chart canary `pvc-e2e` + gp2 / aws-ebs-csi-driver IRSA | GREEN |
+| R3 | CronJob controller schedule | Chart `asa-scheduled-job` `cron-e2e`; controller-created Jobs | GREEN |
+| R4 | gRPC via Service + Gateway | Chart `workload.type=grpc` + ephemeral h2c image + grpcurl | GREEN |
+| R5 | PDB eviction | Eviction API against `web-e2e` (maxUnavailable=1) | GREEN |
+| R6 | TopologySpread zones | Two pods across `us-east-1a` / `us-east-1b` | GREEN |
+| R7 | PSA restricted admit | Namespace enforce=restricted; Application + ScheduledJob | GREEN |
+| R8 | Helm recovery algorithm | Local script mirroring `helm-deploy.yml` rollback | GREEN |
+| R9 | Helm recovery pipeline | ADO builds [310](https://dev.azure.com/diegolab/platform-engineering/_build/results?buildId=310) → [311](https://dev.azure.com/diegolab/platform-engineering/_build/results?buildId=311) via real `helm-deploy.yml` | GREEN |
 
 ---
 
@@ -74,7 +90,7 @@ PDB                     GREEN
 TopologySpread          GREEN
 PSA restricted          GREEN
 Helm recovery algorithm GREEN
-Helm recovery pipeline  ENVIRONMENT BLOCKER
+Helm recovery pipeline  GREEN
 ```
 
 ---
@@ -325,29 +341,39 @@ Execution path:
   → Deploy develop → templates/dotnet/helm-deploy.yml
   consumer: pt-v3-scenarios branch e2e/helm-recovery-ado
   applicationName: helm-rec-ado-e2e (worker; isolated namespace asa-helm-rec-ado-e2e)
-  build: 309 (20261003.1)
 
-Healthy revision: NOT REACHED
-Failed revision: N/A (preflight identity gate)
+Infra precondition (resolved before retest):
+  PG-AWS-EKS agent tenv3-local-agent bootstrap ConfigMap tenv3-agent-bootstrap
+  reconfigured to aws eks update-kubeconfig → context sample-template-pg
+  (agent still runs on Rancher Desktop; targets EKS proving-ground API with ambient AWS creds)
+  Source: infra-agents/k8s/proving-ground-agent-bootstrap.yaml (applied live)
 
-Failed upgrade observed: NO — deploy aborted before helm upgrade
-Automatic rollback observed: NO
-Workload restored: N/A
-Pipeline result: FAILED
-Uninstall executed: N/A
+Build 309 (20261003.1) — pre-fix:
+  kubectl context: tenv3-local → fail-closed (expectedKubeContext mismatch). ENVIRONMENT BLOCKER.
 
-Blocker evidence (helm upgrade --install task log):
-  kubectl context: tenv3-local
-  error: kubectl context must equal expectedKubeContext 'sample-template-pg'
-         for lab/develop (got 'tenv3-local') — exact match, no substring
+Build 310 (20261003.2) — healthy deploy:
+  source: 124addf95203265e27cb0a55a806779707b3d20a
+  kubectl context: sample-template-pg (exact match)
+  sts account matches 448003890252
+  shared ECR image present
+  Helm revision 1 deployed; readyReplicas=1
+  image: …/helm-rec-ado-e2e:124addf95203265e27cb0a55a806779707b3d20a
+  Pipeline result: Succeeded
 
-Contrast: successful pt-v3-web builds today used templates ref lab/cluster-axis where
-expectedKubeContext for lab/develop is null (warning only), so they deploy with
-agent context tenv3-local. Current v5.3.1/main correctly fail-closed.
+Build 311 (20261003.3) — failed upgrade + recovery:
+  source: 612812890cfc2b2db26a11f61e19203440198529
+  Failure injected: consumer Program.cs Environment.Exit(1) before host start
+    (real build→ECR→helm-deploy path; not a product bypass / not skipping ECR preflight)
+  Failed upgrade observed: YES — helm upgrade --wait → CrashLoopBackOff → context deadline exceeded
+  Failed revision: 2 (status failed)
+  Automatic rollback observed: YES — "Attempting rollback… Rolling back to deployed revision 1"
+  Final Helm revision: 3 (Rollback to 1 → deployed)
+  Workload restored: readyReplicas=1; image restored to …:124addf95203265e27cb0a55a806779707b3d20a
+  Pipeline result: FAILED (required semantics after recovery)
+  Uninstall executed: NO
 
 Algorithm: GREEN
-Pipeline integration: ENVIRONMENT BLOCKER
-  (PG-AWS-EKS agent online = tenv3-local-agent; kube context ≠ sample-template-pg)
+Pipeline integration: GREEN
 ```
 
 ---
@@ -383,19 +409,21 @@ Fix required: none in pipeline-templates; fix consumer image separately if still
 Retest required: none for platform (GREEN achieved with ephemeral runtime-e2e-grpc)
 ```
 
-### Finding 4 — ADO agent kube context mismatch — OPEN (EXTERNAL)
+### Finding 4 — ADO agent kube context mismatch — RESOLVED
 
 ```text
-Finding: PG-AWS-EKS agent cannot satisfy expectedKubeContext for lab/develop
+Finding: PG-AWS-EKS agent could not satisfy expectedKubeContext for lab/develop
 Component: Helm recovery pipeline integration (environment / agent)
-Severity: blocks ADO path against sample-template-pg with v5.3.1/main
+Severity: was blocking ADO path against sample-template-pg with v5.3.1/main
 Expected: agent kubectl context == sample-template-pg
-Observed: tenv3-local; helm-deploy fail-closed before upgrade
-Evidence: ADO build 309 task log; contrast with pt-v3-web on lab/cluster-axis (null expectedKubeContext)
-Root cause: proving-ground agent kubeconfig not pointed at sample-template-pg
-Product / Infrastructure / Test workload: Infrastructure (agent)
-Fix required: configure PG-AWS-EKS agent(s) with context sample-template-pg (or dedicated pool)
-Retest required: helm-rec-ado-e2e healthy deploy → failed upgrade → automatic rollback → pipeline FAILED
+Observed (before): tenv3-local (in-cluster Rancher kubeconfig)
+Observed (after): sample-template-pg via agent bootstrap aws eks update-kubeconfig
+Evidence: ADO builds 310 (healthy Succeeded) + 311 (failed upgrade → rollback → Failed)
+Root cause: proving-ground agent bootstrap ConfigMap pointed at local Rancher API (10.43), not EKS
+Product / Infrastructure / Test workload: Infrastructure (agent) — Product changes NONE
+Fix applied: ConfigMap tenv3-agent-bootstrap → EKS sample-template-pg; persisted under
+  infra-agents/k8s/proving-ground-agent-bootstrap.yaml; agent rollout restarted
+Retest: GREEN (see Helm recovery integration retest)
 ```
 
 ---
@@ -408,7 +436,9 @@ Performed after evidence capture:
 
 **Retest round:** Helm uninstall `hpa-e2e`, `pvc-e2e`; delete PVC `pvc-e2e-data` (PV/EBS removed); delete namespace `asa-hpa-pvc-e2e`. No orphan EBS volumes remaining.
 
-**Preserved on proving-ground:** EKS cluster; metrics-server addon; aws-ebs-csi-driver addon + IRSA role; gp2 StorageClass (now default); EFS CSI; Gateway API CRDs.
+**Helm recovery ADO round:** Helm uninstall `helm-rec-ado-e2e`; delete namespace `asa-helm-rec-ado-e2e`. Consumer branch restored to healthy `Program.cs` after crash canary (commit history retains crash + restore).
+
+**Preserved on proving-ground:** EKS cluster; metrics-server addon; aws-ebs-csi-driver addon + IRSA role; gp2 StorageClass (now default); EFS CSI; Gateway API CRDs; PG-AWS-EKS agent bootstrap targeting `sample-template-pg`.
 
 ---
 
