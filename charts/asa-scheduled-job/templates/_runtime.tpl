@@ -44,6 +44,9 @@ ScheduledJob — CronJob-only chart.
 {{- if hasKey .Values "legacyDns" -}}
 {{- fail "legacyDns belongs to kind: Application — not ScheduledJob" -}}
 {{- end -}}
+{{- if hasKey .Values "dns" -}}
+{{- fail "dns belongs to kind: Application — not ScheduledJob" -}}
+{{- end -}}
 {{- if hasKey .Values "probes" -}}
 {{- fail "probes are not supported on ScheduledJob" -}}
 {{- end -}}

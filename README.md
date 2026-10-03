@@ -162,7 +162,7 @@ em runtime (gateway, DNS, `defaultMinReplicas`, guards).
 | Namespace K8s | delivery | `kubectl apply` quando ausente |
 | Agent pools / ADO Environments | infra | Pré-requisito por cluster |
 | `ClusterSecretStore` / node ECR pull | infra | Pré-requisito por cluster |
-| DNS | ExternalDNS | Pipeline **não** cria registros |
+| DNS | ExternalDNS | Pipeline **não** cria registros. Chart emite `external-dns.kubernetes.io/gateway-hostname-source: annotation-only` + `hostname` nos Routes. `dns.publishLegacyHostname` (default `false`) autoriza publicar o hostname legado `.asa.com.br`; a Route **sempre** aceita corp + legacy quando `platform.legacyDnsZone` existe (cutover ≠ publicação). |
 
 #### Pré-requisitos de infra por cluster
 
@@ -173,6 +173,8 @@ em runtime (gateway, DNS, `defaultMinReplicas`, guards).
 - `ClusterSecretStore` com assume-role na conta do Secrets Manager compartilhado.
 
 ### Testes locais / CI do repo
+
+Relatório de validação e2e em lab (AWS/GCP/ADO, 2026-10-02): [`docs/lab-e2e-validation-2026-10-02.md`](docs/lab-e2e-validation-2026-10-02.md).
 
 ```bash
 helm lint charts/asa-application \

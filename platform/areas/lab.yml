@@ -21,10 +21,10 @@ parameters:
           order: 1
           deployPool: PG-AWS-EKS
           environmentName: develop
-          # null = skip sts account assert until the real cluster account id is recorded.
-          awsAccountId: null
+          # Lab proving-ground EKS sample-template-pg in this account.
+          awsAccountId: "448003890252"
           awsRegion: us-east-1
-          expectedKubeContext: null
+          expectedKubeContext: sample-template-pg
           gatewayName: d-asa-com-br-internal-gateway
           gatewayNamespace: asa-infra-nginx-gateway
           dnsZone: dev.asa.corp
@@ -38,9 +38,10 @@ parameters:
           order: 2
           deployPool: PG-AWS-EKS-HML
           environmentName: homolog
-          awsAccountId: null
+          # Same proving-ground cluster until dedicated HML exists.
+          awsAccountId: "448003890252"
           awsRegion: us-east-1
-          expectedKubeContext: null
+          expectedKubeContext: sample-template-pg
           gatewayName: h-asa-com-br-internal-gateway
           gatewayNamespace: asa-infra-nginx-gateway
           dnsZone: hml.asa.corp
@@ -55,9 +56,9 @@ parameters:
           # EXTERNAL BLOCKER: no authoritative production agent pool in this repository.
           deployPool: null
           environmentName: production
-          awsAccountId: null
+          awsAccountId: "448003890252"
           awsRegion: us-east-1
-          expectedKubeContext: null
+          expectedKubeContext: sample-template-pg
           gatewayName: p-asa-com-br-internal-gateway
           gatewayNamespace: asa-infra-nginx-gateway
           dnsZone: prd.asa.corp

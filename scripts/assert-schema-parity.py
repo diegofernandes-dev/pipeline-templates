@@ -34,7 +34,7 @@ INTENTIONAL: dict[tuple[str, str], str] = {
     ("Application", "allOf"): (
         "public requires `probes` for web/grpc via schema; the chart enforces the same rule in "
         "_probes.tpl so that `helm lint` against chart defaults still works. The chart's own allOf "
-        "covers worker -> legacyDns: false."
+        "covers worker -> dns.publishLegacyHostname: false."
     ),
     ("ScheduledJob", "properties.execution"): (
         "chart allows timeoutSeconds: null (values.yaml ships null defaults for helm lint) while "

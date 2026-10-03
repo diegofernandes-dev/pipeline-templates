@@ -5,6 +5,8 @@ metadata:
   name: {{ .Release.Name }}
   labels:
     {{- include "chart.labels" . | nindent 4 }}
+  annotations:
+    {{- include "chart.externalDnsAnnotations" . | nindent 4 }}
 spec:
   parentRefs:
     - name: {{ include "chart.gatewayName" . }}

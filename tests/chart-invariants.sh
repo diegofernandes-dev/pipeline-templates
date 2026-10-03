@@ -432,8 +432,11 @@ expect_schema_fail "history on Application rejected" "history" -- \
 expect_schema_fail "cronJob on Application rejected" "cronJob" -- \
   render_app --set probes=false --set-string cronJob.schedule='0 * * * *'
 
-expect_schema_fail "legacyDns on worker rejected" "legacyDns" -- \
-  render_app --set-string workload.type=worker --set legacyDns=true
+expect_schema_fail "dns.publishLegacyHostname on worker rejected" "dns.publishLegacyHostname" -- \
+  render_app --set-string workload.type=worker --set-json 'dns={"publishLegacyHostname":true}'
+
+expect_schema_fail "legacyDns removed from Application schema" "legacyDns" -- \
+  render_app --set probes=false --set legacyDns=true
 
 expect_fail "autoscaling minReplicas > maxReplicas rejected" "must be <= autoscaling.maxReplicas" -- \
   render_app --set probes=false --set autoscaling.minReplicas=9
@@ -538,6 +541,9 @@ expect_schema_fail "ScheduledJob wrong kind rejected" "kind" -- \
 expect_schema_fail "ScheduledJob workload rejected" "workload" -- \
   render_job --set-json 'workload={"type":"web"}'
 
+expect_schema_fail "ScheduledJob dns rejected" "dns" -- \
+  render_job --set-json 'dns={"publishLegacyHostname":true}'
+
 expect_schema_fail "ScheduledJob legacyDns rejected" "legacyDns" -- \
   render_job --set legacyDns=true
 
@@ -570,12 +576,18 @@ OUT_JOB_PSC="$(render_job)"
 assert_contains "$OUT_JOB_PSC" "runAsNonRoot: true" "job platform podSecurityContext still renders"
 
 echo "== positives (coverage gaps) =="
-OUT_LEGACY="$(render_app --set probes=false --set legacyDns=true)"
-assert_contains "$OUT_LEGACY" "sample-api.d.asa.com.br" "legacyDns adds legacy hostname on HTTPRoute"
-assert_contains "$OUT_LEGACY" "sample-api.dev.asa.corp" "legacyDns keeps corp hostname"
+# With platform.legacyDnsZone set, Routes always accept both hostnames; the flag only
+# controls ExternalDNS publication (proven structurally via annotations below).
+OUT_DNS_DEFAULT="$(render_app --set probes=false)"
+assert_contains "$OUT_DNS_DEFAULT" "sample-api.d.asa.com.br" "default: HTTPRoute accepts legacy hostname"
+assert_contains "$OUT_DNS_DEFAULT" "sample-api.dev.asa.corp" "default: HTTPRoute accepts corp hostname"
 
-OUT_LEGACY_GRPC="$(render_app --set-string workload.type=grpc --set probes=false --set legacyDns=true)"
-assert_contains "$OUT_LEGACY_GRPC" "sample-api.d.asa.com.br" "legacyDns adds legacy hostname on GRPCRoute"
+OUT_DNS_PUBLISH="$(render_app --set probes=false --set-json 'dns={"publishLegacyHostname":true}')"
+assert_contains "$OUT_DNS_PUBLISH" "sample-api.d.asa.com.br" "publishLegacyHostname=true keeps legacy on HTTPRoute"
+assert_contains "$OUT_DNS_PUBLISH" "sample-api.dev.asa.corp" "publishLegacyHostname=true keeps corp on HTTPRoute"
+
+OUT_DNS_GRPC="$(render_app --set-string workload.type=grpc --set probes=false)"
+assert_contains "$OUT_DNS_GRPC" "sample-api.d.asa.com.br" "default: GRPCRoute accepts legacy hostname"
 
 OUT_NO_HPA="$(render_app --set probes=false --set autoscaling=false)"
 assert_kind_count "$OUT_NO_HPA" HorizontalPodAutoscaler 0 "autoscaling:false disables HPA for web"
@@ -608,7 +620,7 @@ assert_contains "$OUT_ES" 'key: "prod/db"' "externalSecret remoteRef.key"
 OUT_LABELS="$(render_app --set probes=false)"
 assert_contains "$OUT_LABELS" 'app.kubernetes.io/version: "deadbeef"' "resource labels include image tag version"
 assert_contains "$OUT_LABELS" "app.kubernetes.io/managed-by: Helm" "resource labels include managed-by"
-assert_contains "$OUT_LABELS" "helm.sh/chart: asa-application-5.2.0" "resource metadata has helm.sh/chart"
+assert_contains "$OUT_LABELS" "helm.sh/chart: asa-application-5.3.0" "resource metadata has helm.sh/chart"
 # helm.sh/chart must NOT appear on the pod template (would force rollout on chart bump).
 POD_LABELS="$(python3 -c '
 import sys, yaml
@@ -631,7 +643,7 @@ assert_contains "$SELECTOR" "app: sample-api" "selector keeps app"
 assert_not_contains "$SELECTOR" "app.kubernetes.io/" "selector has no k8s recommended labels"
 
 OUT_JOB_LABELS="$(render_job)"
-assert_contains "$OUT_JOB_LABELS" "helm.sh/chart: asa-scheduled-job-4.2.0" "job resource has helm.sh/chart"
+assert_contains "$OUT_JOB_LABELS" "helm.sh/chart: asa-scheduled-job-4.3.0" "job resource has helm.sh/chart"
 assert_contains "$OUT_JOB_LABELS" 'sizeLimit: "128Mi"' "job tmp emptyDir sizeLimit"
 # helm.sh/chart must NOT appear on the CronJob pod template (would force Job recreation on chart bump).
 JOB_POD_LABELS="$(python3 -c '
@@ -776,10 +788,10 @@ expect_fail "template dual-lock: wrong kind" "asa-application requires kind: App
   with_schema_bypassed "${APP_CHART}" \
   render_app --set probes=false --set-string kind=ScheduledJob
 
-expect_fail "template dual-lock: legacyDns on worker" \
-  "legacyDns is invalid for workload.type: worker" -- \
+expect_fail "template dual-lock: dns.publishLegacyHostname on worker" \
+  "dns.publishLegacyHostname is invalid for workload.type: worker" -- \
   with_schema_bypassed "${APP_CHART}" \
-  render_app --set-string workload.type=worker --set legacyDns=true
+  render_app --set-string workload.type=worker --set-json 'dns={"publishLegacyHostname":true}'
 
 expect_fail "template dual-lock: workload on ScheduledJob" \
   "workload belongs to kind: Application" -- \
@@ -849,6 +861,12 @@ else
   schema_reject "typo legasyDns rejected" "$APP_SCHEMA" \
     '{"kind":"Application","workload":{"type":"web"},"probes":false,"legasyDns":true}' \
     "Additional properties are not allowed ('legasyDns' was unexpected)"
+  schema_reject "legacyDns removed from public schema" "$APP_SCHEMA" \
+    '{"kind":"Application","workload":{"type":"web"},"probes":false,"legacyDns":true}' \
+    "False schema does not allow"
+  schema_reject "dns.publishLegacyHostname on worker rejected by public schema" "$APP_SCHEMA" \
+    '{"kind":"Application","workload":{"type":"worker"},"dns":{"publishLegacyHostname":true}}' \
+    "False was expected"
   schema_reject "typo resources.requets rejected" "$APP_SCHEMA" \
     '{"kind":"Application","workload":{"type":"web"},"probes":false,"resources":{"requets":{"cpu":"100m"}}}' \
     "Additional properties are not allowed ('requets' was unexpected)"
@@ -1244,14 +1262,25 @@ else
   echo "OK: no preStop yet (drain window is an unresolved platform fact)"
 fi
 
-echo "== hostname composition =="
-# The hostname list is composed from two inputs of different origin: legacyDns is consumer
-# intent (public manifest) and legacyDnsZone is a platform fact (area profile). Both route
-# kinds need the identical list, so it is composed once in chart.hostnames and the route
-# templates stay purely structural.
+echo "== hostname composition + DNS publication =="
+# Route acceptance hostnames come from platform.legacyDnsZone presence (always dual when
+# the zone exists). ExternalDNS publication is a separate list via annotation-only.
+# dns.publishLegacyHostname is consumer intent; legacyDnsZone is a platform fact.
 hostnames_of() {
   local kind="$1" rendered="$2"
   printf '%s' "${rendered}" | yq ea -r "select(.kind == \"${kind}\") | .spec.hostnames[]" 2>/dev/null | awk 'NF'
+}
+published_of() {
+  local kind="$1" rendered="$2"
+  printf '%s' "${rendered}" | yq ea -r \
+    "select(.kind == \"${kind}\") | .metadata.annotations[\"external-dns.kubernetes.io/hostname\"]" \
+    2>/dev/null | awk 'NF'
+}
+hostname_source_of() {
+  local kind="$1" rendered="$2"
+  printf '%s' "${rendered}" | yq ea -r \
+    "select(.kind == \"${kind}\") | .metadata.annotations[\"external-dns.kubernetes.io/gateway-hostname-source\"]" \
+    2>/dev/null | awk 'NF'
 }
 assert_hostnames() {
   local msg="$1" kind="$2" rendered="$3" expected="$4"
@@ -1264,51 +1293,103 @@ assert_hostnames() {
     FAILED=1
   fi
 }
+assert_published() {
+  local msg="$1" kind="$2" rendered="$3" expected="$4"
+  local got src
+  got="$(published_of "${kind}" "${rendered}")"
+  src="$(hostname_source_of "${kind}" "${rendered}")"
+  if [[ "${src}" != "annotation-only" ]]; then
+    echo "FAIL: ${msg} (gateway-hostname-source='${src}', want annotation-only)"
+    FAILED=1
+    return
+  fi
+  if [[ "${got}" == "${expected}" ]]; then
+    echo "OK: ${msg}"
+  else
+    echo "FAIL: ${msg} (published '${got}', want '${expected}')"
+    FAILED=1
+  fi
+}
+# Strip Routes so false→true regression proves Deployment/Service/etc unchanged.
+without_routes() {
+  printf '%s' "$1" | yq ea -N 'select(.kind != "HTTPRoute" and .kind != "GRPCRoute")' 2>/dev/null
+}
 
+# --- publishLegacyHostname: false (default) ---
 OUT_H_WEB="$(render_app --set-string workload.type=web --set-json 'probes={"readiness":{"path":"/h"}}')"
-assert_hostnames "web: corp hostname only when legacyDns is off" HTTPRoute "$OUT_H_WEB" \
-  "sample-api.dev.asa.corp"
-
-OUT_H_WEB_L="$(render_app --set-string workload.type=web --set-json 'probes={"readiness":{"path":"/h"}}' --set legacyDns=true)"
-assert_hostnames "web: corp then legacy when legacyDns is on" HTTPRoute "$OUT_H_WEB_L" \
+assert_hostnames "web false: HTTPRoute accepts corp + legacy" HTTPRoute "$OUT_H_WEB" \
   "sample-api.dev.asa.corp,sample-api.d.asa.com.br"
+assert_published "web false: ExternalDNS publishes corp only" HTTPRoute "$OUT_H_WEB" \
+  "sample-api.dev.asa.corp"
 
 OUT_H_GRPC="$(render_app --set-string workload.type=grpc --set-json 'probes={"readiness":{"enabled":true}}')"
-assert_hostnames "grpc: corp hostname only when legacyDns is off" GRPCRoute "$OUT_H_GRPC" \
+assert_hostnames "grpc false: GRPCRoute accepts corp + legacy" GRPCRoute "$OUT_H_GRPC" \
+  "sample-api.dev.asa.corp,sample-api.d.asa.com.br"
+assert_published "grpc false: ExternalDNS publishes corp only" GRPCRoute "$OUT_H_GRPC" \
   "sample-api.dev.asa.corp"
 
-OUT_H_GRPC_L="$(render_app --set-string workload.type=grpc --set-json 'probes={"readiness":{"enabled":true}}' --set legacyDns=true)"
-assert_hostnames "grpc: corp then legacy when legacyDns is on" GRPCRoute "$OUT_H_GRPC_L" \
+# --- publishLegacyHostname: true ---
+OUT_H_WEB_L="$(render_app --set-string workload.type=web --set-json 'probes={"readiness":{"path":"/h"}}' \
+  --set-json 'dns={"publishLegacyHostname":true}')"
+assert_hostnames "web true: HTTPRoute still accepts corp + legacy" HTTPRoute "$OUT_H_WEB_L" \
+  "sample-api.dev.asa.corp,sample-api.d.asa.com.br"
+assert_published "web true: ExternalDNS publishes corp + legacy" HTTPRoute "$OUT_H_WEB_L" \
   "sample-api.dev.asa.corp,sample-api.d.asa.com.br"
 
-# An area whose legacy zone equals its corp zone must not emit the hostname twice. The API
-# server accepts a duplicate silently, so nothing downstream would catch it.
+OUT_H_GRPC_L="$(render_app --set-string workload.type=grpc --set-json 'probes={"readiness":{"enabled":true}}' \
+  --set-json 'dns={"publishLegacyHostname":true}')"
+assert_hostnames "grpc true: GRPCRoute still accepts corp + legacy" GRPCRoute "$OUT_H_GRPC_L" \
+  "sample-api.dev.asa.corp,sample-api.d.asa.com.br"
+assert_published "grpc true: ExternalDNS publishes corp + legacy" GRPCRoute "$OUT_H_GRPC_L" \
+  "sample-api.dev.asa.corp,sample-api.d.asa.com.br"
+
+# Regression: false → true must only change DNS publication annotations, not workload objects.
+DIFF_WORKLOAD="$(diff -u <(without_routes "$OUT_H_WEB") <(without_routes "$OUT_H_WEB_L") || true)"
+if [[ -z "${DIFF_WORKLOAD}" ]]; then
+  echo "OK: false→true does not alter non-Route resources"
+else
+  echo "FAIL: false→true changed non-Route resources:"
+  echo "${DIFF_WORKLOAD}" | head -40
+  FAILED=1
+fi
+
+# An area whose legacy zone equals its corp zone must not emit the hostname twice.
 OUT_H_SAME="$(render_app --set-string workload.type=web --set-json 'probes={"readiness":{"path":"/h"}}' \
-  --set legacyDns=true --set-string platform.legacyDnsZone=dev.asa.corp)"
+  --set-string platform.legacyDnsZone=dev.asa.corp)"
 assert_hostnames "identical corp and legacy zones collapse to one hostname" HTTPRoute "$OUT_H_SAME" \
+  "sample-api.dev.asa.corp"
+assert_published "identical zones: ExternalDNS publishes once" HTTPRoute "$OUT_H_SAME" \
   "sample-api.dev.asa.corp"
 
 OUT_H_SAME_GRPC="$(render_app --set-string workload.type=grpc --set-json 'probes={"readiness":{"enabled":true}}' \
-  --set legacyDns=true --set-string platform.legacyDnsZone=dev.asa.corp)"
+  --set-string platform.legacyDnsZone=dev.asa.corp)"
 assert_hostnames "grpc: identical zones collapse to one hostname" GRPCRoute "$OUT_H_SAME_GRPC" \
   "sample-api.dev.asa.corp"
 
-# legacyDns without a zone is a misconfiguration, and both route kinds must reject it with
-# the same message from the same place — not from whichever route template happens to render.
-expect_fail "legacyDns without a legacy zone rejected (web)" "legacyDns=true requires platform.legacyDnsZone" -- \
-  render_app --set-string workload.type=web --set-json 'probes={"readiness":{"path":"/h"}}' \
-    --set legacyDns=true --set-string platform.legacyDnsZone=
-expect_fail "legacyDns without a legacy zone rejected (grpc)" "legacyDns=true requires platform.legacyDnsZone" -- \
-  render_app --set-string workload.type=grpc --set-json 'probes={"readiness":{"enabled":true}}' \
-    --set legacyDns=true --set-string platform.legacyDnsZone=
+# No legacy zone → Route accepts corp only; publish=true without a zone is a misconfiguration.
+OUT_H_NOZONE="$(render_app --set-string workload.type=web --set-json 'probes={"readiness":{"path":"/h"}}' \
+  --set-string platform.legacyDnsZone=)"
+assert_hostnames "no legacy zone: corp only on HTTPRoute" HTTPRoute "$OUT_H_NOZONE" \
+  "sample-api.dev.asa.corp"
+assert_published "no legacy zone: ExternalDNS publishes corp only" HTTPRoute "$OUT_H_NOZONE" \
+  "sample-api.dev.asa.corp"
 
-# Route templates must not re-implement the rule; they consume the composed list.
+expect_fail "publishLegacyHostname without a legacy zone rejected (web)" \
+  "dns.publishLegacyHostname=true requires platform.legacyDnsZone" -- \
+  render_app --set-string workload.type=web --set-json 'probes={"readiness":{"path":"/h"}}' \
+    --set-json 'dns={"publishLegacyHostname":true}' --set-string platform.legacyDnsZone=
+expect_fail "publishLegacyHostname without a legacy zone rejected (grpc)" \
+  "dns.publishLegacyHostname=true requires platform.legacyDnsZone" -- \
+  render_app --set-string workload.type=grpc --set-json 'probes={"readiness":{"enabled":true}}' \
+    --set-json 'dns={"publishLegacyHostname":true}' --set-string platform.legacyDnsZone=
+
+# Route templates must not re-implement DNS policy; they consume chart helpers.
 for rt in httproute grpcroute; do
-  if grep -q 'legacyDns' "${APP_CHART}/templates/${rt}.yaml"; then
-    echo "FAIL: ${rt}.yaml decides hostname policy — it must include chart.hostnames instead"
+  if grep -qE 'publishLegacyHostname|legacyDnsZone' "${APP_CHART}/templates/${rt}.yaml"; then
+    echo "FAIL: ${rt}.yaml decides DNS policy — it must include chart helpers instead"
     FAILED=1
   else
-    echo "OK: ${rt}.yaml consumes the composed hostname list"
+    echo "OK: ${rt}.yaml consumes composed hostname + ExternalDNS helpers"
   fi
 done
 

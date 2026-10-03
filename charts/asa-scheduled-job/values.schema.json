@@ -277,6 +277,7 @@
     },
     "workload": false,
     "legacyDns": false,
+    "dns": false,
     "probes": false,
     "autoscaling": false,
     "persistence": false,

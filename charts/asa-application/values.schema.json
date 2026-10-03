@@ -28,9 +28,16 @@
         }
       }
     },
-    "legacyDns": {
-      "type": "boolean"
+    "dns": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "publishLegacyHostname": {
+          "type": "boolean"
+        }
+      }
     },
+    "legacyDns": false,
     "probes": {
       "oneOf": [
         {
@@ -560,8 +567,12 @@
       },
       "then": {
         "properties": {
-          "legacyDns": {
-            "const": false
+          "dns": {
+            "properties": {
+              "publishLegacyHostname": {
+                "const": false
+              }
+            }
           }
         }
       }

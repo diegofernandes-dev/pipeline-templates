@@ -11,7 +11,7 @@ passes platform.* (required, fail-closed — no silent defaults).
 {{- define "chart.legacyHostname" -}}
 {{- $zone := .Values.platform.legacyDnsZone | default "" -}}
 {{- if not $zone -}}
-{{- fail "legacyDns=true requires platform.legacyDnsZone (cluster has no legacy DNS zone — unset legacyDns or add the zone to the area profile)" -}}
+{{- fail "dns.publishLegacyHostname=true requires platform.legacyDnsZone (cluster has no legacy DNS zone — unset dns.publishLegacyHostname or add the zone to the area profile)" -}}
 {{- end -}}
 {{- printf "%s.%s" .Release.Name $zone -}}
 {{- end }}
@@ -24,27 +24,53 @@ passes platform.* (required, fail-closed — no silent defaults).
 {{- required "platform.gatewayNamespace is required (pipeline must inject via resolve-platform-values.sh)" .Values.platform.gatewayNamespace -}}
 {{- end }}
 
+{{- define "chart.publishLegacyHostname" -}}
+{{- $dns := .Values.dns | default dict -}}
+{{- if and (hasKey $dns "publishLegacyHostname") $dns.publishLegacyHostname -}}
+true
+{{- else -}}
+false
+{{- end -}}
+{{- end }}
+
 {{/*
-The composed hostname list both route kinds consume.
+Route acceptance hostnames — Gateway/TLS validation surface.
 
-It joins two inputs of different origin: legacyDns is consumer intent (public manifest) while
-legacyDnsZone is a platform fact (area profile), so the pipeline cannot compose it — the
-resolver reads the area profile and never parses the app manifest. Composing it here keeps the
-route templates purely structural and gives the rule one home: the identical block used to live
-in httproute.yaml and grpcroute.yaml, so the same policy error surfaced from a different file
-depending on workload.type.
+When platform.legacyDnsZone is set, BOTH corp and legacy hostnames are accepted on the
+Route so cutover can be validated (TLS, Gateway, backend) before DNS is transferred.
+dns.publishLegacyHostname does NOT gate this list — it only controls ExternalDNS publication.
 
-Deduplicated on purpose: an area whose legacy zone equals its corp zone would otherwise emit
-the same hostname twice, and the API server accepts that silently.
+Deduplicated on purpose: an area whose legacy zone equals its corp zone would otherwise
+emit the same hostname twice, and the API server accepts that silently.
 */}}
 {{- define "chart.hostnames" -}}
 {{- $names := list (include "chart.hostname" .) -}}
-{{- if .Values.legacyDns -}}
-{{- $names = append $names (include "chart.legacyHostname" .) -}}
+{{- $zone := .Values.platform.legacyDnsZone | default "" -}}
+{{- if $zone -}}
+{{- $names = append $names (printf "%s.%s" .Release.Name $zone) -}}
 {{- end -}}
 {{- $lines := list -}}
 {{- range ($names | uniq) -}}
 {{- $lines = append $lines (printf "- %s" (. | quote)) -}}
 {{- end -}}
 {{- join "\n" $lines -}}
+{{- end }}
+
+{{/*
+ExternalDNS publication annotations.
+
+gateway-hostname-source: annotation-only keeps Route acceptance ≠ DNS ownership.
+Hostnames in the annotation are the only ones ExternalDNS may publish.
+
+Requires ExternalDNS that reads external-dns.kubernetes.io/ (default since v0.22)
+and supports gateway-hostname-source (added ~v0.21). Lab has no ExternalDNS —
+live reconciliation is NOT proven here.
+*/}}
+{{- define "chart.externalDnsAnnotations" -}}
+{{- $names := list (include "chart.hostname" .) -}}
+{{- if eq (include "chart.publishLegacyHostname" .) "true" -}}
+{{- $names = append $names (include "chart.legacyHostname" .) -}}
+{{- end -}}
+external-dns.kubernetes.io/gateway-hostname-source: annotation-only
+external-dns.kubernetes.io/hostname: {{ $names | uniq | join "," | quote }}
 {{- end }}

@@ -144,8 +144,8 @@ dry_run "worker / explicit autoscaling" -- app --set-string workload.type=worker
 dry_run "web / persistence (RWO, Recreate)" -- app --set-string workload.type=web \
   --set-json 'probes={"readiness":{"path":"/h"}}' --set autoscaling=false --set replicaCount=1 \
   --set-string persistence.mountPath=/data --set-string persistence.size=1Gi
-dry_run "web / legacyDns" -- app --set-string workload.type=web \
-  --set-json 'probes={"readiness":{"path":"/h"}}' --set legacyDns=true
+dry_run "web / publishLegacyHostname" -- app --set-string workload.type=web \
+  --set-json 'probes={"readiness":{"path":"/h"}}' --set-json 'dns={"publishLegacyHostname":true}'
 PLATFORM_ENV=production dry_run "web / everything on" -- app --set-string workload.type=web \
   --set-json 'probes={"readiness":{"path":"/h"}}' "${ALL_ON[@]}"
 dry_run "grpc / everything on" -- app --set-string workload.type=grpc \

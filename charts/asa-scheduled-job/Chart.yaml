@@ -2,8 +2,8 @@ apiVersion: v2
 name: asa-scheduled-job
 description: Platform chart for ScheduledJob (CronJob) on EKS
 type: application
-version: 4.2.0
-appVersion: "4.2.0"
+version: 4.3.0
+appVersion: "4.3.0"
 
 # Floor DERIVED from what these charts actually apply, not from what any cluster happens to run:
 #   CronJob .spec.timeZone     stable v1.27   <- binding constraint

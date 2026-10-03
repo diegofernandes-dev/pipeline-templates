@@ -28,9 +28,16 @@
         }
       }
     },
-    "legacyDns": {
-      "type": "boolean"
+    "dns": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "publishLegacyHostname": {
+          "type": "boolean"
+        }
+      }
     },
+    "legacyDns": false,
     "probes": {
       "oneOf": [
         {
@@ -383,6 +390,30 @@
         "required": [
           "probes"
         ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "workload": {
+            "properties": {
+              "type": {
+                "const": "worker"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "dns": {
+            "properties": {
+              "publishLegacyHostname": {
+                "const": false
+              }
+            }
+          }
+        }
       }
     }
   ]

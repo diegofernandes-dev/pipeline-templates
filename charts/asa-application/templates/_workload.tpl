@@ -49,8 +49,7 @@ Difference web vs grpc is semantic (HTTPRoute/HTTP probes vs GRPCRoute/h2c/gRPC 
 {{- if not (or (eq $t "web") (eq $t "grpc") (eq $t "worker")) -}}
 {{- fail (printf "workload.type must be web, grpc, or worker (got %q)" $t) -}}
 {{- end -}}
-{{- $legacy := .Values.legacyDns | default false -}}
-{{- if and $legacy (eq $t "worker") -}}
-{{- fail "legacyDns is invalid for workload.type: worker (no endpoint/DNS)" -}}
+{{- if and (eq (include "chart.publishLegacyHostname" .) "true") (eq $t "worker") -}}
+{{- fail "dns.publishLegacyHostname is invalid for workload.type: worker (no endpoint/DNS)" -}}
 {{- end -}}
 {{- end }}

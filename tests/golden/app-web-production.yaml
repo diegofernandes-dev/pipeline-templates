@@ -10,7 +10,7 @@ metadata:
     app.kubernetes.io/instance: golden-app
     app.kubernetes.io/version: "deadbeef"
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: asa-application-5.2.0
+    helm.sh/chart: asa-application-5.3.0
     asa.platform/area: lab
     asa.platform/tier: production
 spec:
@@ -34,7 +34,7 @@ metadata:
     app.kubernetes.io/instance: golden-app
     app.kubernetes.io/version: "deadbeef"
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: asa-application-5.2.0
+    helm.sh/chart: asa-application-5.3.0
     asa.platform/area: lab
     asa.platform/tier: production
 automountServiceAccountToken: false
@@ -50,7 +50,7 @@ metadata:
     app.kubernetes.io/instance: golden-app
     app.kubernetes.io/version: "deadbeef"
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: asa-application-5.2.0
+    helm.sh/chart: asa-application-5.3.0
     asa.platform/area: lab
     asa.platform/tier: production
 spec:
@@ -73,7 +73,7 @@ metadata:
     app.kubernetes.io/instance: golden-app
     app.kubernetes.io/version: "deadbeef"
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: asa-application-5.2.0
+    helm.sh/chart: asa-application-5.3.0
     asa.platform/area: lab
     asa.platform/tier: production
     app.kubernetes.io/component: web
@@ -179,7 +179,7 @@ metadata:
     app.kubernetes.io/instance: golden-app
     app.kubernetes.io/version: "deadbeef"
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: asa-application-5.2.0
+    helm.sh/chart: asa-application-5.3.0
     asa.platform/area: lab
     asa.platform/tier: production
 spec:
@@ -208,9 +208,12 @@ metadata:
     app.kubernetes.io/instance: golden-app
     app.kubernetes.io/version: "deadbeef"
     app.kubernetes.io/managed-by: Helm
-    helm.sh/chart: asa-application-5.2.0
+    helm.sh/chart: asa-application-5.3.0
     asa.platform/area: lab
     asa.platform/tier: production
+  annotations:
+    external-dns.kubernetes.io/gateway-hostname-source: annotation-only
+    external-dns.kubernetes.io/hostname: "golden-app.prd.asa.corp"
 spec:
   parentRefs:
     - name: p-asa-com-br-internal-gateway
@@ -219,6 +222,7 @@ spec:
       kind: Gateway
   hostnames:
     - "golden-app.prd.asa.corp"
+    - "golden-app.p.asa.com.br"
   rules:
     - matches:
         - path:

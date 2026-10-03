@@ -5,8 +5,12 @@ workload:
   type: web
   # port is NOT part of the public contract — schema rejects workload.port
 
-# Legacy .asa.com.br hostname (web/grpc only). Default false.
-legacyDns: false
+# DNS publication intent (web/grpc only). Route acceptance is independent:
+# when platform.legacyDnsZone is set, HTTPRoute/GRPCRoute always accept both
+# corp and legacy hostnames. This flag only authorizes ExternalDNS to publish
+# the legacy hostname. Default false = publish .corp only.
+dns:
+  publishLegacyHostname: false
 
 # Pipeline injects image + platform.* (via resolve-platform-values.sh) + runtime.environment
 image:
