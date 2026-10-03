@@ -29,10 +29,7 @@ resources:
       type: github
       name: diegofernandes-dev/pipeline-templates
       endpoint: github-diegofernandes-dev
-      # Prefer an immutable tag only after platform-ci is green on that SHA.
-      # v5.3.0 is RETIRADA — do not use. Until v5.3.1 is tagged, pin a green commit SHA
-      # (or temporarily track main after the hygiene fix).
-      ref: refs/heads/main
+      ref: refs/tags/v5.3.1   # current recommended; v5.3.0 is RETIRADA
 
 extends:
   template: templates/dotnet/ci.yml@templates
@@ -225,6 +222,7 @@ helm lint charts/asa-scheduled-job \
 | `v3.2.0` | kubeconform nos manifests renderizados; `expect_fail` com asserção de mensagem; `validateAutoscaling` (min≤max); `remoteRef.key` required; `image.repository` minLength; `/tmp` `emptyDir.sizeLimit`; labels padrão (`version`/`managed-by`/`helm.sh/chart`); gate de bump de versão no CI |
 | `v4.0.0` | Desacoplamento env→topology via `resolve-platform-values.sh` + `platform.*` no chart; asa-application 4.x |
 | `v5.0.0` | Cluster axis + runtime-agnostic charts: `platform/areas` + `platform/runtimes`; env `PORT`/`APP_PROTOCOL`/`SHUTDOWN_TIMEOUT_SECONDS`; asa-application 5.2.0 / asa-scheduled-job 4.2.0 |
+| `v5.3.1` | **Recomendada.** Corretiva após `platform-ci` verde: SIGPIPE/exit 141 no harness, docs ExternalDNS, higiene de release. Runtime DNS inalterado vs lab E2E.
 | `v5.3.0` | **RETIRADA — não usar.** Tag criada em `fa1aa5d` antes dos gates completos do repositório (`contracts` falhava com exit 141 / SIGPIPE no harness). O comportamento DNS (`dns.publishLegacyHostname`) e a evidência E2E em [`docs/lab-e2e-validation-2026-10-02.md`](docs/lab-e2e-validation-2026-10-02.md) permanecem válidos; o problema é **qualificação de release**, não o runtime. Tag imutável — não mover. Próxima corretiva candidata: `v5.3.1` **somente** após `platform-ci` verde no SHA exato. |
 
 **Release (fluxo alvo):** candidate SHA → `platform-ci` concluído com `conclusion=success` em **todos** os jobs obrigatórios (`contracts`, `apply-dryrun`) no **mesmo** SHA (execução cancelada por concurrency **não** qualifica) → evidência de integração já registada ou revalidada se houver mudança runtime → tag imutável → consumers passam a apontar para essa tag. Nunca: merge → tag → descobrir depois se o CI passou.
