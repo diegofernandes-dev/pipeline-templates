@@ -1,0 +1,4 @@
+
+# Local lab inventory (never commit)
+.lab-aws-ephemeral.txt
+.vscode/

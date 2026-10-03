@@ -13,38 +13,181 @@ jobs:
   contracts:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Helm 3
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
         with:
           version: v3.16.2
 
-      - name: Setup yq
+      - name: Setup yq (checksum-verified)
+        env:
+          YQ_VERSION: v4.44.3
+          YQ_SHA256: a2c097180dd884a8d50c956ee16a9cec070f30a7947cf4ebf87d5f36213e9ed7
         run: |
-          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64
-          sudo chmod +x /usr/local/bin/yq
+          set -Eeuo pipefail
+          wget -qO /tmp/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+          echo "${YQ_SHA256}  /tmp/yq" | sha256sum -c -
+          sudo install -m 0755 /tmp/yq /usr/local/bin/yq
+          rm -f /tmp/yq
           yq --version
           helm version
+
+      - name: Setup kubeconform (checksum-verified)
+        env:
+          KUBECONFORM_VERSION: v0.6.7
+          KUBECONFORM_SHA256: 95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73
+        run: |
+          set -Eeuo pipefail
+          wget -qO /tmp/kubeconform.tar.gz \
+            "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          echo "${KUBECONFORM_SHA256}  /tmp/kubeconform.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/kubeconform.tar.gz -C /tmp kubeconform
+          sudo install -m 0755 /tmp/kubeconform /usr/local/bin/kubeconform
+          rm -f /tmp/kubeconform.tar.gz /tmp/kubeconform
+          kubeconform -v
+
+      - name: chart version bump required
+        if: github.event_name == 'pull_request'
+        run: |
+          set -Eeuo pipefail
+          BASE="${{ github.event.pull_request.base.sha }}"
+          if ! git diff --name-only "${BASE}"...HEAD | grep -q '^charts/'; then
+            echo "No charts/** changes — version bump not required"
+            exit 0
+          fi
+          failed=0
+          for chart in charts/asa-application charts/asa-scheduled-job; do
+            if ! git diff --name-only "${BASE}"...HEAD | grep -q "^${chart}/"; then
+              continue
+            fi
+            if ! git cat-file -e "${BASE}:${chart}/Chart.yaml" 2>/dev/null; then
+              echo "OK: ${chart} is new on this PR"
+              continue
+            fi
+            old="$(git show "${BASE}:${chart}/Chart.yaml" | yq -r .version)"
+            new="$(yq -r .version "${chart}/Chart.yaml")"
+            if [[ "${old}" == "${new}" ]]; then
+              echo "FAIL: ${chart} changed but Chart.yaml version is still ${new}"
+              failed=1
+            else
+              echo "OK: ${chart} version ${old} → ${new}"
+            fi
+          done
+          exit "${failed}"
 
       - name: Python deps (pinned)
         run: pip3 install --user "pyyaml==6.0.2" "jsonschema==4.23.0"
 
       - name: helm lint asa-application
-        run: helm lint charts/asa-application
+        run: |
+          set -Eeuo pipefail
+          pf="$(mktemp -t asa-platform.XXXXXX.yaml)"
+          ./scripts/resolve-platform-values.sh lab develop "${pf}"
+          helm lint charts/asa-application \
+            -f "${pf}" \
+            --set-string image.repository=example.dkr.ecr.us-east-1.amazonaws.com/sample-api
+          rm -f "${pf}"
 
       - name: helm lint asa-scheduled-job
         run: |
+          set -Eeuo pipefail
+          pf="$(mktemp -t asa-platform.XXXXXX.yaml)"
+          ./scripts/resolve-platform-values.sh lab develop "${pf}"
           helm lint charts/asa-scheduled-job \
+            -f "${pf}" \
+            --set-string image.repository=example.dkr.ecr.us-east-1.amazonaws.com/sample-job \
             --set-string schedule.expression='0 2 * * *' \
             --set-string schedule.timeZone=America/Sao_Paulo \
             --set execution.timeoutSeconds=1800 \
             --set-string 'execution.args[0]=--mode=job'
+          rm -f "${pf}"
 
-      - name: chart-drift
+      - name: chart-drift (+ schema parity)
         run: ./tests/chart-drift.sh
+
+      - name: platform-contract
+        run: ./tests/platform-contract.sh
+
+      - name: runtime-contract
+        run: ./tests/runtime-contract.sh
+
+      - name: runtime-adapter-dotnet
+        run: ./tests/runtime-adapter-dotnet.sh
+
+      - name: chart-golden
+        run: ./tests/chart-golden.sh check
+
+      - name: chart-matrix (feature interactions)
+        run: ./tests/chart-matrix.sh
+
+      - name: chart-conform (kubeconform)
+        run: ./tests/chart-conform.sh
 
       - name: chart-invariants (+ public schema)
         run: |
           export PATH="${HOME}/.local/bin:${PATH}"
           ./tests/chart-invariants.sh
+
+  # Separate job: it needs a cluster, so it is slower and must not hold up the fast contract
+  # checks. This is the only layer that sees constraints Kubernetes enforces but does not
+  # express in its OpenAPI schema — label value syntax and volumeMount uniqueness both live
+  # here, and kubeconform reports manifests carrying them as valid.
+  apply-dryrun:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Setup Helm 3
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
+        with:
+          version: v3.16.2
+
+      - name: Create k3d cluster at the charts' declared kubeVersion floor
+        env:
+          # The charts declare kubeVersion >=1.27.0-0, so validate against the floor: it is the
+          # oldest cluster they claim to support, and therefore the strictest test of that claim.
+          K3S_IMAGE: rancher/k3s:v1.27.16-k3s1
+          K3D_VERSION: v5.7.4
+          # From the release's own checksums.txt (which lists the path as _dist/k3d-linux-amd64),
+          # cross-checked by downloading the asset and hashing it.
+          K3D_SHA256: 1ac1da365236736a8df8c32107b54aca208384ab1d9a06771443c85ad698a5eb
+        run: |
+          set -Eeuo pipefail
+          curl -fsSL -o /tmp/k3d "https://github.com/k3d-io/k3d/releases/download/${K3D_VERSION}/k3d-linux-amd64"
+          echo "${K3D_SHA256}  /tmp/k3d" | sha256sum -c -
+          sudo install -m 0755 /tmp/k3d /usr/local/bin/k3d
+          k3d version
+          k3d cluster create asa-ci --image "${K3S_IMAGE}" --servers 1 --agents 0 \
+            --no-lb --k3s-arg "--disable=traefik@server:0" --wait
+          kubectl config use-context k3d-asa-ci
+          kubectl get --raw /version
+
+      - name: Install the CRDs the charts apply
+        env:
+          GATEWAY_API_VERSION: v1.1.0
+          ESO_VERSION: v0.19.2
+        run: |
+          set -Eeuo pipefail
+          # GRPCRoute is only v1 from Gateway API 1.1; the charts apply
+          # gateway.networking.k8s.io/v1 and external-secrets.io/v1. Without these the dry-run
+          # would silently skip those objects and prove nothing about them.
+          kubectl apply --server-side -f \
+            "https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_API_VERSION}/standard-install.yaml"
+          kubectl apply --server-side -f \
+            "https://raw.githubusercontent.com/external-secrets/external-secrets/${ESO_VERSION}/deploy/crds/bundle.yaml"
+          for gv in gateway.networking.k8s.io/v1 external-secrets.io/v1; do
+            kubectl get --raw "/apis/${gv}" >/dev/null
+            echo "serving ${gv}"
+          done
+
+      - name: chart-apply (server-side dry-run)
+        env:
+          KUBE_CONTEXT: k3d-asa-ci
+        run: ./tests/chart-apply.sh
+
+      - name: Tear down
+        if: always()
+        run: k3d cluster delete asa-ci || true

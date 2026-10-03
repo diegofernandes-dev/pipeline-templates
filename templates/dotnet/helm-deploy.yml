@@ -1,12 +1,20 @@
 # Stage reutilizável: Helm deploy em um Environment ADO.
 # Namespace: asa-<applicationName> (sem sufixo; mesmo nome em cada cluster).
-# Manifesto obrigatório: deploy/config/<environment>.yaml com kind: Application|ScheduledJob.
+# Manifesto obrigatório: deploy/config/<tier>.yaml com kind: Application|ScheduledJob.
 # Chart path is resolved from kind (never exposed to the consumer).
 #
 # Operational requirement: Azure DevOps Environments used for deploy MUST enable
 # exclusive lock / one deployment at a time per environment (no bash lock here).
 parameters:
+  # Logical tier (develop|homolog|production) — stage name, manifesto path, dependsOn.
+  - name: tier
+    type: string
+
+  # Physical ADO Environment name (from platform.tiers.<tier>.environmentName).
   - name: environmentName
+    type: string
+
+  - name: platformArea
     type: string
 
   - name: variableGroups
@@ -23,11 +31,9 @@ parameters:
 
   - name: containerPool
     type: string
-    default: 'PG-AWS-EKS'
 
   - name: awsRegion
     type: string
-    default: 'us-east-1'
 
   - name: helmTimeout
     type: string
@@ -37,24 +43,23 @@ parameters:
     type: string
     default: 'deploy/config'
 
-  # Exact kubectl context name (not substring). Empty = skip (external blocker until mapped).
-  - name: expectedKubeContext
+  - name: runtime
     type: string
-    default: ''
+    default: 'dotnet'
 
   # Lab fallback: docker-registry secret name (empty = rely on node/kubelet ECR IAM).
   - name: ecrPullSecret
     type: string
     default: ''
 
-  # develop + ScheduledJob only: create a one-off Job from CronJob after deploy (opt-in).
+  # smokeAllowed tier + ScheduledJob only: create a one-off Job from CronJob after deploy (opt-in).
   - name: smokeScheduledJob
     type: boolean
     default: false
 
 stages:
-  - stage: Deploy_${{ parameters.environmentName }}
-    displayName: Deploy ${{ parameters.environmentName }}
+  - stage: Deploy_${{ parameters.tier }}
+    displayName: Deploy ${{ parameters.tier }} (${{ parameters.platformArea }})
     dependsOn: ${{ parameters.dependsOn }}
     condition: succeeded()
     variables:
@@ -65,8 +70,8 @@ stages:
       - ${{ each vg in parameters.variableGroups }}:
         - group: ${{ vg }}
     jobs:
-      - deployment: Helm_${{ parameters.environmentName }}
-        displayName: Helm upgrade (${{ parameters.environmentName }})
+      - deployment: Helm_${{ parameters.tier }}
+        displayName: Helm upgrade (${{ parameters.tier }})
         environment: ${{ parameters.environmentName }}
         pool:
           name: ${{ parameters.containerPool }}
@@ -88,6 +93,8 @@ stages:
                   displayName: helm upgrade --install
                   env:
                     APPLICATION_NAME: ${{ parameters.applicationName }}
+                    PLATFORM_AREA: ${{ parameters.platformArea }}
+                    PLATFORM_TIER: ${{ parameters.tier }}
                     ADO_ENVIRONMENT: ${{ parameters.environmentName }}
                     HELM_TIMEOUT: ${{ parameters.helmTimeout }}
                     AWS_REGION: ${{ parameters.awsRegion }}
@@ -95,10 +102,16 @@ stages:
                     IMAGE_REPOSITORY: $(imageRepository)
                     IMAGE_TAG: $(imageTag)
                     RUNTIME_CONFIG_PATH: ${{ parameters.runtimeConfigPath }}
-                    EXPECTED_KUBE_CONTEXT: ${{ parameters.expectedKubeContext }}
+                    PLATFORM_RUNTIME: ${{ parameters.runtime }}
                     SMOKE_SCHEDULED_JOB: ${{ parameters.smokeScheduledJob }}
-                    # Prefer compile-time parameter — deployment jobs often leave $(ECR_PULL_SECRET) unresolved.
-                    ECR_PULL_SECRET: ${{ parameters.ecrPullSecret }}
+                    # Two sources, because neither alone covers both ways a consumer can define it:
+                    #   PARAM   — compile-time. Only resolves for pipeline-level or queue-time variables,
+                    #             NOT for a Variable Group linked to this stage (those are runtime-only).
+                    #   RUNTIME — the macro. Covers the Variable Group case, but ADO leaves it as the
+                    #             literal string $(ECR_PULL_SECRET) when undefined.
+                    # The script below picks whichever actually carries a value.
+                    ECR_PULL_SECRET_PARAM: ${{ parameters.ecrPullSecret }}
+                    ECR_PULL_SECRET_RUNTIME: $(ECR_PULL_SECRET)
                   inputs:
                     targetType: inline
                     script: |
@@ -107,13 +120,26 @@ stages:
                       WORKSPACE="${PIPELINE_WORKSPACE:-${AGENT_BUILDDIRECTORY}}"
                       TEMPLATES_DIR="${WORKSPACE}/pipeline-templates"
                       APP_DIR="${WORKSPACE}/app"
-                      MANIFEST="${APP_DIR}/${RUNTIME_CONFIG_PATH}/${ADO_ENVIRONMENT}.yaml"
+                      MANIFEST="${APP_DIR}/${RUNTIME_CONFIG_PATH}/${PLATFORM_TIER}.yaml"
                       HELM_RELEASE="${APPLICATION_NAME}"
                       HELM_NAMESPACE="asa-${APPLICATION_NAME}"
-                      PLATFORM_ENVS="${TEMPLATES_DIR}/config/platform-environments.json"
 
-                      # Empty / whitespace-only → unset (no lab pull secret).
-                      ECR_PULL_SECRET="$(echo -n "${ECR_PULL_SECRET:-}" | tr -d "[:space:]")"
+                      # Resolve the pull secret from whichever source carried a value. An unset ADO
+                      # macro arrives as the literal "$(NAME)", which must be treated as absent.
+                      ECR_PULL_SECRET=""
+                      ECR_PULL_SECRET_SOURCE="none"
+                      for candidate_name in ECR_PULL_SECRET_PARAM ECR_PULL_SECRET_RUNTIME; do
+                        candidate="$(echo -n "${!candidate_name:-}" | tr -d "[:space:]")"
+                        if [[ -z "${candidate}" || "${candidate}" == '$('* ]]; then
+                          continue
+                        fi
+                        ECR_PULL_SECRET="${candidate}"
+                        ECR_PULL_SECRET_SOURCE="${candidate_name}"
+                        break
+                      done
+                      if [[ -n "${ECR_PULL_SECRET}" ]]; then
+                        echo "imagePullSecret name resolved from ${ECR_PULL_SECRET_SOURCE}"
+                      fi
 
                       dump_diagnostics() {
                         echo "##[group]deploy diagnostics"
@@ -162,14 +188,6 @@ stages:
                         exit 1
                       fi
 
-                      case "${ADO_ENVIRONMENT}" in
-                        develop|homolog|production) ;;
-                        *)
-                          echo "##vso[task.logissue type=error]Unsupported environment '${ADO_ENVIRONMENT}'"
-                          exit 1
-                          ;;
-                      esac
-
                       if [[ -z "${APPLICATION_NAME:-}" ]]; then
                         echo "##vso[task.logissue type=error]applicationName is required"
                         exit 1
@@ -180,15 +198,19 @@ stages:
                         exit 1
                       fi
 
-                      CTX="$(kubectl config current-context 2>/dev/null || true)"
-                      echo "kubectl context: ${CTX}"
-                      if [[ -n "${EXPECTED_KUBE_CONTEXT:-}" ]]; then
-                        if [[ "${CTX}" != "${EXPECTED_KUBE_CONTEXT}" ]]; then
-                          echo "##vso[task.logissue type=error]kubectl context must equal expectedKubeContext '${EXPECTED_KUBE_CONTEXT}' (got '${CTX}') — exact match, no substring"
-                          exit 1
-                        fi
-                      else
-                        echo "##[warning]expectedKubeContext empty for ${ADO_ENVIRONMENT} — EXTERNAL BLOCKER until platform mapping is filled in config/platform-environments.json"
+                      # Single source of truth: platform/areas/<area>.yml via the resolver.
+                      PLATFORM_VALUES="$(mktemp -t asa-platform.XXXXXX.yaml)"
+                      PLATFORM_FACTS="$(mktemp -t asa-platform-facts.XXXXXX.yaml)"
+                      RUNTIME_VALUES="$(mktemp -t asa-runtime.XXXXXX.yaml)"
+                      if ! bash "${TEMPLATES_DIR}/scripts/resolve-platform-values.sh" \
+                           "${PLATFORM_AREA}" "${PLATFORM_TIER}" "${PLATFORM_VALUES}"; then
+                        echo "##vso[task.logissue type=error]Failed to resolve platform values for '${PLATFORM_AREA}/${PLATFORM_TIER}'"
+                        exit 1
+                      fi
+                      if ! bash "${TEMPLATES_DIR}/scripts/resolve-platform-values.sh" \
+                           "${PLATFORM_AREA}" "${PLATFORM_TIER}" --facts "${PLATFORM_FACTS}"; then
+                        echo "##vso[task.logissue type=error]Failed to resolve platform facts for '${PLATFORM_AREA}/${PLATFORM_TIER}'"
+                        exit 1
                       fi
 
                       KIND="$(yq -r '.kind // ""' "${MANIFEST}")"
@@ -196,16 +218,50 @@ stages:
                         Application)
                           CHART_DIR="${TEMPLATES_DIR}/charts/asa-application"
                           PUBLIC_SCHEMA="${TEMPLATES_DIR}/schemas/application.manifest.schema.json"
+                          WT="$(yq -r '.workload.type // ""' "${MANIFEST}")"
+                          case "${WT}" in
+                            web|grpc|worker) RUNTIME_WORKLOAD="${WT}" ;;
+                            *)
+                              echo "##vso[task.logissue type=error]Application requires workload.type web|grpc|worker (got '${WT}')"
+                              exit 1
+                              ;;
+                          esac
                           ;;
                         ScheduledJob)
                           CHART_DIR="${TEMPLATES_DIR}/charts/asa-scheduled-job"
                           PUBLIC_SCHEMA="${TEMPLATES_DIR}/schemas/scheduled-job.manifest.schema.json"
+                          RUNTIME_WORKLOAD=scheduledJob
                           ;;
                         *)
-                          echo "##vso[task.logissue type=error]Unsupported or missing kind '${KIND}'"
+                          echo "##vso[task.logissue type=error]Unsupported kind '${KIND}' in ${MANIFEST}"
                           exit 1
                           ;;
                       esac
+
+                      if ! bash "${TEMPLATES_DIR}/scripts/resolve-runtime-values.sh" \
+                           "${PLATFORM_RUNTIME}" "${RUNTIME_WORKLOAD}" "${RUNTIME_VALUES}"; then
+                        echo "##vso[task.logissue type=error]Failed to resolve runtime values for '${PLATFORM_RUNTIME}/${RUNTIME_WORKLOAD}'"
+                        exit 1
+                      fi
+                      EXPECTED_KUBE_CONTEXT="$(yq -r '.cluster.expectedKubeContext // ""' "${PLATFORM_FACTS}")"
+                      PSA_ENFORCE="$(yq -r '.cluster.podSecurity.enforce // ""' "${PLATFORM_FACTS}")"
+                      PSA_ENFORCE_VERSION="$(yq -r '.cluster.podSecurity.enforceVersion // ""' "${PLATFORM_FACTS}")"
+                      CLUSTER_AWS_ACCOUNT="$(yq -r '.cluster.awsAccountId // ""' "${PLATFORM_FACTS}")"
+                      SMOKE_ALLOWED="$(yq -r '.cluster.smokeAllowed // "false"' "${PLATFORM_FACTS}")"
+                      REGISTRY_ACCOUNT="$(yq -r '.registry.awsAccountId // ""' "${PLATFORM_FACTS}")"
+                      REGISTRY_REGION="$(yq -r '.registry.awsRegion // ""' "${PLATFORM_FACTS}")"
+
+                      CTX="$(kubectl config current-context 2>/dev/null || true)"
+                      echo "kubectl context: ${CTX}"
+                      if [[ -n "${EXPECTED_KUBE_CONTEXT}" && "${EXPECTED_KUBE_CONTEXT}" != "null" ]]; then
+                        if [[ "${CTX}" != "${EXPECTED_KUBE_CONTEXT}" ]]; then
+                          echo "##vso[task.logissue type=error]kubectl context must equal expectedKubeContext '${EXPECTED_KUBE_CONTEXT}' for ${PLATFORM_AREA}/${PLATFORM_TIER} (got '${CTX}') — exact match, no substring"
+                          exit 1
+                        fi
+                        echo "kubectl context matches expectedKubeContext for ${PLATFORM_AREA}/${PLATFORM_TIER}"
+                      else
+                        echo "##[warning]EXTERNAL BLOCKER: expectedKubeContext for ${PLATFORM_AREA}/${PLATFORM_TIER} is null — cluster identity is NOT asserted for this deploy"
+                      fi
 
                       if [[ ! -f "${CHART_DIR}/Chart.yaml" ]]; then
                         echo "##vso[task.logissue type=error]Chart not found: ${CHART_DIR}"
@@ -227,82 +283,140 @@ stages:
                         app.kubernetes.io/managed-by=pipeline-templates \
                         app.kubernetes.io/name="${HELM_RELEASE}" \
                         --overwrite >/dev/null
+                      # Pod Security Admission. Per-cluster because clusters may enforce
+                      # differently; null in the mapping means "do not label" (no guessed policy).
+                      if [[ -n "${PSA_ENFORCE}" && "${PSA_ENFORCE}" != "null" ]]; then
+                        case "${PSA_ENFORCE}" in
+                          privileged|baseline|restricted) ;;
+                          *)
+                            echo "##vso[task.logissue type=error]podSecurity.enforce for ${PLATFORM_AREA}/${PLATFORM_TIER} must be privileged, baseline or restricted (got '${PSA_ENFORCE}')"
+                            exit 1
+                            ;;
+                        esac
+                        if [[ -z "${PSA_ENFORCE_VERSION}" || "${PSA_ENFORCE_VERSION}" == "null" ]]; then
+                          echo "##vso[task.logissue type=error]podSecurity.enforce is set for ${PLATFORM_AREA}/${PLATFORM_TIER} but podSecurity.enforceVersion is null — pin the version so an upgraded cluster cannot silently change what is enforced"
+                          exit 1
+                        fi
+                        echo "Labelling ${HELM_NAMESPACE} with PSA enforce=${PSA_ENFORCE} (${PSA_ENFORCE_VERSION})"
+                        kubectl label namespace "${HELM_NAMESPACE}" \
+                          "pod-security.kubernetes.io/enforce=${PSA_ENFORCE}" \
+                          "pod-security.kubernetes.io/enforce-version=${PSA_ENFORCE_VERSION}" \
+                          --overwrite >/dev/null
+                      else
+                        echo "##[warning]podSecurity.enforce for ${PLATFORM_AREA}/${PLATFORM_TIER} is null — namespace is NOT Pod-Security labelled"
+                      fi
                       echo "##[endgroup]"
 
                       echo "##[group]aws caller identity"
+                      CALLER_ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"
                       aws sts get-caller-identity
                       echo "##[endgroup]"
+                      if [[ -n "${CLUSTER_AWS_ACCOUNT}" && "${CLUSTER_AWS_ACCOUNT}" != "null" ]]; then
+                        if [[ "${CALLER_ACCOUNT}" != "${CLUSTER_AWS_ACCOUNT}" ]]; then
+                          echo "##vso[task.logissue type=error]sts account ${CALLER_ACCOUNT} != cluster awsAccountId ${CLUSTER_AWS_ACCOUNT} for ${PLATFORM_AREA}/${PLATFORM_TIER} — refusing deploy to the wrong account"
+                          exit 1
+                        fi
+                        echo "sts account matches cluster awsAccountId ${CLUSTER_AWS_ACCOUNT}"
+                      else
+                        echo "##[warning]EXTERNAL BLOCKER: awsAccountId for ${PLATFORM_AREA}/${PLATFORM_TIER} is null — account identity is NOT asserted for this deploy"
+                      fi
 
                       WT=""
-                      GATEWAY_NAME=""
-                      GATEWAY_NAMESPACE=""
-                      if [[ -f "${PLATFORM_ENVS}" ]]; then
-                        GATEWAY_NAME="$(yq -r ".${ADO_ENVIRONMENT}.gatewayName // \"\"" "${PLATFORM_ENVS}")"
-                        GATEWAY_NAMESPACE="$(yq -r ".${ADO_ENVIRONMENT}.gatewayNamespace // \"\"" "${PLATFORM_ENVS}")"
-                      fi
+
+                      # Assert the EXACT group/version the charts apply, not merely that the
+                      # resource exists under some served version. A cluster offering only
+                      # external-secrets.io/v1beta1 or Gateway API v1alpha2 passes a bare
+                      # api-group check and then fails at apply time.
+                      require_api() {
+                        local group_version="$1" resource="$2" used_by="$3"
+                        if ! kubectl get --raw "/apis/${group_version}" 2>/dev/null \
+                          | yq -r '.resources[].name' 2>/dev/null | grep -qx "${resource}"; then
+                          echo "##vso[task.logissue type=error]Cluster does not serve ${group_version} with resource '${resource}' (required by ${used_by})"
+                          exit 1
+                        fi
+                        echo "${group_version} serves ${resource} (${used_by})"
+                      }
 
                       echo "##[group]preflight APIs / CRDs / Gateway / metrics"
+                      # Render once and derive required APIs from the kinds that WILL be applied.
+                      # Avoids re-implementing chart.autoscalingEnabled / workload branching in bash.
+                      PREFLIGHT_RENDER="$(mktemp -t asa-preflight.XXXXXX.yaml)"
+                      PREFLIGHT_CMD=(
+                        helm template "${HELM_RELEASE}" "${CHART_DIR}"
+                        -f "${RUNTIME_VALUES}"
+                        -f "${MANIFEST}"
+                        -f "${PLATFORM_VALUES}"
+                        --set-string "image.repository=${IMAGE_REPOSITORY}"
+                        --set-string "image.tag=${IMAGE_TAG}"
+                      )
+                      if ! "${PREFLIGHT_CMD[@]}" > "${PREFLIGHT_RENDER}" 2>"${PREFLIGHT_RENDER}.err"; then
+                        echo "##vso[task.logissue type=error]helm template (preflight) failed — manifesto violates a chart invariant"
+                        cat "${PREFLIGHT_RENDER}.err" || true
+                        exit 1
+                      fi
+                      echo "preflight render ok ($(grep -c '^kind:' "${PREFLIGHT_RENDER}" || true) objects)"
+
+                      # Confirm the image exists in the shared registry and the agent can see it.
+                      if [[ -n "${REGISTRY_ACCOUNT}" && "${REGISTRY_ACCOUNT}" != "null" ]]; then
+                        ECR_REPO_NAME="${IMAGE_REPOSITORY##*/}"
+                        ECR_DESC_REGION="${REGISTRY_REGION:-${AWS_REGION}}"
+                        echo "Checking image ${ECR_REPO_NAME}:${IMAGE_TAG} in registry ${REGISTRY_ACCOUNT} (${ECR_DESC_REGION})"
+                        if ! aws ecr describe-images \
+                             --registry-id "${REGISTRY_ACCOUNT}" \
+                             --repository-name "${ECR_REPO_NAME}" \
+                             --image-ids "imageTag=${IMAGE_TAG}" \
+                             --region "${ECR_DESC_REGION}" >/dev/null 2>&1; then
+                          echo "##vso[task.logissue type=error]Image ${ECR_REPO_NAME}:${IMAGE_TAG} not found in shared ECR ${REGISTRY_ACCOUNT} (or agent lacks ecr:DescribeImages)"
+                          exit 1
+                        fi
+                        echo "shared ECR image present"
+                      fi
+
+                      if grep -qx 'kind: HTTPRoute' "${PREFLIGHT_RENDER}"; then
+                        require_api gateway.networking.k8s.io/v1 httproutes "HTTPRoute"
+                      fi
+                      if grep -qx 'kind: GRPCRoute' "${PREFLIGHT_RENDER}"; then
+                        # GRPCRoute is only v1 from Gateway API 1.1 onwards.
+                        require_api gateway.networking.k8s.io/v1 grpcroutes "GRPCRoute"
+                      fi
+                      if grep -qx 'kind: ExternalSecret' "${PREFLIGHT_RENDER}"; then
+                        require_api external-secrets.io/v1 externalsecrets "ExternalSecret"
+                      fi
+                      if grep -qx 'kind: HorizontalPodAutoscaler' "${PREFLIGHT_RENDER}"; then
+                        kubectl get --raw /apis/metrics.k8s.io/v1beta1 >/dev/null 2>&1 \
+                          || { echo "##vso[task.logissue type=error]metrics.k8s.io unavailable but HPA will be rendered"; exit 1; }
+                        echo "metrics.k8s.io available (HPA present in render)"
+                      fi
+
+                      # Gateway presence: read parentRefs from the rendered route (what we will apply),
+                      # not a parallel bash map of env → name.
+                      if grep -qE '^kind: (HTTPRoute|GRPCRoute)$' "${PREFLIGHT_RENDER}"; then
+                        # eval-all (ea): multi-doc render; plain `yq` can emit leading blank lines per doc.
+                        ROUTE_GW_NAME="$(yq ea -r 'select(.kind == "HTTPRoute" or .kind == "GRPCRoute") | .spec.parentRefs[0].name // ""' "${PREFLIGHT_RENDER}" | awk 'NF{print; exit}')"
+                        ROUTE_GW_NS="$(yq ea -r 'select(.kind == "HTTPRoute" or .kind == "GRPCRoute") | .spec.parentRefs[0].namespace // ""' "${PREFLIGHT_RENDER}" | awk 'NF{print; exit}')"
+                        if [[ -z "${ROUTE_GW_NAME}" ]]; then
+                          echo "##vso[task.logissue type=error]Rendered route has empty parentRefs[0].name"
+                          exit 1
+                        fi
+                        GW_FOUND=""
+                        if [[ -n "${ROUTE_GW_NS}" ]]; then
+                          GW_FOUND="$(kubectl get gateway.gateway.networking.k8s.io "${ROUTE_GW_NAME}" -n "${ROUTE_GW_NS}" -o jsonpath='{.metadata.name}' 2>/dev/null || true)"
+                        fi
+                        if [[ -z "${GW_FOUND}" ]]; then
+                          GW_FOUND="$(kubectl get gateway.gateway.networking.k8s.io -A -o json 2>/dev/null \
+                            | yq -r "[.items[] | select(.metadata.name == \"${ROUTE_GW_NAME}\") | .metadata.name] | map(select(. != null and . != \"\")) | .[0] // \"\"" 2>/dev/null || true)"
+                        fi
+                        if [[ -z "${GW_FOUND}" ]]; then
+                          echo "##vso[task.logissue type=error]Expected Gateway '${ROUTE_GW_NAME}' not found in cluster${ROUTE_GW_NS:+ (ns ${ROUTE_GW_NS})}"
+                          exit 1
+                        fi
+                        echo "Gateway ${ROUTE_GW_NAME} present${ROUTE_GW_NS:+ in ${ROUTE_GW_NS}} (from rendered route)"
+                      fi
+
                       if [[ "${KIND}" == "Application" ]]; then
                         WT="$(yq -r '.workload.type // ""' "${MANIFEST}")"
-                        case "${WT}" in
-                          web)
-                            kubectl api-resources --api-group=gateway.networking.k8s.io -o name 2>/dev/null | grep -qx httproutes.gateway.networking.k8s.io \
-                              || { echo "##vso[task.logissue type=error]HTTPRoute API not available"; exit 1; }
-                            ;;
-                          grpc)
-                            kubectl api-resources --api-group=gateway.networking.k8s.io -o name 2>/dev/null | grep -qx grpcroutes.gateway.networking.k8s.io \
-                              || { echo "##vso[task.logissue type=error]GRPCRoute API not available"; exit 1; }
-                            ;;
-                        esac
-                        if [[ "${WT}" == "web" || "${WT}" == "grpc" ]]; then
-                          if [[ -n "${GATEWAY_NAME}" ]]; then
-                            # mikefarah/yq has no jq --arg; match name with string equality.
-                            # Prefer namespaced get (matches chart parentRef + avoids cluster-wide list RBAC).
-                            GW_FOUND=""
-                            if [[ -n "${GATEWAY_NAMESPACE}" ]]; then
-                              GW_FOUND="$(kubectl get gateway.gateway.networking.k8s.io "${GATEWAY_NAME}" -n "${GATEWAY_NAMESPACE}" -o jsonpath='{.metadata.name}' 2>/dev/null || true)"
-                            fi
-                            if [[ -z "${GW_FOUND}" ]]; then
-                              GW_FOUND="$(kubectl get gateway.gateway.networking.k8s.io -A -o json 2>/dev/null \
-                                | yq -r ".items[] | select(.metadata.name == \"${GATEWAY_NAME}\") | .metadata.name" 2>/dev/null \
-                                | head -n1 || true)"
-                            fi
-                            if [[ -z "${GW_FOUND}" ]]; then
-                              echo "##vso[task.logissue type=error]Expected Gateway '${GATEWAY_NAME}' not found in cluster${GATEWAY_NAMESPACE:+ (ns ${GATEWAY_NAMESPACE})}"
-                              exit 1
-                            fi
-                            echo "Gateway ${GATEWAY_NAME} present${GATEWAY_NAMESPACE:+ in ${GATEWAY_NAMESPACE}}"
-                          else
-                            echo "##[warning]gatewayName unset for ${ADO_ENVIRONMENT}"
-                          fi
-                        fi
-
-                        # HPA active? (mirrors chart.autoscalingEnabled defaults)
-                        AS_JSON="$(yq -o=json '.autoscaling // null' "${MANIFEST}")"
-                        HPA_NEEDED=false
-                        if [[ "${WT}" == "web" || "${WT}" == "grpc" ]]; then
-                          if [[ "${AS_JSON}" == "false" ]]; then
-                            HPA_NEEDED=false
-                          else
-                            HPA_NEEDED=true
-                          fi
-                        elif [[ "${WT}" == "worker" ]]; then
-                          if [[ "${AS_JSON}" != "null" && "${AS_JSON}" != "false" && "${AS_JSON}" != "{}" ]]; then
-                            HPA_NEEDED=true
-                          fi
-                        fi
-                        if [[ "${HPA_NEEDED}" == "true" ]]; then
-                          kubectl get --raw /apis/metrics.k8s.io/v1beta1 >/dev/null 2>&1 \
-                            || { echo "##vso[task.logissue type=error]metrics.k8s.io unavailable but HPA will be rendered"; exit 1; }
-                          echo "metrics.k8s.io available"
-                        fi
                       fi
-                      ES_NAME="$(yq -r '.externalSecret.secretStoreRef.name // ""' "${MANIFEST}")"
-                      ES_LEN="$(yq -r '.externalSecret.data | length' "${MANIFEST}")"
-                      if [[ -n "${ES_NAME}" && "${ES_LEN}" != "0" && "${ES_LEN}" != "null" ]]; then
-                        kubectl api-resources --api-group=external-secrets.io >/dev/null \
-                          || { echo "##vso[task.logissue type=error]external-secrets.io APIs missing"; exit 1; }
-                      fi
+                      rm -f "${PREFLIGHT_RENDER}" "${PREFLIGHT_RENDER}.err"
                       echo "##[endgroup]"
 
                       helm_has_deployed_revision() {
@@ -362,16 +476,21 @@ stages:
                         --set-string "image.repository=${IMAGE_REPOSITORY}"
                         --set-string "image.tag=${IMAGE_TAG}"
                       )
-                      if [[ "${KIND}" == "Application" ]]; then
-                        HELM_SET+=(--set-string "runtime.environment=${ADO_ENVIRONMENT}")
-                      fi
+                      # Same resolved facts the DeployContract stage injects (area/tier labels, gateway, DNS).
+                      # Precedence: runtime defaults < manifesto < platform facts.
+                      HELM_VALUE_FILES=(
+                        -f "${RUNTIME_VALUES}"
+                        -f "${MANIFEST}"
+                        -f "${PLATFORM_VALUES}"
+                      )
 
                       if [[ -n "${ECR_PULL_SECRET:-}" ]]; then
                         echo "##[group]refresh imagePullSecret ${ECR_PULL_SECRET}"
                         # ECR authorization tokens expire (~12h). Lab path depends on this secret;
                         # recreate every deploy so ImagePullBackOff is not caused by a stale token.
-                        AWS_REGION_EFF="${AWS_REGION:-${AWS_DEFAULT_REGION:-us-east-1}}"
-                        ECR_HOST="$(aws sts get-caller-identity --query Account --output text).dkr.ecr.${AWS_REGION_EFF}.amazonaws.com"
+                        # Host must match IMAGE_REPOSITORY (shared registry), not the deploy caller account.
+                        ECR_HOST="${IMAGE_REPOSITORY%%/*}"
+                        AWS_REGION_EFF="${REGISTRY_REGION:-${AWS_REGION:-${AWS_DEFAULT_REGION:-us-east-1}}}"
                         ECR_PASS="$(aws ecr get-login-password --region "${AWS_REGION_EFF}")"
                         kubectl -n "${HELM_NAMESPACE}" create secret docker-registry "${ECR_PULL_SECRET}" \
                           --docker-server="${ECR_HOST}" \
@@ -379,7 +498,7 @@ stages:
                           --docker-password="${ECR_PASS}" \
                           --dry-run=client -o yaml | kubectl apply -f -
                         HELM_SET+=(--set-string "imagePullSecrets[0].name=${ECR_PULL_SECRET}")
-                        echo "Using imagePullSecret: ${ECR_PULL_SECRET} (lab fallback; prefer node IAM)"
+                        echo "Using imagePullSecret: ${ECR_PULL_SECRET} (host ${ECR_HOST}; prefer node IAM)"
                         echo "##[endgroup]"
                       else
                         echo "No imagePullSecret — node/kubelet ECR access required"
@@ -390,7 +509,7 @@ stages:
                       helm upgrade --install "${HELM_RELEASE}" "${CHART_DIR}" \
                         --namespace "${HELM_NAMESPACE}" \
                         --reset-values \
-                        -f "${MANIFEST}" \
+                        "${HELM_VALUE_FILES[@]}" \
                         "${HELM_SET[@]}" \
                         --wait \
                         --timeout "${HELM_TIMEOUT}"
@@ -470,10 +589,13 @@ stages:
                           echo "##vso[task.logissue type=error]smokeScheduledJob only valid for ScheduledJob"
                           exit 1
                         fi
-                        if [[ "${ADO_ENVIRONMENT}" != "develop" ]]; then
-                          echo "##vso[task.logissue type=error]smokeScheduledJob only allowed on develop"
-                          exit 1
-                        fi
+                        case "${SMOKE_ALLOWED}" in
+                          true|True|TRUE) ;;
+                          *)
+                            echo "##vso[task.logissue type=error]smokeScheduledJob not allowed for ${PLATFORM_AREA}/${PLATFORM_TIER} (smokeAllowed=${SMOKE_ALLOWED})"
+                            exit 1
+                            ;;
+                        esac
                         echo "##[group]ScheduledJob smoke"
                         SMOKE="smoke-${HELM_RELEASE}-${BUILD_BUILDID:-manual}"
                         kubectl -n "${HELM_NAMESPACE}" delete job "${SMOKE}" --ignore-not-found >/dev/null 2>&1 || true

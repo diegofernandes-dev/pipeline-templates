@@ -1,0 +1,46 @@
+# Runtime profile: dotnet
+# Injected by the .NET pipeline as Helm values before the consumer manifesto.
+# reservedConfig is enforced by DeployContract — not by the chart.
+#
+# Merge: chart.defaults ← chart.workloads.<tipo>
+#   tipo ∈ web | grpc | worker | scheduledJob  (derived from manifesto kind/workload.type)
+# Empty workloads.* entries mean "defaults only" — render matches chart defaults today.
+chart:
+  defaults:
+    probeDefaults:
+      startup:
+        failureThreshold: 30
+        periodSeconds: 5
+      readiness:
+        initialDelaySeconds: 10
+        periodSeconds: 10
+        timeoutSeconds: 3
+        failureThreshold: 3
+      liveness:
+        initialDelaySeconds: 10
+        periodSeconds: 10
+        timeoutSeconds: 3
+        failureThreshold: 3
+    resources:
+      requests:
+        cpu: 150m
+        memory: 256Mi
+      limits:
+        memory: 512Mi
+    tmp:
+      sizeLimit: 128Mi
+    terminationGracePeriodSeconds: 30
+    shutdownTimeoutSeconds: 25
+  workloads:
+    web: {}
+    grpc: {}
+    worker: {}
+    scheduledJob: {}
+
+reservedConfig:
+  exact:
+    - ASPNETCORE_URLS
+    - ASPNETCORE_HTTP_PORTS
+    - ASPNETCORE_HTTPS_PORTS
+  prefixes:
+    - Kestrel__

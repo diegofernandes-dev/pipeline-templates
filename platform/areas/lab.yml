@@ -1,0 +1,76 @@
+# Area profile: lab
+# Compile-time source for pool / ADO Environment; runtime source for chart facts
+# (scripts/resolve-platform-values.sh reads the `platform` parameter default below).
+#
+# production has no deployPool yet (EXTERNAL BLOCKER) — selecting it in
+# deployEnvironments fails closed at ADO expansion (empty pool) and in DeployContract.
+parameters:
+  - name: delivery
+    type: object
+  - name: platform
+    type: object
+    default:
+      area: lab
+      buildPool: PG-AWS-EKS
+      registry:
+        # Lab ECR (same account the PG-AWS-EKS agents push to today).
+        awsAccountId: "448003890252"
+        awsRegion: us-east-1
+      tiers:
+        develop:
+          order: 1
+          deployPool: PG-AWS-EKS
+          environmentName: develop
+          # Lab proving-ground EKS sample-template-pg in this account.
+          awsAccountId: "448003890252"
+          awsRegion: us-east-1
+          expectedKubeContext: sample-template-pg
+          gatewayName: d-asa-com-br-internal-gateway
+          gatewayNamespace: asa-infra-nginx-gateway
+          dnsZone: dev.asa.corp
+          legacyDnsZone: d.asa.com.br
+          defaultMinReplicas: 1
+          smokeAllowed: true
+          podSecurity:
+            enforce: null
+            enforceVersion: null
+        homolog:
+          order: 2
+          deployPool: PG-AWS-EKS-HML
+          environmentName: homolog
+          # Same proving-ground cluster until dedicated HML exists.
+          awsAccountId: "448003890252"
+          awsRegion: us-east-1
+          expectedKubeContext: sample-template-pg
+          gatewayName: h-asa-com-br-internal-gateway
+          gatewayNamespace: asa-infra-nginx-gateway
+          dnsZone: hml.asa.corp
+          legacyDnsZone: h.asa.com.br
+          defaultMinReplicas: 1
+          smokeAllowed: false
+          podSecurity:
+            enforce: null
+            enforceVersion: null
+        production:
+          order: 3
+          # EXTERNAL BLOCKER: no authoritative production agent pool in this repository.
+          deployPool: null
+          environmentName: production
+          awsAccountId: "448003890252"
+          awsRegion: us-east-1
+          expectedKubeContext: sample-template-pg
+          gatewayName: p-asa-com-br-internal-gateway
+          gatewayNamespace: asa-infra-nginx-gateway
+          dnsZone: prd.asa.corp
+          legacyDnsZone: p.asa.com.br
+          defaultMinReplicas: 2
+          smokeAllowed: false
+          podSecurity:
+            enforce: null
+            enforceVersion: null
+
+stages:
+  - template: ../../templates/dotnet/delivery.yml
+    parameters:
+      delivery: ${{ parameters.delivery }}
+      platform: ${{ parameters.platform }}

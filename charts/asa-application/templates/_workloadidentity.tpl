@@ -96,6 +96,21 @@ aws-token
 {{- if eq $mount "/var/run/secrets/eks.amazonaws.com/serviceaccount" -}}
 {{- fail "workloadIdentity.token.mountPath must not use the IRSA reserved path /var/run/secrets/eks.amazonaws.com/serviceaccount — use /var/run/secrets/gcp/serviceaccount (default)" -}}
 {{- end -}}
+{{- /* A volumeMount path must be unique within the container: the API server rejects a
+       collision with "must be unique", and kubeconform does NOT catch it (the constraint is
+       not expressible in the OpenAPI schema). Fail here instead of at apply time. */ -}}
+{{- if eq $mount "/tmp" -}}
+{{- fail "workloadIdentity.token.mountPath must not be /tmp — the platform already mounts an emptyDir there (volumeMount paths must be unique)" -}}
+{{- end -}}
+{{- if eq $mount "/var/run/secrets/google" -}}
+{{- fail "workloadIdentity.token.mountPath must not be /var/run/secrets/google — that path holds the WIF credentials ConfigMap (volumeMount paths must be unique)" -}}
+{{- end -}}
+{{- $persist := .Values.persistence | default dict -}}
+{{- if and (kindIs "map" $persist) ($persist.mountPath | default "") -}}
+{{- if eq $mount ($persist.mountPath | toString) -}}
+{{- fail (printf "workloadIdentity.token.mountPath (%s) collides with persistence.mountPath — volumeMount paths must be unique" $mount) -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 {{- end }}
 

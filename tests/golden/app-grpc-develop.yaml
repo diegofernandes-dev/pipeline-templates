@@ -1,0 +1,198 @@
+---
+# Source: asa-application/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: golden-app
+  labels:
+    app: golden-app
+    app.kubernetes.io/name: golden-app
+    app.kubernetes.io/instance: golden-app
+    app.kubernetes.io/version: "deadbeef"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: asa-application-5.3.0
+    asa.platform/area: lab
+    asa.platform/tier: develop
+automountServiceAccountToken: false
+---
+# Source: asa-application/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: golden-app
+  labels:
+    app: golden-app
+    app.kubernetes.io/name: golden-app
+    app.kubernetes.io/instance: golden-app
+    app.kubernetes.io/version: "deadbeef"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: asa-application-5.3.0
+    asa.platform/area: lab
+    asa.platform/tier: develop
+spec:
+  selector:
+    app: golden-app
+  ports:
+    - name: grpc
+      port: 8080
+      targetPort: grpc
+      protocol: TCP
+      appProtocol: kubernetes.io/h2c
+---
+# Source: asa-application/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: golden-app
+  labels:
+    app: golden-app
+    app.kubernetes.io/name: golden-app
+    app.kubernetes.io/instance: golden-app
+    app.kubernetes.io/version: "deadbeef"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: asa-application-5.3.0
+    asa.platform/area: lab
+    asa.platform/tier: develop
+    app.kubernetes.io/component: grpc
+spec:
+  revisionHistoryLimit: 3
+  # A pod flapping Ready must not count as rollout progress.
+  minReadySeconds: 10
+  # Kept below the pipeline helmTimeout so a stalled rollout surfaces as a
+  # ProgressDeadlineExceeded condition instead of a bare `helm --wait` timeout.
+  progressDeadlineSeconds: 240
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: golden-app
+  template:
+    metadata:
+      labels:
+        app: golden-app
+        app.kubernetes.io/name: golden-app
+        app.kubernetes.io/instance: golden-app
+        app.kubernetes.io/version: "deadbeef"
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/component: grpc
+    spec:
+      terminationGracePeriodSeconds: 30
+      serviceAccountName: golden-app
+      automountServiceAccountToken: false
+      # No implicit SVC_* env vars from every Service in the namespace.
+      enableServiceLinks: false
+      securityContext:
+        fsGroup: 1654
+        runAsGroup: 1654
+        runAsNonRoot: true
+        runAsUser: 1654
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: app
+          image: "example.invalid/app:deadbeef"
+          imagePullPolicy: IfNotPresent
+          # Surface the crash reason in the pod status when the app dies without a message file.
+          terminationMessagePolicy: FallbackToLogsOnError
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            privileged: false
+            readOnlyRootFilesystem: true
+          env:
+            # Runtime-agnostic contract — docker/<runtime>/entrypoint maps these.
+            - name: SHUTDOWN_TIMEOUT_SECONDS
+              value: "25"
+            - name: CPU_REQUEST_MILLICORES
+              valueFrom:
+                resourceFieldRef:
+                  containerName: app
+                  resource: requests.cpu
+                  divisor: 1m
+            - name: PORT
+              value: "8080"
+            - name: APP_PROTOCOL
+              value: "h2c"
+          ports:
+            - name: grpc
+              containerPort: 8080
+              protocol: TCP
+          resources:
+            limits:
+              memory: 512Mi
+            requests:
+              cpu: 150m
+              memory: 256Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: "128Mi"
+---
+# Source: asa-application/templates/hpa.yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: golden-app
+  labels:
+    app: golden-app
+    app.kubernetes.io/name: golden-app
+    app.kubernetes.io/instance: golden-app
+    app.kubernetes.io/version: "deadbeef"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: asa-application-5.3.0
+    asa.platform/area: lab
+    asa.platform/tier: develop
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: golden-app
+  minReplicas: 1
+  maxReplicas: 3
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+---
+# Source: asa-application/templates/grpcroute.yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: GRPCRoute
+metadata:
+  name: golden-app
+  labels:
+    app: golden-app
+    app.kubernetes.io/name: golden-app
+    app.kubernetes.io/instance: golden-app
+    app.kubernetes.io/version: "deadbeef"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: asa-application-5.3.0
+    asa.platform/area: lab
+    asa.platform/tier: develop
+  annotations:
+    external-dns.kubernetes.io/gateway-hostname-source: annotation-only
+    external-dns.kubernetes.io/hostname: "golden-app.dev.asa.corp"
+spec:
+  parentRefs:
+    - name: d-asa-com-br-internal-gateway
+      namespace: asa-infra-nginx-gateway
+      group: gateway.networking.k8s.io
+      kind: Gateway
+  hostnames:
+    - "golden-app.dev.asa.corp"
+    - "golden-app.d.asa.com.br"
+  rules:
+    - backendRefs:
+        - name: golden-app
+          port: 8080

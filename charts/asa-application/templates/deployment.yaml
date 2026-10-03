@@ -4,25 +4,35 @@
 {{- include "chart.validateProbes" . }}
 {{- include "chart.validateExternalSecret" . }}
 {{- include "chart.validateConfig" . }}
+{{- include "chart.validateShutdown" . }}
+{{- include "chart.validateAutoscaling" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ .Release.Name }}
   labels:
-    app: {{ .Release.Name }}
-    app.kubernetes.io/name: {{ .Release.Name }}
-    app.kubernetes.io/instance: {{ .Release.Name }}
+    {{- include "chart.labels" . | nindent 4 }}
     app.kubernetes.io/component: {{ include "chart.workloadType" . }}
 spec:
   {{- if not ((include "chart.autoscalingEnabled" .) | eq "true") }}
   replicas: {{ .Values.replicaCount }}
   {{- end }}
+  revisionHistoryLimit: {{ .Values.deployment.revisionHistoryLimit }}
+  # A pod flapping Ready must not count as rollout progress.
+  minReadySeconds: {{ .Values.deployment.minReadySeconds }}
+  # Kept below the pipeline helmTimeout so a stalled rollout surfaces as a
+  # ProgressDeadlineExceeded condition instead of a bare `helm --wait` timeout.
+  progressDeadlineSeconds: {{ .Values.deployment.progressDeadlineSeconds }}
   {{- if (include "chart.persistenceEnabled" .) | eq "true" }}
+  # RWO PVC: the old pod must release the volume before the new one starts.
   strategy:
     type: Recreate
   {{- else }}
   strategy:
     type: RollingUpdate
+    rollingUpdate:
+      maxSurge: {{ .Values.deployment.rollingUpdate.maxSurge }}
+      maxUnavailable: {{ .Values.deployment.rollingUpdate.maxUnavailable }}
   {{- end }}
   selector:
     matchLabels:
@@ -30,9 +40,7 @@ spec:
   template:
     metadata:
       labels:
-        app: {{ .Release.Name }}
-        app.kubernetes.io/name: {{ .Release.Name }}
-        app.kubernetes.io/instance: {{ .Release.Name }}
+        {{- include "chart.podLabels" . | nindent 8 }}
         app.kubernetes.io/component: {{ include "chart.workloadType" . }}
       {{- $cfgOn := (include "chart.configEnabled" .) | eq "true" -}}
       {{- $wifOn := (include "chart.workloadIdentityEnabled" .) | eq "true" -}}
@@ -46,8 +54,11 @@ spec:
         {{- end }}
       {{- end }}
     spec:
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       serviceAccountName: {{ .Release.Name }}
       automountServiceAccountToken: false
+      # No implicit SVC_* env vars from every Service in the namespace.
+      enableServiceLinks: false
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -58,26 +69,36 @@ spec:
         - name: app
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # Surface the crash reason in the pod status when the app dies without a message file.
+          terminationMessagePolicy: FallbackToLogsOnError
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
-          {{- $wifEnv := include "app.workloadIdentityEnv" . | trim -}}
-          {{- $isNetworked := eq (include "chart.hasEndpoint" .) "true" -}}
-          {{- $isGrpc := eq (include "chart.workloadType" .) "grpc" -}}
-          {{- if or $isNetworked (ne $wifEnv "") }}
+          {{- $wifEnv := include "app.workloadIdentityEnv" . | trim }}
+          {{- $isNetworked := eq (include "chart.hasEndpoint" .) "true" }}
+          {{- $isGrpc := eq (include "chart.workloadType" .) "grpc" }}
           env:
+            # Runtime-agnostic contract — docker/<runtime>/entrypoint maps these.
+            - name: SHUTDOWN_TIMEOUT_SECONDS
+              value: {{ .Values.shutdownTimeoutSeconds | quote }}
+            - name: CPU_REQUEST_MILLICORES
+              valueFrom:
+                resourceFieldRef:
+                  containerName: app
+                  resource: requests.cpu
+                  divisor: 1m
             {{- if $isNetworked }}
-            # Platform-owned listen (explicit env beats envFrom / ConfigMap).
-            - name: ASPNETCORE_URLS
-              value: "http://+:{{ include "chart.containerPort" . }}"
-            {{- end }}
-            {{- if $isGrpc }}
-            - name: Kestrel__EndpointDefaults__Protocols
-              value: Http2
+            - name: PORT
+              value: {{ include "chart.containerPort" . | quote }}
+            - name: APP_PROTOCOL
+              {{- if $isGrpc }}
+              value: "h2c"
+              {{- else }}
+              value: "http"
+              {{- end }}
             {{- end }}
             {{- if ne $wifEnv "" }}
             {{- $wifEnv | nindent 12 }}
             {{- end }}
-          {{- end }}
           {{- with include "app.envFrom" . }}
           {{- . | nindent 10 }}
           {{- end }}
@@ -87,63 +108,14 @@ spec:
               containerPort: {{ include "chart.containerPort" . }}
               protocol: TCP
           {{- end }}
-          {{- $probeCfg := (.Values.probes | default dict) -}}
-          {{- if not (kindIs "map" $probeCfg) -}}{{- $probeCfg = dict -}}{{- end -}}
-          {{- $startupCfg := $probeCfg.startup | default dict -}}
-          {{- $readinessCfg := $probeCfg.readiness | default dict -}}
-          {{- $livenessCfg := $probeCfg.liveness | default dict -}}
-          {{- $startupMode := include "chart.probeTypeEnabled" (list . "startup") -}}
-          {{- $readinessMode := include "chart.probeTypeEnabled" (list . "readiness") -}}
-          {{- $livenessMode := include "chart.probeTypeEnabled" (list . "liveness") -}}
-          {{- if eq $startupMode "http" }}
-          startupProbe:
-            httpGet:
-              path: {{ include "chart.probeHttpPath" (list . "startup") | quote }}
-              port: http
-            failureThreshold: {{ $startupCfg.failureThreshold | default 30 }}
-            periodSeconds: {{ $startupCfg.periodSeconds | default 5 }}
-          {{- else if eq $startupMode "grpc" }}
-          startupProbe:
-            grpc:
-              port: {{ include "chart.containerPort" . | int }}
-            failureThreshold: {{ $startupCfg.failureThreshold | default 30 }}
-            periodSeconds: {{ $startupCfg.periodSeconds | default 5 }}
+          {{- with (include "chart.renderProbe" (list . "startup")) }}
+          {{- . | nindent 10 }}
           {{- end }}
-          {{- if eq $livenessMode "http" }}
-          livenessProbe:
-            httpGet:
-              path: {{ include "chart.probeHttpPath" (list . "liveness") | quote }}
-              port: http
-            initialDelaySeconds: {{ $livenessCfg.initialDelaySeconds | default 10 }}
-            periodSeconds: {{ $livenessCfg.periodSeconds | default 10 }}
-            timeoutSeconds: {{ $livenessCfg.timeoutSeconds | default 3 }}
-            failureThreshold: {{ $livenessCfg.failureThreshold | default 3 }}
-          {{- else if eq $livenessMode "grpc" }}
-          livenessProbe:
-            grpc:
-              port: {{ include "chart.containerPort" . | int }}
-            initialDelaySeconds: {{ $livenessCfg.initialDelaySeconds | default 10 }}
-            periodSeconds: {{ $livenessCfg.periodSeconds | default 10 }}
-            timeoutSeconds: {{ $livenessCfg.timeoutSeconds | default 3 }}
-            failureThreshold: {{ $livenessCfg.failureThreshold | default 3 }}
+          {{- with (include "chart.renderProbe" (list . "liveness")) }}
+          {{- . | nindent 10 }}
           {{- end }}
-          {{- if eq $readinessMode "http" }}
-          readinessProbe:
-            httpGet:
-              path: {{ include "chart.probeHttpPath" (list . "readiness") | quote }}
-              port: http
-            initialDelaySeconds: {{ $readinessCfg.initialDelaySeconds | default 10 }}
-            periodSeconds: {{ $readinessCfg.periodSeconds | default 10 }}
-            timeoutSeconds: {{ $readinessCfg.timeoutSeconds | default 3 }}
-            failureThreshold: {{ $readinessCfg.failureThreshold | default 3 }}
-          {{- else if eq $readinessMode "grpc" }}
-          readinessProbe:
-            grpc:
-              port: {{ include "chart.containerPort" . | int }}
-            initialDelaySeconds: {{ $readinessCfg.initialDelaySeconds | default 10 }}
-            periodSeconds: {{ $readinessCfg.periodSeconds | default 10 }}
-            timeoutSeconds: {{ $readinessCfg.timeoutSeconds | default 3 }}
-            failureThreshold: {{ $readinessCfg.failureThreshold | default 3 }}
+          {{- with (include "chart.renderProbe" (list . "readiness")) }}
+          {{- . | nindent 10 }}
           {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
@@ -155,9 +127,20 @@ spec:
               mountPath: {{ .Values.persistence.mountPath | quote }}
             {{- end }}
             {{- include "app.workloadIdentityVolumeMounts" . | nindent 12 }}
+      {{- if and .Values.topologySpread.enabled (ge ((include "chart.effectiveMinReplicas" .) | int) 2) }}
+      topologySpreadConstraints:
+        - maxSkew: {{ .Values.topologySpread.maxSkew }}
+          topologyKey: {{ .Values.topologySpread.topologyKey }}
+          # Soft on purpose — see values.yaml topologySpread.
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: {{ .Release.Name }}
+      {{- end }}
       volumes:
         - name: tmp
-          emptyDir: {}
+          emptyDir:
+            sizeLimit: {{ ((.Values.tmp | default dict).sizeLimit | default "128Mi") | quote }}
         {{- if (include "chart.persistenceEnabled" .) | eq "true" }}
         - name: data
           persistentVolumeClaim:

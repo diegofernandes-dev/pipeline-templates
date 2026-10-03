@@ -4,20 +4,17 @@ kind: HTTPRoute
 metadata:
   name: {{ .Release.Name }}
   labels:
-    app: {{ .Release.Name }}
-    app.kubernetes.io/name: {{ .Release.Name }}
-    app.kubernetes.io/instance: {{ .Release.Name }}
+    {{- include "chart.labels" . | nindent 4 }}
+  annotations:
+    {{- include "chart.externalDnsAnnotations" . | nindent 4 }}
 spec:
   parentRefs:
     - name: {{ include "chart.gatewayName" . }}
-      namespace: asa-infra-nginx-gateway
+      namespace: {{ include "chart.gatewayNamespace" . }}
       group: gateway.networking.k8s.io
       kind: Gateway
   hostnames:
-    - {{ include "chart.corpHostname" . | quote }}
-    {{- if .Values.legacyDns }}
-    - {{ include "chart.legacyHostname" . | quote }}
-    {{- end }}
+    {{- include "chart.hostnames" . | nindent 4 }}
   rules:
     - matches:
         - path:

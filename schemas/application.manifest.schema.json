@@ -2,22 +2,48 @@
   "$schema": "https://json-schema.org/draft-07/schema#",
   "title": "Public Application manifesto (deploy/config/<env>.yaml)",
   "type": "object",
-  "required": ["kind", "workload"],
+  "required": [
+    "kind",
+    "workload"
+  ],
   "additionalProperties": false,
   "properties": {
-    "kind": { "const": "Application" },
+    "kind": {
+      "const": "Application"
+    },
     "workload": {
       "type": "object",
-      "required": ["type"],
+      "required": [
+        "type"
+      ],
       "additionalProperties": false,
       "properties": {
-        "type": { "type": "string", "enum": ["web", "grpc", "worker"] }
+        "type": {
+          "type": "string",
+          "enum": [
+            "web",
+            "grpc",
+            "worker"
+          ]
+        }
       }
     },
-    "legacyDns": { "type": "boolean" },
+    "dns": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "publishLegacyHostname": {
+          "type": "boolean"
+        }
+      }
+    },
+    "legacyDns": false,
     "probes": {
       "oneOf": [
-        { "type": "boolean", "const": false },
+        {
+          "type": "boolean",
+          "const": false
+        },
         {
           "type": "object",
           "additionalProperties": false,
@@ -27,34 +53,79 @@
               "type": "object",
               "additionalProperties": false,
               "properties": {
-                "path": { "type": "string", "pattern": "^/" },
-                "enabled": { "type": "boolean" },
-                "failureThreshold": { "type": "integer", "minimum": 1 },
-                "periodSeconds": { "type": "integer", "minimum": 1 }
+                "path": {
+                  "type": "string",
+                  "pattern": "^/"
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "failureThreshold": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "periodSeconds": {
+                  "type": "integer",
+                  "minimum": 1
+                }
               }
             },
             "readiness": {
               "type": "object",
               "additionalProperties": false,
               "properties": {
-                "path": { "type": "string", "pattern": "^/" },
-                "enabled": { "type": "boolean" },
-                "initialDelaySeconds": { "type": "integer", "minimum": 0 },
-                "periodSeconds": { "type": "integer", "minimum": 1 },
-                "timeoutSeconds": { "type": "integer", "minimum": 1 },
-                "failureThreshold": { "type": "integer", "minimum": 1 }
+                "path": {
+                  "type": "string",
+                  "pattern": "^/"
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "initialDelaySeconds": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "periodSeconds": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "timeoutSeconds": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "failureThreshold": {
+                  "type": "integer",
+                  "minimum": 1
+                }
               }
             },
             "liveness": {
               "type": "object",
               "additionalProperties": false,
               "properties": {
-                "path": { "type": "string", "pattern": "^/" },
-                "enabled": { "type": "boolean" },
-                "initialDelaySeconds": { "type": "integer", "minimum": 0 },
-                "periodSeconds": { "type": "integer", "minimum": 1 },
-                "timeoutSeconds": { "type": "integer", "minimum": 1 },
-                "failureThreshold": { "type": "integer", "minimum": 1 }
+                "path": {
+                  "type": "string",
+                  "pattern": "^/"
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "initialDelaySeconds": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "periodSeconds": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "timeoutSeconds": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "failureThreshold": {
+                  "type": "integer",
+                  "minimum": 1
+                }
               }
             }
           }
@@ -63,18 +134,30 @@
     },
     "autoscaling": {
       "oneOf": [
-        { "type": "boolean" },
+        {
+          "type": "boolean"
+        },
         {
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "minReplicas": { "type": "integer", "minimum": 1 },
-            "maxReplicas": { "type": "integer", "minimum": 1 },
+            "minReplicas": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "maxReplicas": {
+              "type": "integer",
+              "minimum": 1
+            },
             "cpu": {
               "type": "object",
               "additionalProperties": false,
               "properties": {
-                "target": { "type": "integer", "minimum": 1, "maximum": 100 }
+                "target": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 100
+                }
               }
             }
           }
@@ -85,8 +168,22 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "enabled": { "type": "boolean" },
-        "maxUnavailable": { "type": ["integer", "string"] }
+        "enabled": {
+          "type": "boolean"
+        },
+        "maxUnavailable": {
+          "type": [
+            "integer",
+            "string"
+          ]
+        },
+        "unhealthyPodEvictionPolicy": {
+          "type": "string",
+          "enum": [
+            "AlwaysAllow",
+            "IfHealthyBudget"
+          ]
+        }
       }
     },
     "resources": {
@@ -97,28 +194,41 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "cpu": { "type": "string" },
-            "memory": { "type": "string" }
+            "cpu": {
+              "type": "string"
+            },
+            "memory": {
+              "type": "string"
+            }
           }
         },
         "limits": {
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "cpu": { "type": "string" },
-            "memory": { "type": "string" }
+            "cpu": {
+              "type": "string"
+            },
+            "memory": {
+              "type": "string"
+            }
           }
         }
       }
     },
-    "replicaCount": { "type": "integer", "minimum": 0 },
+    "replicaCount": {
+      "type": "integer",
+      "minimum": 0
+    },
     "serviceAccount": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
         "annotations": {
           "type": "object",
-          "additionalProperties": { "type": "string" }
+          "additionalProperties": {
+            "type": "string"
+          }
         }
       }
     },
@@ -130,56 +240,91 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "audience": { "type": "string" },
-            "expirationSeconds": { "type": "integer", "minimum": 1 },
-            "fileName": { "type": "string" },
-            "mountPath": { "type": "string" },
-            "defaultMode": { "type": "integer" }
+            "audience": {
+              "type": "string"
+            },
+            "expirationSeconds": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "fileName": {
+              "type": "string"
+            },
+            "mountPath": {
+              "type": "string"
+            },
+            "defaultMode": {
+              "type": "integer"
+            }
           }
         },
         "gcp": {
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "audience": { "type": "string" },
-            "serviceAccountEmail": { "type": "string" },
-            "projectId": { "type": "string" }
+            "audience": {
+              "type": "string"
+            },
+            "serviceAccountEmail": {
+              "type": "string"
+            },
+            "projectId": {
+              "type": "string"
+            }
           }
         }
       }
     },
     "persistence": {
       "oneOf": [
-        { "type": "boolean" },
+        {
+          "type": "boolean"
+        },
         {
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "mountPath": { "type": "string" },
-            "size": { "type": "string" },
-            "storageClassName": { "type": "string" }
+            "mountPath": {
+              "type": "string"
+            },
+            "size": {
+              "type": "string"
+            },
+            "storageClassName": {
+              "type": "string"
+            }
           }
         }
       ]
     },
     "config": {
       "type": "object",
-      "additionalProperties": { "type": "string" }
+      "additionalProperties": {
+        "type": "string"
+      }
     },
     "externalSecret": {
       "oneOf": [
-        { "type": "boolean" },
+        {
+          "type": "boolean"
+        },
         {
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "refreshInterval": { "type": "string" },
+            "refreshInterval": {
+              "type": "string"
+            },
             "secretStoreRef": {
               "type": "object",
               "additionalProperties": false,
               "properties": {
-                "kind": { "type": "string" },
-                "name": { "type": "string" }
+                "kind": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                }
               }
             },
             "data": {
@@ -187,16 +332,29 @@
               "items": {
                 "type": "object",
                 "additionalProperties": false,
-                "required": ["secretKey", "remoteRef"],
+                "required": [
+                  "secretKey",
+                  "remoteRef"
+                ],
                 "properties": {
-                  "secretKey": { "type": "string" },
+                  "secretKey": {
+                    "type": "string"
+                  },
                   "remoteRef": {
                     "type": "object",
                     "additionalProperties": false,
                     "properties": {
-                      "key": { "type": "string" },
-                      "property": { "type": "string" }
-                    }
+                      "key": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "property": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "key"
+                    ]
                   }
                 }
               }
@@ -211,13 +369,52 @@
       "if": {
         "properties": {
           "workload": {
-            "properties": { "type": { "enum": ["web", "grpc"] } },
-            "required": ["type"]
+            "properties": {
+              "type": {
+                "enum": [
+                  "web",
+                  "grpc"
+                ]
+              }
+            },
+            "required": [
+              "type"
+            ]
           }
         },
-        "required": ["workload"]
+        "required": [
+          "workload"
+        ]
       },
-      "then": { "required": ["probes"] }
+      "then": {
+        "required": [
+          "probes"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "workload": {
+            "properties": {
+              "type": {
+                "const": "worker"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "dns": {
+            "properties": {
+              "publishLegacyHostname": {
+                "const": false
+              }
+            }
+          }
+        }
+      }
     }
   ]
 }

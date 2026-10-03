@@ -42,7 +42,14 @@ workloadIdentity:
     serviceAccountEmail: ""
     projectId: ""
 
+# Free-form string map → ConfigMap. Reserved: PORT, APP_PROTOCOL, SHUTDOWN_TIMEOUT_SECONDS,
+# CPU_REQUEST_MILLICORES, GOOGLE_APPLICATION_CREDENTIALS. Runtime-specific keys are guarded
+# by platform/runtimes/<runtime>.yml via the pipeline.
 config: {}
+
+# Writable scratch for readOnlyRootFilesystem pods. Platform-owned (not in public manifesto).
+tmp:
+  sizeLimit: 128Mi
 
 externalSecret:
   refreshInterval: 1h
@@ -58,9 +65,21 @@ resources:
   limits:
     memory: 512Mi
 
+# Window between SIGTERM and SIGKILL. A CronJob pod is not rolled out, so minReadySeconds has
+# no meaning here, but the pod still receives SIGTERM when its Job is deleted or the deadline
+# hits. Must stay strictly above shutdownTimeoutSeconds.
+terminationGracePeriodSeconds: 30
+
+# Exposed as SHUTDOWN_TIMEOUT_SECONDS; the image entrypoint maps it to the runtime clock.
+shutdownTimeoutSeconds: 25
+
 # Platform-owned security baseline (not in public manifesto schema).
 podSecurityContext:
   runAsNonRoot: true
+  # Platform UID — every docker/<runtime>/ image must create or assert this UID.
+  runAsUser: 1654
+  runAsGroup: 1654
+  fsGroup: 1654
   seccompProfile:
     type: RuntimeDefault
 
@@ -71,3 +90,17 @@ securityContext:
   capabilities:
     drop:
       - ALL
+
+# Label-only environment name. Injected by resolve-platform-values.sh with platform.*.
+runtime:
+  environment: ""
+
+# Resolved by scripts/resolve-platform-values.sh (area/tier labels; gateway fields unused by CronJob).
+platform:
+  area: ""
+  tier: ""
+  gatewayName: ""
+  gatewayNamespace: ""
+  dnsZone: ""
+  legacyDnsZone: ""
+  defaultMinReplicas: 1

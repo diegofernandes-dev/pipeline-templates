@@ -1,21 +1,76 @@
 {{/*
-Shared env → hostname / gateway maps for HTTPRoute and GRPCRoute.
+Platform-injected networking facts. The chart never maps area/tier → topology;
+scripts/resolve-platform-values.sh reads platform/areas/<area>.yml and
+passes platform.* (required, fail-closed — no silent defaults).
 */}}
 
-{{- define "chart.corpHostname" -}}
-{{- $env := .Values.runtime.environment | default "develop" -}}
-{{- $zones := dict "develop" "dev.asa.corp" "homolog" "hml.asa.corp" "production" "prd.asa.corp" -}}
-{{- printf "%s.%s" .Release.Name (index $zones $env | default "dev.asa.corp") -}}
+{{- define "chart.hostname" -}}
+{{- printf "%s.%s" .Release.Name (required "platform.dnsZone is required (pipeline must inject via resolve-platform-values.sh)" .Values.platform.dnsZone) -}}
 {{- end }}
 
 {{- define "chart.legacyHostname" -}}
-{{- $env := .Values.runtime.environment | default "develop" -}}
-{{- $zones := dict "develop" "d.asa.com.br" "homolog" "h.asa.com.br" "production" "p.asa.com.br" -}}
-{{- printf "%s.%s" .Release.Name (index $zones $env | default "d.asa.com.br") -}}
+{{- $zone := .Values.platform.legacyDnsZone | default "" -}}
+{{- if not $zone -}}
+{{- fail "dns.publishLegacyHostname=true requires platform.legacyDnsZone (cluster has no legacy DNS zone — unset dns.publishLegacyHostname or add the zone to the area profile)" -}}
+{{- end -}}
+{{- printf "%s.%s" .Release.Name $zone -}}
 {{- end }}
 
 {{- define "chart.gatewayName" -}}
-{{- $env := .Values.runtime.environment | default "develop" -}}
-{{- $gws := dict "develop" "d-asa-com-br-internal-gateway" "homolog" "h-asa-com-br-internal-gateway" "production" "p-asa-com-br-internal-gateway" -}}
-{{- index $gws $env | default "d-asa-com-br-internal-gateway" -}}
+{{- required "platform.gatewayName is required (pipeline must inject via resolve-platform-values.sh)" .Values.platform.gatewayName -}}
+{{- end }}
+
+{{- define "chart.gatewayNamespace" -}}
+{{- required "platform.gatewayNamespace is required (pipeline must inject via resolve-platform-values.sh)" .Values.platform.gatewayNamespace -}}
+{{- end }}
+
+{{- define "chart.publishLegacyHostname" -}}
+{{- $dns := .Values.dns | default dict -}}
+{{- if and (hasKey $dns "publishLegacyHostname") $dns.publishLegacyHostname -}}
+true
+{{- else -}}
+false
+{{- end -}}
+{{- end }}
+
+{{/*
+Route acceptance hostnames — Gateway/TLS validation surface.
+
+When platform.legacyDnsZone is set, BOTH corp and legacy hostnames are accepted on the
+Route so cutover can be validated (TLS, Gateway, backend) before DNS is transferred.
+dns.publishLegacyHostname does NOT gate this list — it only controls ExternalDNS publication.
+
+Deduplicated on purpose: an area whose legacy zone equals its corp zone would otherwise
+emit the same hostname twice, and the API server accepts that silently.
+*/}}
+{{- define "chart.hostnames" -}}
+{{- $names := list (include "chart.hostname" .) -}}
+{{- $zone := .Values.platform.legacyDnsZone | default "" -}}
+{{- if $zone -}}
+{{- $names = append $names (printf "%s.%s" .Release.Name $zone) -}}
+{{- end -}}
+{{- $lines := list -}}
+{{- range ($names | uniq) -}}
+{{- $lines = append $lines (printf "- %s" (. | quote)) -}}
+{{- end -}}
+{{- join "\n" $lines -}}
+{{- end }}
+
+{{/*
+ExternalDNS publication annotations.
+
+gateway-hostname-source: annotation-only keeps Route acceptance ≠ DNS ownership.
+Hostnames in the annotation are the only ones ExternalDNS may publish.
+
+Requires ExternalDNS that reads external-dns.kubernetes.io/ (default since v0.22)
+and supports gateway-hostname-source (added ~v0.21). Lab has no ExternalDNS —
+live reconciliation is NOT proven here.
+*/}}
+{{- define "chart.externalDnsAnnotations" -}}
+{{- $names := list (include "chart.hostname" .) -}}
+{{- if eq (include "chart.publishLegacyHostname" .) "true" -}}
+{{- $names = append $names (include "chart.legacyHostname" .) -}}
+{{- end -}}
+external-dns.kubernetes.io/gateway-hostname-source: annotation-only
+external-dns.kubernetes.io/hostname: {{ $names | uniq | join "," | quote }}
 {{- end }}

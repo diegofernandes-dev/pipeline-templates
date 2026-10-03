@@ -1,0 +1,107 @@
+---
+# Source: asa-application/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: golden-app
+  labels:
+    app: golden-app
+    app.kubernetes.io/name: golden-app
+    app.kubernetes.io/instance: golden-app
+    app.kubernetes.io/version: "deadbeef"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: asa-application-5.3.0
+    asa.platform/area: lab
+    asa.platform/tier: develop
+automountServiceAccountToken: false
+---
+# Source: asa-application/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: golden-app
+  labels:
+    app: golden-app
+    app.kubernetes.io/name: golden-app
+    app.kubernetes.io/instance: golden-app
+    app.kubernetes.io/version: "deadbeef"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: asa-application-5.3.0
+    asa.platform/area: lab
+    asa.platform/tier: develop
+    app.kubernetes.io/component: worker
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  # A pod flapping Ready must not count as rollout progress.
+  minReadySeconds: 10
+  # Kept below the pipeline helmTimeout so a stalled rollout surfaces as a
+  # ProgressDeadlineExceeded condition instead of a bare `helm --wait` timeout.
+  progressDeadlineSeconds: 240
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: golden-app
+  template:
+    metadata:
+      labels:
+        app: golden-app
+        app.kubernetes.io/name: golden-app
+        app.kubernetes.io/instance: golden-app
+        app.kubernetes.io/version: "deadbeef"
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/component: worker
+    spec:
+      terminationGracePeriodSeconds: 30
+      serviceAccountName: golden-app
+      automountServiceAccountToken: false
+      # No implicit SVC_* env vars from every Service in the namespace.
+      enableServiceLinks: false
+      securityContext:
+        fsGroup: 1654
+        runAsGroup: 1654
+        runAsNonRoot: true
+        runAsUser: 1654
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: app
+          image: "example.invalid/app:deadbeef"
+          imagePullPolicy: IfNotPresent
+          # Surface the crash reason in the pod status when the app dies without a message file.
+          terminationMessagePolicy: FallbackToLogsOnError
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            privileged: false
+            readOnlyRootFilesystem: true
+          env:
+            # Runtime-agnostic contract — docker/<runtime>/entrypoint maps these.
+            - name: SHUTDOWN_TIMEOUT_SECONDS
+              value: "25"
+            - name: CPU_REQUEST_MILLICORES
+              valueFrom:
+                resourceFieldRef:
+                  containerName: app
+                  resource: requests.cpu
+                  divisor: 1m
+          resources:
+            limits:
+              memory: 512Mi
+            requests:
+              cpu: 150m
+              memory: 256Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: "128Mi"

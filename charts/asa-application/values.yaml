@@ -5,10 +5,14 @@ workload:
   type: web
   # port is NOT part of the public contract — schema rejects workload.port
 
-# Legacy .asa.com.br hostname (web/grpc only). Default false.
-legacyDns: false
+# DNS publication intent (web/grpc only). Route acceptance is independent:
+# when platform.legacyDnsZone is set, HTTPRoute/GRPCRoute always accept both
+# corp and legacy hostnames. This flag only authorizes ExternalDNS to publish
+# the legacy hostname. Default false = publish .corp only.
+dns:
+  publishLegacyHostname: false
 
-# Pipeline injects image + runtime.environment
+# Pipeline injects image + platform.* (via resolve-platform-values.sh) + runtime.environment
 image:
   repository: ""
   tag: latest
@@ -18,9 +22,38 @@ imagePullSecrets: []
 
 replicaCount: 1
 
+# Rollout / GC knobs. Platform-owned: absent from the public manifesto schema.
+deployment:
+  revisionHistoryLimit: 3
+  # A pod must stay Ready this long before it counts as available. Without it a pod that
+  # passes readiness once and then crashes still counts as rollout progress, so the rollout
+  # keeps replacing healthy pods. Must be >= the readiness periodSeconds below (10) so a full
+  # probe period of stability is required.
+  minReadySeconds: 10
+  # Must stay BELOW the pipeline helmTimeout (default 5m) so a stalled rollout is
+  # reported as ProgressDeadlineExceeded instead of an opaque helm --wait timeout.
+  progressDeadlineSeconds: 240
+  rollingUpdate:
+    maxSurge: 1
+    # 0 keeps capacity during rollout; with replicaCount 1 the new pod must be
+    # Ready before the old one goes away.
+    maxUnavailable: 0
+
+# Label-only environment name (free string). Topology/capacity facts live under platform.*.
 runtime:
-  # develop | homolog | production — set by pipeline
-  environment: develop
+  environment: ""
+
+# Resolved by scripts/resolve-platform-values.sh from platform/areas/<area>.yml.
+# Required at render time (templates use `required`); empty defaults exist only so
+# `helm lint` against chart defaults can parse the schema.
+platform:
+  area: ""
+  tier: ""
+  gatewayName: ""
+  gatewayNamespace: ""
+  dnsZone: ""
+  legacyDnsZone: ""
+  defaultMinReplicas: 1
 
 # Platform always creates SA named after the release. Public: annotations only (IRSA).
 serviceAccount:
@@ -44,9 +77,15 @@ persistence:
   size: ""
   storageClassName: ""
 
-# Free-form string map → ConfigMap. Use __ for .NET hierarchy (ConnectionStrings__Default).
-# Reserved platform keys are rejected (ASPNETCORE_URLS, Kestrel__*, GOOGLE_APPLICATION_CREDENTIALS, …).
+# Free-form string map → ConfigMap. Nested keys use __ (ConnectionStrings__Default).
+# Reserved platform keys are rejected (PORT, APP_PROTOCOL, SHUTDOWN_TIMEOUT_SECONDS,
+# CPU_REQUEST_MILLICORES, GOOGLE_APPLICATION_CREDENTIALS). Runtime-specific keys are
+# guarded by platform/runtimes/<runtime>.yml via the pipeline.
 config: {}
+
+# Writable scratch for readOnlyRootFilesystem pods. Platform-owned (not in public manifesto).
+tmp:
+  sizeLimit: 128Mi
 
 externalSecret:
   refreshInterval: 1h
@@ -54,6 +93,23 @@ externalSecret:
     kind: ClusterSecretStore
     name: ""
   data: []
+
+# Probe timing defaults. Overridable by platform/runtimes/<runtime>.yml — the manifesto
+# still sets which probes exist (path/enabled); these numbers fill in the rest.
+probeDefaults:
+  startup:
+    failureThreshold: 30
+    periodSeconds: 5
+  readiness:
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+  liveness:
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
 
 # Networked (web/grpc): manifesto MUST set probes: false OR explicit probes.<type>.
 # No default here — omission fails validation (fail-fast).
@@ -66,8 +122,22 @@ resources:
   limits:
     memory: 512Mi
 
+# Window between SIGTERM and SIGKILL. Set explicitly rather than left at Kubernetes' implicit
+# 30 so a future preStop drain can fit inside it, and so shutdownTimeoutSeconds has a
+# hard upper bound. Must stay strictly above shutdownTimeoutSeconds.
+terminationGracePeriodSeconds: 30
+
+# Exposed to the container as SHUTDOWN_TIMEOUT_SECONDS; the image entrypoint maps it to the
+# runtime's own shutdown clock. Must be < terminationGracePeriodSeconds.
+shutdownTimeoutSeconds: 25
+
 podSecurityContext:
   runAsNonRoot: true
+  # Platform UID — every docker/<runtime>/ image must create or assert this UID.
+  runAsUser: 1654
+  runAsGroup: 1654
+  # Makes mounted PVCs group-writable for the same identity.
+  fsGroup: 1654
   seccompProfile:
     type: RuntimeDefault
 
@@ -80,11 +150,29 @@ securityContext:
       - ALL
 
 # Autoscaling (CPU HPA):
-# - web/grpc: ON by default; minReplicas default 1 (develop/homolog) or 2 (production)
+# - web/grpc: ON by default; minReplicas from platform.defaultMinReplicas when omitted
 # - worker: OFF by default; set an explicit map to opt in
 # - autoscaling: false disables for any type
 autoscaling: {}
 
+# Spread replicas across zones. whenUnsatisfiable: ScheduleAnyway is deliberate and makes this
+# cluster-agnostic: upstream warns that in clusters with few topology domains a hard
+# DoNotSchedule constraint delays or blocks scheduling. A soft constraint is a no-op in a
+# single-zone cluster and still biases the scheduler in a multi-zone one, so the same chart is
+# correct for develop, homolog and production without per-cluster discovery.
+# topology.kubernetes.io/zone is a well-known label EKS always sets.
+topologySpread:
+  enabled: true
+  topologyKey: topology.kubernetes.io/zone
+  maxSkew: 1
+
+# PDB is rendered only from 2 effective replicas up (below that it protects nothing).
+# maxUnavailable: 1 rather than the upstream "minAvailable: 90%" suggestion for stateless
+# frontends: minAvailable percentages round UP, so 90% of 2 replicas resolves to 2 and would
+# block ALL voluntary disruption — including node drains. maxUnavailable: 1 keeps one replica
+# serving while still allowing maintenance at the replica counts this platform actually runs.
 pdb:
-  enabled: false
+  enabled: true
   maxUnavailable: 1
+  # AlwaysAllow | IfHealthyBudget — see templates/pdb.yaml
+  unhealthyPodEvictionPolicy: AlwaysAllow

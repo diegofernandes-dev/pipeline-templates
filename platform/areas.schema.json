@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "platform area profile (parameter platform default)",
+  "type": "object",
+  "required": ["area", "buildPool", "registry", "tiers"],
+  "additionalProperties": false,
+  "properties": {
+    "area": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[a-z][a-z0-9-]*$"
+    },
+    "buildPool": {
+      "type": "string",
+      "minLength": 1
+    },
+    "registry": {
+      "type": "object",
+      "required": ["awsAccountId", "awsRegion"],
+      "additionalProperties": false,
+      "properties": {
+        "awsAccountId": {
+          "type": "string",
+          "pattern": "^[0-9]{12}$"
+        },
+        "awsRegion": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "tiers": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "order",
+          "environmentName",
+          "awsRegion",
+          "gatewayName",
+          "gatewayNamespace",
+          "dnsZone",
+          "defaultMinReplicas",
+          "smokeAllowed",
+          "podSecurity"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "order": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "deployPool": {
+            "type": ["string", "null"]
+          },
+          "environmentName": {
+            "type": "string",
+            "minLength": 1
+          },
+          "awsAccountId": {
+            "type": ["string", "null"],
+            "pattern": "^[0-9]{12}$"
+          },
+          "awsRegion": {
+            "type": "string",
+            "minLength": 1
+          },
+          "expectedKubeContext": {
+            "type": ["string", "null"]
+          },
+          "gatewayName": {
+            "type": "string",
+            "minLength": 1
+          },
+          "gatewayNamespace": {
+            "type": "string",
+            "minLength": 1
+          },
+          "dnsZone": {
+            "type": "string",
+            "minLength": 1
+          },
+          "legacyDnsZone": {
+            "type": ["string", "null"]
+          },
+          "defaultMinReplicas": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "smokeAllowed": {
+            "type": "boolean"
+          },
+          "podSecurity": {
+            "type": "object",
+            "required": ["enforce", "enforceVersion"],
+            "additionalProperties": false,
+            "properties": {
+              "enforce": {
+                "type": ["string", "null"],
+                "enum": ["privileged", "baseline", "restricted", null]
+              },
+              "enforceVersion": {
+                "type": ["string", "null"]
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

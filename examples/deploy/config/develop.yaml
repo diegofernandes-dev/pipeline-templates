@@ -6,7 +6,8 @@ kind: Application
 workload:
   type: web
 
-legacyDns: false
+dns:
+  publishLegacyHostname: false
 
 # Required for web/grpc: probes: false OR explicit per-type probes (no global path).
 probes: false
