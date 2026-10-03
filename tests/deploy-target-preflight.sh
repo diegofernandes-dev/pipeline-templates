@@ -79,6 +79,15 @@ case "${cmd}" in
         ;;
       csidriver|csidrivers)
         name="${2:-}"
+        # list: kubectl get csidriver [-o ...]
+        if [[ -z "${name}" || "${name}" == "-o" ]]; then
+          if [[ -f "${STATE}/csi-list-ok" ]]; then
+            echo '{"apiVersion":"v1","kind":"List","items":[]}'
+            exit 0
+          fi
+          echo "Error from server (Forbidden)" >&2
+          exit 1
+        fi
         if [[ -f "${STATE}/csi/${name}" ]]; then
           if printf '%s' "$*" | grep -q jsonpath; then
             printf '%s' "${name}"
@@ -137,6 +146,26 @@ expect_fail() {
     echo "OK: ${name} failed closed (rc=${rc})"
   fi
   assert_no_helm
+  LAST_OUT="${out}"
+}
+
+expect_fail_msg() {
+  local name="$1" needle="$2"
+  shift 2
+  local before="${FAILED}"
+  expect_fail "${name}" "$@"
+  if [[ "${FAILED}" -ne "${before}" ]]; then
+    # expect_fail already recorded exit-code failure
+    return 0
+  fi
+  if ! printf '%s\n' "${LAST_OUT:-}" | grep -qF -- "${needle}"; then
+    echo "FAIL: ${name} missing message containing: ${needle}"
+    echo "output was:"
+    echo "${LAST_OUT:-}"
+    FAILED=1
+  else
+    echo "OK: ${name} message contains expected text"
+  fi
 }
 
 expect_pass() {
@@ -278,6 +307,21 @@ EOF
   : > "${WORKDIR}/state/sc-list-ok"
 }
 
+# Rebuild sc-list.json from all *.json under state/sc (supports multiple defaults).
+refresh_sc_list() {
+  mkdir -p "${WORKDIR}/state/sc"
+  python3 - <<'PY'
+import json, pathlib
+root = pathlib.Path(__import__("os").environ["WORKDIR"]) / "state" / "sc"
+items = []
+for p in sorted(root.glob("*.json")):
+    items.append(json.loads(p.read_text()))
+out = {"apiVersion": "v1", "kind": "List", "items": items}
+(root.parent / "sc-list.json").write_text(json.dumps(out))
+PY
+  : > "${WORKDIR}/state/sc-list-ok"
+}
+
 enable_csi() {
   local name="$1"
   mkdir -p "${WORKDIR}/state/csi"
@@ -344,7 +388,56 @@ cat > "${WORKDIR}/state/sc-list.json" <<'EOF'
 EOF
 : > "${WORKDIR}/state/sc-list-ok"
 write_pvc_render ""
-expect_fail "PVC + no SC name + no default" \
+expect_fail_msg "PVC + no SC name + no default" \
+  "no default StorageClass" \
+  env KUBECTL_STATE_DIR="${WORKDIR}/state" bash "${SCRIPT}" capabilities --render "${WORKDIR}/renders/pvc.yaml"
+
+echo "== default StorageClass ambiguity =="
+# one default already covered above as PASS
+reset_state
+export KUBECTL_STATE_DIR="${WORKDIR}/state" WORKDIR="${WORKDIR}"
+write_sc gp2 ebs.csi.aws.com true
+write_sc gp3 ebs.csi.aws.com true
+refresh_sc_list
+enable_csi ebs.csi.aws.com
+write_pvc_render ""
+expect_fail_msg "PVC + no SC name + multiple defaults" \
+  "multiple default StorageClasses" \
+  env KUBECTL_STATE_DIR="${WORKDIR}/state" bash "${SCRIPT}" capabilities --render "${WORKDIR}/renders/pvc.yaml"
+# Must not silently validate a single SC as if it were the chosen default.
+if printf '%s\n' "${LAST_OUT:-}" | grep -qE 'StorageClass gp2 provisioner=|StorageClass gp3 provisioner='; then
+  echo "FAIL: multiple defaults must not proceed to validate a chosen StorageClass"
+  echo "${LAST_OUT}"
+  FAILED=1
+else
+  echo "OK: multiple defaults refused before SC/CSI validation"
+fi
+
+echo "== CSI diagnostics =="
+reset_state
+export KUBECTL_STATE_DIR="${WORKDIR}/state"
+write_sc gp2 ebs.csi.aws.com false
+enable_csi ebs.csi.aws.com
+write_pvc_render gp2
+expect_pass "CSI exists" \
+  env KUBECTL_STATE_DIR="${WORKDIR}/state" bash "${SCRIPT}" capabilities --render "${WORKDIR}/renders/pvc.yaml"
+
+reset_state
+export KUBECTL_STATE_DIR="${WORKDIR}/state"
+write_sc gp2 kubernetes.io/aws-ebs false
+: > "${WORKDIR}/state/csi-list-ok"
+write_pvc_render gp2
+expect_fail_msg "CSI missing / NotFound" \
+  "CSIDriver 'ebs.csi.aws.com' is not registered" \
+  env KUBECTL_STATE_DIR="${WORKDIR}/state" bash "${SCRIPT}" capabilities --render "${WORKDIR}/renders/pvc.yaml"
+
+reset_state
+export KUBECTL_STATE_DIR="${WORKDIR}/state"
+write_sc gp2 kubernetes.io/aws-ebs false
+# no csi-list-ok → list/get CSI forbidden
+write_pvc_render gp2
+expect_fail_msg "CSI read forbidden" \
+  "cannot verify required capability due to RBAC or API error" \
   env KUBECTL_STATE_DIR="${WORKDIR}/state" bash "${SCRIPT}" capabilities --render "${WORKDIR}/renders/pvc.yaml"
 
 echo "== critical regressions =="
