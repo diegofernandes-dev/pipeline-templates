@@ -128,8 +128,12 @@ print('OK: ${area} schema')
 
       # eval-all (ea) + first non-empty line: on a multi-doc render plain `yq` emits document
       # separators and blank lines for the documents that `select` filters out, so the value
-      # arrives buried in them. Same pattern helm-deploy.yml already uses for the preflight.
-      pick() { printf '%s' "${rendered}" | yq ea -r "$1" 2>/dev/null | awk 'NF{print; exit}'; }
+      # arrives buried in them. Capture yq fully before awk exits — yq|awk-exit under pipefail is SIGPIPE.
+      pick() {
+        local lines
+        lines="$(printf '%s' "${rendered}" | yq ea -r "$1" 2>/dev/null || true)"
+        printf '%s\n' "${lines}" | awk 'NF{print; exit}'
+      }
       got_name="$(pick "select(.kind == \"${kind}\") | .spec.parentRefs[0].name // \"\"")"
       got_ns="$(pick "select(.kind == \"${kind}\") | .spec.parentRefs[0].namespace // \"\"")"
       got_host="$(pick "select(.kind == \"${kind}\") | .spec.hostnames[0] // \"\"")"

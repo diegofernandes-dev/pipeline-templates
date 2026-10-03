@@ -392,8 +392,11 @@ stages:
                       # not a parallel bash map of env → name.
                       if grep -qE '^kind: (HTTPRoute|GRPCRoute)$' "${PREFLIGHT_RENDER}"; then
                         # eval-all (ea): multi-doc render; plain `yq` can emit leading blank lines per doc.
-                        ROUTE_GW_NAME="$(yq ea -r 'select(.kind == "HTTPRoute" or .kind == "GRPCRoute") | .spec.parentRefs[0].name // ""' "${PREFLIGHT_RENDER}" | awk 'NF{print; exit}')"
-                        ROUTE_GW_NS="$(yq ea -r 'select(.kind == "HTTPRoute" or .kind == "GRPCRoute") | .spec.parentRefs[0].namespace // ""' "${PREFLIGHT_RENDER}" | awk 'NF{print; exit}')"
+                        # Capture yq fully before awk exits — yq|awk-exit under pipefail is SIGPIPE (141).
+                        ROUTE_GW_NAME_LINES="$(yq ea -r 'select(.kind == "HTTPRoute" or .kind == "GRPCRoute") | .spec.parentRefs[0].name // ""' "${PREFLIGHT_RENDER}")"
+                        ROUTE_GW_NS_LINES="$(yq ea -r 'select(.kind == "HTTPRoute" or .kind == "GRPCRoute") | .spec.parentRefs[0].namespace // ""' "${PREFLIGHT_RENDER}")"
+                        ROUTE_GW_NAME="$(printf '%s\n' "${ROUTE_GW_NAME_LINES}" | awk 'NF{print; exit}')"
+                        ROUTE_GW_NS="$(printf '%s\n' "${ROUTE_GW_NS_LINES}" | awk 'NF{print; exit}')"
                         if [[ -z "${ROUTE_GW_NAME}" ]]; then
                           echo "##vso[task.logissue type=error]Rendered route has empty parentRefs[0].name"
                           exit 1

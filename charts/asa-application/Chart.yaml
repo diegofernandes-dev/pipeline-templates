@@ -2,8 +2,8 @@ apiVersion: v2
 name: asa-application
 description: Platform chart for continuous workloads on EKS (web | grpc | worker)
 type: application
-version: 5.3.0
-appVersion: "5.3.0"
+version: 5.3.1
+appVersion: "5.3.1"
 
 # Floor DERIVED from what these charts actually apply, not from what any cluster happens to run:
 #   CronJob .spec.timeZone     stable v1.27   <- binding constraint
