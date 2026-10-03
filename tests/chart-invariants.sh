@@ -620,7 +620,8 @@ assert_contains "$OUT_ES" 'key: "prod/db"' "externalSecret remoteRef.key"
 OUT_LABELS="$(render_app --set probes=false)"
 assert_contains "$OUT_LABELS" 'app.kubernetes.io/version: "deadbeef"' "resource labels include image tag version"
 assert_contains "$OUT_LABELS" "app.kubernetes.io/managed-by: Helm" "resource labels include managed-by"
-assert_contains "$OUT_LABELS" "helm.sh/chart: asa-application-5.3.0" "resource metadata has helm.sh/chart"
+CHART_VER="$(yq -r .version "${APP_CHART}/Chart.yaml")"
+assert_contains "$OUT_LABELS" "helm.sh/chart: asa-application-${CHART_VER}" "resource metadata has helm.sh/chart"
 # helm.sh/chart must NOT appear on the pod template (would force rollout on chart bump).
 POD_LABELS="$(python3 -c '
 import sys, yaml
@@ -1233,8 +1234,11 @@ assert_contains "$OUT_TERM" 'value: "25"' "default shutdownTimeoutSeconds is 25"
 
 # minReadySeconds is pointless if it is shorter than a readiness period: the pod would be
 # declared available before a single probe could fail it.
-READY_PERIOD="$(yq -r -N 'select(.kind == "Deployment") | .spec.template.spec.containers[0].readinessProbe.periodSeconds // 0' <<<"$OUT_TERM" | awk 'NF{print; exit}')"
-MIN_READY="$(yq -r -N 'select(.kind == "Deployment") | .spec.minReadySeconds // 0' <<<"$OUT_TERM" | awk 'NF{print; exit}')"
+# Capture yq output fully before awk exits early — under pipefail, yq|awk-exit is SIGPIPE (141).
+READY_PERIOD_LINES="$(yq -r -N 'select(.kind == "Deployment") | .spec.template.spec.containers[0].readinessProbe.periodSeconds // 0' <<<"$OUT_TERM")"
+MIN_READY_LINES="$(yq -r -N 'select(.kind == "Deployment") | .spec.minReadySeconds // 0' <<<"$OUT_TERM")"
+READY_PERIOD="$(printf '%s\n' "${READY_PERIOD_LINES}" | awk 'NF{print; exit}')"
+MIN_READY="$(printf '%s\n' "${MIN_READY_LINES}" | awk 'NF{print; exit}')"
 if [[ "${MIN_READY:-0}" -ge "${READY_PERIOD:-0}" ]]; then
   echo "OK: minReadySeconds (${MIN_READY}) >= readiness periodSeconds (${READY_PERIOD})"
 else

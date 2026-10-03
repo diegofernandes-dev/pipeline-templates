@@ -7,7 +7,9 @@ resources:
       type: github
       name: diegofernandes-dev/pipeline-templates
       endpoint: github-diegofernandes-dev
-      ref: refs/tags/v5.3.0
+      # v5.3.0 is RETIRADA (tagged before repository CI was green). Prefer v5.3.1 when
+      # published after platform-ci success on that SHA; until then pin a green commit or main.
+      ref: refs/heads/main
 
 extends:
   template: templates/dotnet/ci.yml@templates

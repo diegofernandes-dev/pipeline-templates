@@ -92,10 +92,22 @@ Requires cluster APIs: `gateway.networking.k8s.io/v1`, `external-secrets.io/v1`.
 
 ### 4.3 DNS + ExternalDNS + Gateway (publishLegacyHostname)
 
+**ExternalDNS provenance (lab inventory / `helm list` during the session)**
+
+| Field | Value |
+|-------|--------|
+| Helm chart | `external-dns-1.23.0` (repo `external-dns`) |
+| App version | **0.23.0** |
+| Provider | AWS Route53 |
+| Sources | `gateway-httproute` (Gateway API) |
+| Hostname source | chart annotation `external-dns.kubernetes.io/gateway-hostname-source: annotation-only` |
+| IRSA | `asa-pg-external-dns` on SA `external-dns/external-dns` |
+| Evidence source | Live `helm list -A` on `sample-template-pg` during 2026-10-02 lab; agent session summary after canary |
+
 **Setup**
 
 - NGINX Gateway Fabric (`ngf`) + Gateway `d-asa-com-br-internal-gateway` in `asa-infra-nginx-gateway`.
-- ExternalDNS with IRSA role `asa-pg-external-dns` (Route53 change on lab zones).
+- ExternalDNS (above) with IRSA role `asa-pg-external-dns` (Route53 change on lab zones).
 - Release `sample-canary` (`asa-application`) with platform zones overridden to ephemeral Route53:
 
 ```yaml

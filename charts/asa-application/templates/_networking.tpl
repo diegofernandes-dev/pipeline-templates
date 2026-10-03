@@ -62,9 +62,10 @@ ExternalDNS publication annotations.
 gateway-hostname-source: annotation-only keeps Route acceptance ≠ DNS ownership.
 Hostnames in the annotation are the only ones ExternalDNS may publish.
 
-Requires ExternalDNS that reads external-dns.kubernetes.io/ (default since v0.22)
-and supports gateway-hostname-source (added ~v0.21). Lab has no ExternalDNS —
-live reconciliation is NOT proven here.
+Requires an ExternalDNS Gateway API source that honours
+external-dns.kubernetes.io/gateway-hostname-source and
+external-dns.kubernetes.io/hostname. See docs/lab-e2e-validation-2026-10-02.md
+for the version and flags proven in lab.
 */}}
 {{- define "chart.externalDnsAnnotations" -}}
 {{- $names := list (include "chart.hostname" .) -}}
