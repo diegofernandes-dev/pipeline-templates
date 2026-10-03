@@ -1,3 +1,8 @@
+# Example consumer pipeline (extends templates/dotnet/ci.yml).
+# Pin an immutable tag — do not track main for production consumers.
+#
+# v6 public API: select platformArea; platform owns promotion topology.
+# platformArea: none → CI only.
 trigger:
   - main
 
@@ -7,18 +12,18 @@ resources:
       type: github
       name: diegofernandes-dev/pipeline-templates
       endpoint: github-diegofernandes-dev
-      ref: refs/tags/v5.3.2   # current recommended; v5.3.0 is RETIRADA
+      ref: refs/tags/v6.0.0   # after release; until then use a commit SHA on main (v6 API ≠ v5.3.2)
 
 extends:
   template: templates/dotnet/ci.yml@templates
   parameters:
     solution: '**/*.sln'
+    # One deployable = one ECR image = one Helm release = namespace asa-<name> = hostname.
     applicationName: sample-api
     dotnetProject: src/Sample.Api/Sample.Api.csproj
-    # Area profile owns buildPool, deploy pools, registry, and ADO Environments.
+    # Runtime profile (platform/runtimes/<name>.yml) injected before the manifesto.
+    runtime: dotnet
+    # Manifestos por tier: deploy/config/<tier>.yaml for every platform.promotion entry.
+    # runtimeConfigPath: deploy/config
+    # Area profile owns promotion chain, pools, ADO Environments, cluster identity, Gateway/DNS.
     platformArea: lab
-    deployEnvironments:
-      - name: develop
-        variableGroups: []
-      - name: homolog
-        variableGroups: []

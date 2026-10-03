@@ -88,6 +88,53 @@ print('OK: ${area} schema')
   fi
   rm -f "${tmpj}"
 
+  # platform.promotion: non-empty, unique, known tiers, deploy-complete for each entry.
+  mapfile -t PROMO < <(printf '%s' "${PLATFORM_JSON}" | yq -r '.promotion[]')
+  if [[ "${#PROMO[@]}" -eq 0 ]]; then
+    echo "FAIL: ${area} platform.promotion is empty"
+    FAILED=1
+  elif [[ "${#PROMO[@]}" -gt 3 ]]; then
+    echo "FAIL: ${area} platform.promotion has ${#PROMO[@]} entries (max 3)"
+    FAILED=1
+  else
+    uniq_count="$(printf '%s\n' "${PROMO[@]}" | sort -u | wc -l | tr -d ' ')"
+    if [[ "${uniq_count}" -ne "${#PROMO[@]}" ]]; then
+      echo "FAIL: ${area} platform.promotion has duplicate tiers"
+      FAILED=1
+    else
+      echo "OK: ${area} promotion=[${PROMO[*]}]"
+    fi
+  fi
+  prev_order=0
+  for tier in "${PROMO[@]+"${PROMO[@]}"}"; do
+    if [[ "$(printf '%s' "${PLATFORM_JSON}" | yq -r ".tiers | has(\"${tier}\")")" != "true" ]]; then
+      echo "FAIL: ${area} promotion tier '${tier}' missing from platform.tiers"
+      FAILED=1
+      continue
+    fi
+    order="$(printf '%s' "${PLATFORM_JSON}" | yq -r ".tiers.\"${tier}\".order")"
+    if (( order < prev_order )); then
+      echo "FAIL: ${area} promotion order inverted at '${tier}'"
+      FAILED=1
+    fi
+    prev_order="${order}"
+    pool="$(printf '%s' "${PLATFORM_JSON}" | yq -r ".tiers.\"${tier}\".deployPool // \"null\"")"
+    ctx="$(printf '%s' "${PLATFORM_JSON}" | yq -r ".tiers.\"${tier}\".expectedKubeContext // \"null\"")"
+    acct="$(printf '%s' "${PLATFORM_JSON}" | yq -r ".tiers.\"${tier}\".awsAccountId // \"null\"")"
+    if [[ "${pool}" == "null" || -z "${pool}" ]]; then
+      echo "FAIL: ${area}/${tier} in promotion but deployPool is null"
+      FAILED=1
+    fi
+    if [[ "${ctx}" == "null" || -z "${ctx}" ]]; then
+      echo "FAIL: ${area}/${tier} in promotion but expectedKubeContext is null"
+      FAILED=1
+    fi
+    if [[ "${acct}" == "null" || -z "${acct}" ]]; then
+      echo "FAIL: ${area}/${tier} in promotion but awsAccountId is null"
+      FAILED=1
+    fi
+  done
+
   mapfile -t TIERS < <(printf '%s' "${PLATFORM_JSON}" | yq -r '.tiers | keys | .[]')
   for tier in "${TIERS[@]}"; do
     pf="$(mktemp -t asa-platform.XXXXXX.yaml)"
@@ -187,6 +234,10 @@ parameters:
       registry:
         awsAccountId: "999999999999"
         awsRegion: us-east-1
+      # Schema requires promotion[]; this fixture is only used for resolve/render +
+      # null-identity fail-closed (not the on-disk promotion completeness gate).
+      promotion:
+        - develop
       tiers:
         develop:
           order: 1

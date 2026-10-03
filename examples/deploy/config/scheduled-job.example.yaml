@@ -1,5 +1,8 @@
 # Example ScheduledJob manifesto (separate deployable / applicationName / release).
+# Public contract: kind + schedule + execution.timeoutSeconds.
 # Pipeline selects charts/asa-scheduled-job from kind.
+# Schema: schemas/scheduled-job.manifest.schema.json
+# Prefer execution.args over execution.command so the image entrypoint/adapter runs.
 
 kind: ScheduledJob
 
@@ -27,3 +30,4 @@ resources:
     memory: 128Mi
   limits:
     memory: 512Mi
+

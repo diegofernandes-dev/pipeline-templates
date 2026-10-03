@@ -9,7 +9,7 @@ Templates YAML reutilizáveis para Azure DevOps (GitHub → `extends`).
 | [`templates/dotnet/ci.yml`](templates/dotnet/ci.yml) | CI → area profile → DeployContract → ECR → Helm |
 | [`templates/dotnet/delivery.yml`](templates/dotnet/delivery.yml) | Stages de delivery (interno; incluído via area profile) |
 | [`templates/dotnet/helm-deploy.yml`](templates/dotnet/helm-deploy.yml) | Stage Helm por tier (`kind` → chart) |
-| [`platform/areas/`](platform/areas/) | Fonte única área × tier → pool / ADO Environment / gateway / contas |
+| [`platform/areas/`](platform/areas/) | Fonte única: `promotion` + tiers → pools / ADO Environments / identity / gateway / DNS |
 | [`platform/areas.schema.json`](platform/areas.schema.json) | Schema do objeto `platform` em cada area profile |
 | [`platform/runtimes/`](platform/runtimes/) | Defaults Kubernetes por runtime (probes/resources/tmp/grace) |
 | [`docker/dotnet/`](docker/dotnet/) | Imagem + entrypoint .NET (traduz o contrato da plataforma) |
@@ -29,7 +29,7 @@ resources:
       type: github
       name: diegofernandes-dev/pipeline-templates
       endpoint: github-diegofernandes-dev
-      ref: refs/tags/v5.3.2   # current recommended; v5.3.0 is RETIRADA
+      ref: refs/tags/v6.0.0   # after release; until then pin v5.3.2 (old API)
 
 extends:
   template: templates/dotnet/ci.yml@templates
@@ -37,32 +37,75 @@ extends:
     solution: '**/*.sln'
     applicationName: sample-api
     dotnetProject: src/Sample.Api/Sample.Api.csproj
+    runtime: dotnet
     platformArea: lab
-    deployEnvironments:
-      - name: develop
-        variableGroups: []
-      - name: homolog
-        variableGroups: []
 ```
 
+`platformArea` seleciona a topologia. A cadeia de promoção vem de `platform/areas/<area>.yml` → `platform.promotion` (não do consumer). `platformArea: none` ⇒ **CI only** (sem publish/container/deploy).
+
 `applicationName` = **um deployable** = **uma imagem ECR** = **uma Helm release** = namespace `asa-<name>` = hostname. A implementação atual **não** compartilha imagem entre API e worker/job — use `applicationName` distintos.
+
+Desired state por ambiente continua em `deploy/config/<tier>.yaml` (um manifesto por entrada de `platform.promotion`).
 
 ### Fluxo
 
 ```text
 CI (build/test) ──┐
-                  ├→ Container (ECR IMMUTABLE)
+                  ├→ Container (ECR IMMUTABLE)  ← uma imagem
 DeployContract ───┘
                   ↓
-               Deploy (Helm, sem --atomic)
+        Deploy_develop → Deploy_homolog → …   ← mesma imagem + manifesto do tier
 ```
 
-Manifesto inválido falha **antes** do push de imagem. `DeployContract` aplica **duas** camadas:
-o schema público (rejeita chave desconhecida/typo) e `helm template` por ambiente (roda as
-invariantes do próprio chart — chaves reservadas em `config`, forma de probe por `workload.type`,
-`persistence` vs autoscaling, WIF/ExternalSecret parcial, ScheduledJob sem `command`/`args`). Sem a
-segunda camada essas regras só apareceriam no Deploy, e para `production` só depois de develop e
-homolog já implantados.
+Manifesto inválido falha **antes** do push de imagem. `DeployContract` valida **todos** os tiers de `platform.promotion`:
+schema público + `helm template` por ambiente (invariantes do chart — chaves reservadas em `config`,
+forma de probe por `workload.type`, `persistence` vs autoscaling, WIF/ExternalSecret parcial,
+ScheduledJob sem `command`/`args`). Sem a segunda camada essas regras só apareceriam no Deploy.
+
+### Ownership
+
+| Owner | Responsabilidade |
+|-------|------------------|
+| **Application repository** | `applicationName`, inputs de build, `deploy/config/<tier>.yaml` |
+| **Platform area** | `promotion`, deploy pools, ADO Environments, AWS account/region, `expectedKubeContext`, Gateway/DNS, deploy policy (`smokeAllowed`, …) |
+| **Infrastructure** | EKS, node/kubelet ECR pull, repository policies, metrics-server, EBS CSI, Gateway controller, ESO, ClusterSecretStore, WIF/IAM trust |
+| **Secret system** | valores runtime via ExternalSecret → Secrets Manager |
+
+Azure DevOps Variable Groups **não** fazem parte do contrato de deploy: config versionada fica no manifesto; secrets vêm de ExternalSecret; fatos de plataforma vêm do area profile.
+
+### Artifact promotion (build once)
+
+```text
+one build → one immutable image tag
+same image + develop.yaml  → DEV
+same image + homolog.yaml  → HML
+same image + production.yaml → PRD   (quando production estiver em platform.promotion)
+```
+
+### ECR pull
+
+O pipeline de deploy **não** cria `imagePullSecrets`. Autenticação de pull é da infraestrutura: identidade do node/kubelet + repository policy do ECR compartilhado (cross-account esperado). Conta do registry ≠ conta do cluster é normal.
+
+### Migrating from v5.3.2 to v6.0.0
+
+**Before (v5.3.2):**
+
+```yaml
+platformArea: lab
+deployEnvironments:
+  - name: develop
+    variableGroups: []
+  - name: homolog
+    variableGroups: []
+```
+
+**After (v6):**
+
+```yaml
+platformArea: lab
+```
+
+Tiers e ordem vêm de `platform/areas/lab.yml` → `platform.promotion` (hoje: `develop`, `homolog`). Não há compatibilidade silenciosa: `deployEnvironments` deixa de existir na API pública — pipelines antigos falham na compilação ADO até migrarem.
 
 ### Contrato público
 
@@ -137,22 +180,23 @@ execution:
 
 ADO Environments de deploy devem ter **exclusividade/lock** (requisito operacional; não há lock em Bash).
 
-### Platform area × tier mapping
+### Platform area × promotion
 
 Fonte única: [`platform/areas/<area>.yml`](platform/areas/) (ex.: [`lab.yml`](platform/areas/lab.yml)).
-O ADO lê o profile em tempo de compilação (pool / Environment); o resolvedor lê o mesmo arquivo
-em runtime (gateway, DNS, `defaultMinReplicas`, guards).
+`platform.promotion` é a autoridade sobre **quais** tiers entram na cadeia e em **qual ordem**.
+`platform.tiers` descreve tiers conhecidos (incluindo os ainda não promovíveis).
 
-| Área | Tier | Deploy pool | ADO Environment | expectedKubeContext | awsAccountId |
-|------|------|-------------|-----------------|---------------------|--------------|
-| lab | develop | `PG-AWS-EKS` | `develop` | `sample-template-pg` | `448003890252` |
-| lab | homolog | `PG-AWS-EKS-HML` | `homolog` | `sample-template-pg` | `448003890252` |
-| lab | production | **EXTERNAL BLOCKER** (`null`) | `production` | `sample-template-pg` | `448003890252` |
+| Área | `promotion` | Tier | Deploy pool | ADO Environment | expectedKubeContext | awsAccountId |
+|------|-------------|------|-------------|-----------------|---------------------|--------------|
+| lab | develop → homolog | develop | `PG-AWS-EKS` | `develop` | `sample-template-pg` | `448003890252` |
+| lab | develop → homolog | homolog | `PG-AWS-EKS-HML` | `homolog` | `sample-template-pg` | `448003890252` |
+| lab | *(not in promotion)* | production | **EXTERNAL BLOCKER** (`null`) | `production` | `sample-template-pg` | `448003890252` |
 
-- Destinos **deployáveis** (`deployPool` preenchido) exigem identity mapping completo: `expectedKubeContext` e `awsAccountId` não podem ser `null`. Ausência ou mismatch → **FAIL** (fail-closed); nunca warning + continue.
+- Todo tier em `promotion` exige mapping completo: `deployPool`, `expectedKubeContext`, `awsAccountId` (e demais facts do resolver). Ausência → **FAIL** (fail-closed).
 - Contexto kubectl e conta STS do agent de deploy: match **exato** com o tier (não substring). Conta do registry ECR é independente (cross-account esperado).
 - Registry ECR compartilhado: `platform.registry` no profile (conta/região). A **repository policy** de pull cross-account é pré-provisionada pela infra; o pipeline só cria o repositório com `--registry-id`.
-- Manifestos da app continuam em `deploy/config/<tier>.yaml`. O stage chama-se `Deploy_<tier>`; o Environment ADO pode diferir (`environmentName` no profile).
+- Manifestos da app: `deploy/config/<tier>.yaml` para cada entrada de `promotion`. Stage `Deploy_<tier>`; Environment ADO pode diferir (`environmentName`).
+- Aprovações/checks dos ADO Environments continuam governando promoção — presença do stage ≠ promoção automática.
 
 #### Cluster capabilities (preflight)
 
@@ -174,7 +218,7 @@ Sem o recurso no render, o check correspondente é ignorado (ex.: PVC com `autos
 | Repository policy / Org pull | infra | Conta compartilhada (ex.: `aws:PrincipalOrgID`) |
 | Namespace K8s | delivery | `kubectl apply` quando ausente |
 | Agent pools / ADO Environments | infra | Pré-requisito por cluster |
-| `ClusterSecretStore` / node ECR pull | infra | Pré-requisito por cluster |
+| `ClusterSecretStore` / node ECR pull | infra | Pré-requisito por cluster (sem `imagePullSecret` do pipeline) |
 | DNS | ExternalDNS | Pipeline **não** cria registros. Chart emite `external-dns.kubernetes.io/gateway-hostname-source: annotation-only` + `hostname` nos Routes. `dns.publishLegacyHostname` (default `false`) autoriza publicar o hostname legado `.asa.com.br`; a Route **sempre** aceita corp + legacy quando `platform.legacyDnsZone` existe (cutover ≠ publicação). |
 
 #### Pré-requisitos de infra por cluster
@@ -182,7 +226,7 @@ Sem o recurso no render, o check correspondente é ignorado (ex.: PVC com `autos
 - Pool de deploy com o nome em `deployPool` e identidade (Pod Identity / IRSA) limitada ao cluster.
 - Pool de build (`buildPool`) com push no ECR compartilhado.
 - ADO Environment com o nome em `environmentName`, com exclusividade/lock e (recomendado) Required template check.
-- Role dos nodes com `ecr:BatchGetImage` / `ecr:GetDownloadUrlForLayer` no registry compartilhado.
+- Todo cluster deployável deve puxar imagens do ECR compartilhado **sem** `imagePullSecret` criado pelo pipeline — role dos nodes/kubelet com `ecr:BatchGetImage` / `ecr:GetDownloadUrlForLayer` (e GetAuthorizationToken conforme o modelo IAM).
 - `ClusterSecretStore` com assume-role na conta do Secrets Manager compartilhado.
 
 ### Testes locais / CI do repo
@@ -236,9 +280,11 @@ helm lint charts/asa-scheduled-job \
 | `v3.2.0` | kubeconform nos manifests renderizados; `expect_fail` com asserção de mensagem; `validateAutoscaling` (min≤max); `remoteRef.key` required; `image.repository` minLength; `/tmp` `emptyDir.sizeLimit`; labels padrão (`version`/`managed-by`/`helm.sh/chart`); gate de bump de versão no CI |
 | `v4.0.0` | Desacoplamento env→topology via `resolve-platform-values.sh` + `platform.*` no chart; asa-application 4.x |
 | `v5.0.0` | Cluster axis + runtime-agnostic charts: `platform/areas` + `platform/runtimes`; env `PORT`/`APP_PROTOCOL`/`SHUTDOWN_TIMEOUT_SECONDS`; asa-application 5.2.0 / asa-scheduled-job 4.2.0 |
-| `v5.3.2` | **Recomendada.** Fail-closed target identity + render-driven capability preflight (HPA/PVC), default StorageClass ambígua fail-closed, diagnósticos CSI NotFound vs RBAC. Sem bump de Chart.yaml. |
-| `v5.3.1` | Corretiva após `platform-ci` verde: SIGPIPE/exit 141 no harness, docs ExternalDNS, higiene de release. Runtime DNS inalterado vs lab E2E. Substituída por `v5.3.2` como recomendada. |
+| `v5.3.2` | **Recomendada (stable).** Fail-closed target identity + render-driven capability preflight (HPA/PVC), default StorageClass ambígua fail-closed, diagnósticos CSI NotFound vs RBAC. Sem bump de Chart.yaml. API ainda usa `deployEnvironments`. |
+| `v5.3.1` | Corretiva após `platform-ci` verde: SIGPIPE/exit 141 no harness, docs ExternalDNS, higiene de release. Runtime DNS inalterado vs lab E2E. |
 | `v5.3.0` | **RETIRADA — não usar.** Criada antes da conclusão dos gates do repositório (`contracts` falhava com exit 141 / SIGPIPE no harness). O problema foi de **qualificação de release / test harness**, não do runtime DNS (`dns.publishLegacyHostname` e E2E em [`docs/lab-e2e-validation-2026-10-02.md`](docs/lab-e2e-validation-2026-10-02.md) permanecem válidos). Substituída por `v5.3.1`. Tag imutável — não mover. |
+
+**Pending major (não pinada até a tag existir):** candidata `v6.0.0` — platform-owned `promotion`, remoção de `deployEnvironments` / Variable Groups / `ECR_PULL_SECRET` do caminho de deploy. Charts inalterados. Ver [`docs/adr-platform-owned-promotion.md`](docs/adr-platform-owned-promotion.md).
 
 
 **Release (caminho oficial):** use o workflow GitHub Actions [`release`](.github/workflows/release.yml) (`workflow_dispatch` com `version`, `sha`, `dryRun`).

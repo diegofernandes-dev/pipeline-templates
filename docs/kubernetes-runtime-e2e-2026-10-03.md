@@ -479,3 +479,15 @@ tag target: a801d363974391d53ba2345608ae87995b6b11e0
 ```
 
 Includes: target identity fail-closed, render-driven capability preflight, default StorageClass ambiguity fail-closed, CSI NotFound vs RBAC diagnostics. Chart versions unchanged (template/script release only). Tag is immutable and points at the qualified code SHA (not this docs commit).
+
+---
+
+## Addendum — delivery API (post v5.3.2)
+
+```text
+delivery API changed: YES (platform-owned promotion; v6.0.0 candidate)
+charts/runtime unchanged: YES
+runtime matrix not rerun: YES
+```
+
+Evidence above remains valid for HPA/PVC/CronJob/gRPC/PDB/TopologySpread/PSA/Helm recovery/identity/capability preflight. The v6 change only relocates promotion ownership from consumer `deployEnvironments` to `platform.promotion` and removes Variable Groups / `ECR_PULL_SECRET` from the deploy path.

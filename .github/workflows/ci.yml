@@ -111,6 +111,9 @@ jobs:
       - name: platform-contract
         run: ./tests/platform-contract.sh
 
+      - name: promotion-contract
+        run: ./tests/promotion-contract.sh
+
       - name: runtime-contract
         run: ./tests/runtime-contract.sh
 

@@ -17,10 +17,6 @@ parameters:
   - name: platformArea
     type: string
 
-  - name: variableGroups
-    type: object
-    default: []
-
   - name: dependsOn
     type: object
     default:
@@ -35,6 +31,7 @@ parameters:
   - name: awsRegion
     type: string
 
+  # Platform deploy policy (not consumer-owned). Default matches prior contract.
   - name: helmTimeout
     type: string
     default: '5m'
@@ -47,16 +44,6 @@ parameters:
     type: string
     default: 'dotnet'
 
-  # Lab fallback: docker-registry secret name (empty = rely on node/kubelet ECR IAM).
-  - name: ecrPullSecret
-    type: string
-    default: ''
-
-  # smokeAllowed tier + ScheduledJob only: create a one-off Job from CronJob after deploy (opt-in).
-  - name: smokeScheduledJob
-    type: boolean
-    default: false
-
 stages:
   - stage: Deploy_${{ parameters.tier }}
     displayName: Deploy ${{ parameters.tier }} (${{ parameters.platformArea }})
@@ -67,8 +54,6 @@ stages:
         value: $[ stageDependencies.Container.DockerBuildPush.outputs['dockerBuildPush.imageRepository'] ]
       - name: imageTag
         value: $[ stageDependencies.Container.DockerBuildPush.outputs['dockerBuildPush.imageTag'] ]
-      - ${{ each vg in parameters.variableGroups }}:
-        - group: ${{ vg }}
     jobs:
       - deployment: Helm_${{ parameters.tier }}
         displayName: Helm upgrade (${{ parameters.tier }})
@@ -103,15 +88,6 @@ stages:
                     IMAGE_TAG: $(imageTag)
                     RUNTIME_CONFIG_PATH: ${{ parameters.runtimeConfigPath }}
                     PLATFORM_RUNTIME: ${{ parameters.runtime }}
-                    SMOKE_SCHEDULED_JOB: ${{ parameters.smokeScheduledJob }}
-                    # Two sources, because neither alone covers both ways a consumer can define it:
-                    #   PARAM   — compile-time. Only resolves for pipeline-level or queue-time variables,
-                    #             NOT for a Variable Group linked to this stage (those are runtime-only).
-                    #   RUNTIME — the macro. Covers the Variable Group case, but ADO leaves it as the
-                    #             literal string $(ECR_PULL_SECRET) when undefined.
-                    # The script below picks whichever actually carries a value.
-                    ECR_PULL_SECRET_PARAM: ${{ parameters.ecrPullSecret }}
-                    ECR_PULL_SECRET_RUNTIME: $(ECR_PULL_SECRET)
                   inputs:
                     targetType: inline
                     script: |
@@ -123,23 +99,6 @@ stages:
                       MANIFEST="${APP_DIR}/${RUNTIME_CONFIG_PATH}/${PLATFORM_TIER}.yaml"
                       HELM_RELEASE="${APPLICATION_NAME}"
                       HELM_NAMESPACE="asa-${APPLICATION_NAME}"
-
-                      # Resolve the pull secret from whichever source carried a value. An unset ADO
-                      # macro arrives as the literal "$(NAME)", which must be treated as absent.
-                      ECR_PULL_SECRET=""
-                      ECR_PULL_SECRET_SOURCE="none"
-                      for candidate_name in ECR_PULL_SECRET_PARAM ECR_PULL_SECRET_RUNTIME; do
-                        candidate="$(echo -n "${!candidate_name:-}" | tr -d "[:space:]")"
-                        if [[ -z "${candidate}" || "${candidate}" == '$('* ]]; then
-                          continue
-                        fi
-                        ECR_PULL_SECRET="${candidate}"
-                        ECR_PULL_SECRET_SOURCE="${candidate_name}"
-                        break
-                      done
-                      if [[ -n "${ECR_PULL_SECRET}" ]]; then
-                        echo "imagePullSecret name resolved from ${ECR_PULL_SECRET_SOURCE}"
-                      fi
 
                       dump_diagnostics() {
                         echo "##[group]deploy diagnostics"
@@ -485,25 +444,9 @@ stages:
                         -f "${PLATFORM_VALUES}"
                       )
 
-                      if [[ -n "${ECR_PULL_SECRET:-}" ]]; then
-                        echo "##[group]refresh imagePullSecret ${ECR_PULL_SECRET}"
-                        # ECR authorization tokens expire (~12h). Lab path depends on this secret;
-                        # recreate every deploy so ImagePullBackOff is not caused by a stale token.
-                        # Host must match IMAGE_REPOSITORY (shared registry), not the deploy caller account.
-                        ECR_HOST="${IMAGE_REPOSITORY%%/*}"
-                        AWS_REGION_EFF="${REGISTRY_REGION:-${AWS_REGION:-${AWS_DEFAULT_REGION:-us-east-1}}}"
-                        ECR_PASS="$(aws ecr get-login-password --region "${AWS_REGION_EFF}")"
-                        kubectl -n "${HELM_NAMESPACE}" create secret docker-registry "${ECR_PULL_SECRET}" \
-                          --docker-server="${ECR_HOST}" \
-                          --docker-username=AWS \
-                          --docker-password="${ECR_PASS}" \
-                          --dry-run=client -o yaml | kubectl apply -f -
-                        HELM_SET+=(--set-string "imagePullSecrets[0].name=${ECR_PULL_SECRET}")
-                        echo "Using imagePullSecret: ${ECR_PULL_SECRET} (host ${ECR_HOST}; prefer node IAM)"
-                        echo "##[endgroup]"
-                      else
-                        echo "No imagePullSecret — node/kubelet ECR access required"
-                      fi
+                      # Runtime image pull is infrastructure-owned (node/kubelet + shared ECR
+                      # repository policy). The pipeline never creates imagePullSecrets.
+                      echo "imagePullSecrets: none (node/kubelet ECR access required)"
 
                       echo "##[group]helm upgrade ${HELM_RELEASE} → ${IMAGE_REPOSITORY}:${IMAGE_TAG}"
                       set +e
@@ -581,36 +524,27 @@ stages:
                         echo "##[endgroup]"
                       fi
 
-                      SMOKE_ON=false
-                      case "${SMOKE_SCHEDULED_JOB}" in
-                        True|true|TRUE|1) SMOKE_ON=true ;;
+                      # Platform policy: smokeAllowed on the tier + ScheduledJob → one-off Job.
+                      case "${SMOKE_ALLOWED}" in
+                        true|True|TRUE)
+                          if [[ "${KIND}" == "ScheduledJob" ]]; then
+                            echo "##[group]ScheduledJob smoke"
+                            SMOKE="smoke-${HELM_RELEASE}-${BUILD_BUILDID:-manual}"
+                            kubectl -n "${HELM_NAMESPACE}" delete job "${SMOKE}" --ignore-not-found >/dev/null 2>&1 || true
+                            kubectl -n "${HELM_NAMESPACE}" create job "${SMOKE}" --from="cronjob/${HELM_RELEASE}"
+                            if kubectl -n "${HELM_NAMESPACE}" wait --for=condition=complete "job/${SMOKE}" --timeout=120s; then
+                              echo "ScheduledJob smoke Complete"
+                            elif kubectl -n "${HELM_NAMESPACE}" get job "${SMOKE}" -o jsonpath='{.status.conditions[?(@.type=="Failed")].status}' 2>/dev/null | grep -q True; then
+                              echo "##vso[task.logissue type=error]ScheduledJob smoke Failed"
+                              kubectl -n "${HELM_NAMESPACE}" describe job "${SMOKE}" || true
+                              exit 1
+                            else
+                              echo "##vso[task.logissue type=error]ScheduledJob smoke Timeout"
+                              kubectl -n "${HELM_NAMESPACE}" describe job "${SMOKE}" || true
+                              exit 1
+                            fi
+                            echo "##[endgroup]"
+                          fi
+                          ;;
                       esac
-                      if [[ "${SMOKE_ON}" == "true" ]]; then
-                        if [[ "${KIND}" != "ScheduledJob" ]]; then
-                          echo "##vso[task.logissue type=error]smokeScheduledJob only valid for ScheduledJob"
-                          exit 1
-                        fi
-                        case "${SMOKE_ALLOWED}" in
-                          true|True|TRUE) ;;
-                          *)
-                            echo "##vso[task.logissue type=error]smokeScheduledJob not allowed for ${PLATFORM_AREA}/${PLATFORM_TIER} (smokeAllowed=${SMOKE_ALLOWED})"
-                            exit 1
-                            ;;
-                        esac
-                        echo "##[group]ScheduledJob smoke"
-                        SMOKE="smoke-${HELM_RELEASE}-${BUILD_BUILDID:-manual}"
-                        kubectl -n "${HELM_NAMESPACE}" delete job "${SMOKE}" --ignore-not-found >/dev/null 2>&1 || true
-                        kubectl -n "${HELM_NAMESPACE}" create job "${SMOKE}" --from="cronjob/${HELM_RELEASE}"
-                        if kubectl -n "${HELM_NAMESPACE}" wait --for=condition=complete "job/${SMOKE}" --timeout=120s; then
-                          echo "ScheduledJob smoke Complete"
-                        elif kubectl -n "${HELM_NAMESPACE}" get job "${SMOKE}" -o jsonpath='{.status.conditions[?(@.type=="Failed")].status}' 2>/dev/null | grep -q True; then
-                          echo "##vso[task.logissue type=error]ScheduledJob smoke Failed"
-                          kubectl -n "${HELM_NAMESPACE}" describe job "${SMOKE}" || true
-                          exit 1
-                        else
-                          echo "##vso[task.logissue type=error]ScheduledJob smoke Timeout"
-                          kubectl -n "${HELM_NAMESPACE}" describe job "${SMOKE}" || true
-                          exit 1
-                        fi
-                        echo "##[endgroup]"
-                      fi
+

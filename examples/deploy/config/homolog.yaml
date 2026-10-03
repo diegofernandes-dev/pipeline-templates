@@ -1,0 +1,22 @@
+# Example Application manifesto for homolog (same kind/workload.type as develop).
+# Promotion requires one manifesto per platform.promotion tier before Container.
+
+kind: Application
+
+workload:
+  type: web
+
+dns:
+  publishLegacyHostname: false
+
+probes: false
+
+autoscaling:
+  minReplicas: 1
+  maxReplicas: 3
+  cpu:
+    target: 70
+
+config:
+  API_URL: https://api.hml.example
+  FEATURE_FLAG: "true"

@@ -1,5 +1,8 @@
 # Template de CI/.NET → ECR → Helm (promução por Environments ADO).
 # Consumir via extends a partir de outro repositório.
+#
+# Public API (v6): consumer selects platformArea; platform owns promotion topology.
+# platformArea: none → CI only. Any real area → DeployContract + Container + Deploy_*.
 parameters:
   - name: solution
     displayName: Caminho do .sln ou .csproj
@@ -35,19 +38,9 @@ parameters:
     type: string
     default: ''
 
-  # Lista ordenada de tiers para promover a mesma imagem (nome lógico = chave em
-  # platform/areas/<platformArea>.yml → platform.tiers.<name>).
-  # Ex.: [{ name: develop, variableGroups: [] }, { name: homolog, variableGroups: [] }]
-  # Pool e ADO Environment vêm do area profile (compile-time lookup) — não do consumer.
-  # App overlay: deploy/config/<tier>.yaml (IRSA, WIF, HPA, config, externalSecret).
-  # Lista vazia ⇒ só CI.
-  - name: deployEnvironments
-    displayName: Tiers de promoção (develop → homolog → production)
-    type: object
-    default: []
-
-  # Área de plataforma (cluster axis). Obrigatório quando deployEnvironments não está vazio.
-  # Allowlist = arquivos em platform/areas/ + sentinel `none` (CI-only). ADO rejects ''.
+  # Área de plataforma (cluster axis). Owns promotion chain, pools, ADO Environments,
+  # cluster identity, Gateway/DNS. Allowlist = files in platform/areas/ + sentinel `none`.
+  # none ⇒ CI only (no publish/container/deploy).
   - name: platformArea
     displayName: Área de plataforma (lab, …)
     type: string
@@ -56,19 +49,15 @@ parameters:
       - none
       - lab
 
-  # Path do .csproj a publicar na imagem (obrigatório quando há Container).
+  # Path do .csproj a publicar na imagem (obrigatório quando platformArea != none).
   - name: dotnetProject
     displayName: Caminho do .csproj da aplicação
     type: string
     default: ''
 
-  - name: helmTimeout
-    displayName: Timeout do helm upgrade --wait
-    type: string
-    default: '5m'
-
   # Pasta no repo da app com overlays <tier>.yaml (default: deploy/config).
   # Cada manifesto deve declarar kind: Application | ScheduledJob.
+  # One manifesto per platform.promotion tier is required before Container.
   - name: runtimeConfigPath
     displayName: Caminho dos manifestos por tier
     type: string
@@ -83,7 +72,7 @@ parameters:
     values:
       - dotnet
 
-  # expectedKubeContext / awsAccountId / pools: platform/areas/<area>.yml (single source of truth).
+  # expectedKubeContext / awsAccountId / pools / promotion: platform/areas/<area>.yml
 
 stages:
   - stage: CI
@@ -128,7 +117,7 @@ stages:
               arguments: --configuration ${{ parameters.buildConfiguration }} --no-build --logger trx
               publishTestResults: true
 
-          - ${{ if gt(length(parameters.deployEnvironments), 0) }}:
+          - ${{ if ne(parameters.platformArea, 'none') }}:
             - task: Bash@3
               name: publishApp
               displayName: Publish app and resolve aspnet tag
@@ -141,7 +130,7 @@ stages:
                   set -Eeuo pipefail
 
                   if [[ -z "${DOTNET_PROJECT:-}" ]]; then
-                    echo "##vso[task.logissue type=error]dotnetProject is required when deployEnvironments is set"
+                    echo "##vso[task.logissue type=error]dotnetProject is required when platformArea is not none"
                     exit 1
                   fi
 
@@ -188,44 +177,13 @@ stages:
                 targetPath: $(Build.ArtifactStagingDirectory)/app
                 artifact: app
 
-
-  - ${{ if gt(length(parameters.deployEnvironments), 3) }}:
-    - stage: DeployEnvironmentsOverflow
-      displayName: Too many deployEnvironments
-      dependsOn: CI
-      jobs:
-        - job: Fail
-          pool:
-            vmImage: ${{ parameters.vmImage }}
-          steps:
-            - bash: |
-                echo "##vso[task.logissue type=error]At most 3 deployEnvironments are supported (develop→homolog→production). Extra entries would be silently ignored."
-                exit 1
-              displayName: Fail on overflow
-
-  - ${{ if and(gt(length(parameters.deployEnvironments), 0), eq(parameters.platformArea, 'none')) }}:
-    - stage: PlatformAreaRequired
-      displayName: platformArea is required
-      dependsOn: CI
-      jobs:
-        - job: Fail
-          pool:
-            vmImage: ${{ parameters.vmImage }}
-          steps:
-            - bash: |
-                echo "##vso[task.logissue type=error]platformArea is required when deployEnvironments is set (values: lab, …)"
-                exit 1
-              displayName: Fail without platformArea
-
-  # Delivery (DeployContract + Container + Deploy_*) is owned by the area profile so
-  # compile-time lookups of pool / ADO Environment resolve from platform.tiers.
-  - ${{ if and(gt(length(parameters.deployEnvironments), 0), ne(parameters.platformArea, 'none'), le(length(parameters.deployEnvironments), 3)) }}:
+  # Delivery (DeployContract + Container + Deploy_*) is owned by the area profile.
+  # Promotion chain = platform.promotion in platform/areas/<area>.yml — not consumer-controlled.
+  - ${{ if ne(parameters.platformArea, 'none') }}:
     - template: ../../platform/areas/${{ parameters.platformArea }}.yml
       parameters:
         delivery:
-          deployEnvironments: ${{ parameters.deployEnvironments }}
           applicationName: ${{ parameters.applicationName }}
-          helmTimeout: ${{ parameters.helmTimeout }}
           runtimeConfigPath: ${{ parameters.runtimeConfigPath }}
           runtime: ${{ parameters.runtime }}
           vmImage: ${{ parameters.vmImage }}
